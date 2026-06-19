@@ -1,10 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { DEFAULT_THEME_ID } from '@/lib/themes'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { RotateCcw, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { useShortcutStore } from '@/stores/useShortcutStore'
 import { useAccountStore, useUsageStore } from '@/stores'
 import { toast } from '@/lib/toast'
@@ -125,6 +126,7 @@ export function SettingsGeneral(): React.JSX.Element {
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
+    protectedBranches,
     tipsEnabled,
     breedType,
     showModelIcons,
@@ -138,6 +140,12 @@ export function SettingsGeneral(): React.JSX.Element {
     resetToDefaults
   } = useSettingsStore()
   const { resetToDefaults: resetShortcuts } = useShortcutStore()
+
+  // Local draft so typing stays smooth; persists on blur (mirrors SettingsTeleport).
+  const [protectedBranchesDraft, setProtectedBranchesDraft] = useState(protectedBranches)
+  useEffect(() => {
+    setProtectedBranchesDraft(protectedBranches)
+  }, [protectedBranches])
 
   const handleResetAll = (): void => {
     resetToDefaults()
@@ -471,6 +479,24 @@ export function SettingsGeneral(): React.JSX.Element {
             Always Ask
           </button>
         </div>
+      </div>
+
+      {/* Protected branches */}
+      <div className="space-y-1">
+        <label className="text-sm font-medium">Protected branches</label>
+        <p className="text-xs text-muted-foreground">
+          Comma-separated branch names. When a ticket moves to Done, Hive won&apos;t suggest
+          merging into any branch listed here — it just moves the ticket to Done. Leave empty to
+          disable.
+        </p>
+        <Input
+          value={protectedBranchesDraft}
+          onChange={(e) => setProtectedBranchesDraft(e.target.value)}
+          onBlur={() => updateSetting('protectedBranches', protectedBranchesDraft)}
+          placeholder="main, master, develop, staging"
+          className="h-8 text-sm"
+          data-testid="protected-branches-input"
+        />
       </div>
 
       {/* Tips */}

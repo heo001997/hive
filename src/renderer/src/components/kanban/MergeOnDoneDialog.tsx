@@ -10,6 +10,8 @@ import { toast } from 'sonner'
 import { Loader2, GitMerge, GitCommit, Archive } from 'lucide-react'
 import { dbApi } from '@/api/db-api'
 import { gitApi } from '@/api/git-api'
+import { useSettingsStore } from '@/stores/useSettingsStore'
+import { isProtectedBranch } from './protectedBranch'
 
 type Step = 'loading' | 'commit_base' | 'commit' | 'merge' | 'archive'
 
@@ -47,6 +49,7 @@ interface ResolvedState {
   baseUncommittedStats: { filesChanged: number; insertions: number; deletions: number }
   baseDirty: boolean
   branchStats: BranchStats
+  protectMerge: boolean
 }
 
 export function MergeOnDoneDialog() {
@@ -168,8 +171,15 @@ export function MergeOnDoneDialog() {
           commitsAhead: branchStatResult.commitsAhead
         }
 
-        // If no diffs at all, just move to done
-        if (!hasUncommitted && branchStats.commitsAhead === 0) {
+        // Protected base branch ⇒ never suggest a local merge into it.
+        // Read via getState() so the effect doesn't re-run when the setting changes.
+        const protectMerge = isProtectedBranch(
+          resolvedBaseBranch,
+          useSettingsStore.getState().protectedBranches
+        )
+
+        // If nothing to commit, and either no commits to merge or the target is protected → done
+        if (!hasUncommitted && (branchStats.commitsAhead === 0 || protectMerge)) {
           await completeDoneMove()
           return
         }
@@ -190,11 +200,22 @@ export function MergeOnDoneDialog() {
           uncommittedStats,
           baseUncommittedStats,
           baseDirty,
-          branchStats
+          branchStats,
+          protectMerge
         })
         setCommitMessage(ticket.title)
         setBaseCommitMessage('')
-        setStep(baseDirty ? 'commit_base' : hasUncommitted ? 'commit' : 'merge')
+        // When protected, the feature branch must be dirty here (else we returned above),
+        // so go straight to the commit step and never touch the base worktree.
+        setStep(
+          protectMerge
+            ? 'commit'
+            : baseDirty
+              ? 'commit_base'
+              : hasUncommitted
+                ? 'commit'
+                : 'merge'
+        )
       } catch (err) {
         if (!cancelled) {
           toast.error(`Failed to check branch: ${err instanceof Error ? err.message : String(err)}`)
@@ -239,7 +260,7 @@ export function MergeOnDoneDialog() {
         return
       }
 
-      if (statResult.commitsAhead > 0) {
+      if (statResult.commitsAhead > 0 && !resolved.protectMerge) {
         setResolved((prev) =>
           prev
             ? {
@@ -255,7 +276,7 @@ export function MergeOnDoneDialog() {
         )
         setStep('merge')
       } else {
-        // No divergence after commit — base already has everything
+        // No divergence after commit (or base is protected) — move straight to Done
         await completeDoneMove()
       }
     } catch (err) {
@@ -300,7 +321,7 @@ export function MergeOnDoneDialog() {
           return
         }
 
-        if (statResult.commitsAhead > 0) {
+        if (statResult.commitsAhead > 0 && !resolved.protectMerge) {
           setResolved((prev) =>
             prev
               ? {
