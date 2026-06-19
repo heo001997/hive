@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react'
-import { Bot, CheckSquare, Loader2, Send, Sparkles, Trash2 } from 'lucide-react'
+import { Bot, CheckSquare, Send, Sparkles, Square, Trash2 } from 'lucide-react'
 import { ModelSelector } from '@/components/sessions/ModelSelector'
 import { AssistantCanvas } from '@/components/sessions/AssistantCanvas'
 import { UserBubble } from '@/components/sessions/UserBubble'
@@ -765,7 +765,8 @@ function BoardChatComposer({
   canSend,
   textareaRef,
   onChange,
-  onSend
+  onSend,
+  onStop
 }: {
   value: string
   disabled: boolean
@@ -774,6 +775,7 @@ function BoardChatComposer({
   textareaRef: RefObject<HTMLTextAreaElement | null>
   onChange: (value: string) => void
   onSend: () => void
+  onStop: () => void
 }): React.JSX.Element {
   return (
     <div className="border-t border-border/70 px-4 py-3">
@@ -800,10 +802,17 @@ function BoardChatComposer({
           <span className="text-xs text-muted-foreground">
             Enter to send. Shift+Enter for a new line.
           </span>
-          <Button type="button" size="sm" onClick={onSend} disabled={!canSend}>
-            {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            Send
-          </Button>
+          {sending ? (
+            <Button type="button" size="sm" variant="destructive" onClick={onStop}>
+              <Square className="h-4 w-4" />
+              Stop
+            </Button>
+          ) : (
+            <Button type="button" size="sm" onClick={onSend} disabled={!canSend}>
+              <Send className="h-4 w-4" />
+              Send
+            </Button>
+          )}
         </div>
       </div>
     </div>
@@ -1199,6 +1208,30 @@ export function BoardAssistantView({
     setStatus
   ])
 
+  const handleStop = useCallback(async () => {
+    const state = useBoardChatStore.getState()
+    const activeSessionId = state.sessionId
+    const activeOpencodeSessionId = state.opencodeSessionId
+    const activeRuntimePath = state.runtimePath
+
+    if (activeSessionId) {
+      useQuestionStore.getState().clearSession(activeSessionId)
+      usePermissionStore.getState().clearSession(activeSessionId)
+      useCommandApprovalStore.getState().clearSession(activeSessionId)
+    }
+
+    if (activeRuntimePath && activeOpencodeSessionId) {
+      try {
+        unwrapEnvelope(await opencodeApi.abort(activeRuntimePath, activeOpencodeSessionId))
+      } catch {
+        // Best effort — the stream generation guard drops stale events regardless.
+      }
+    }
+
+    setStatus('idle')
+    setError(null)
+  }, [setError, setStatus])
+
   const handleCreateDrafts = useCallback(
     async (onlySelected: boolean) => {
       const draftsToCreate = drafts.filter(
@@ -1520,6 +1553,9 @@ export function BoardAssistantView({
         onChange={setComposerValue}
         onSend={() => {
           void handleSend()
+        }}
+        onStop={() => {
+          void handleStop()
         }}
       />
     </div>
