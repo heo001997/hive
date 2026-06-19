@@ -7,6 +7,7 @@ import { useGitStore } from '../../src/renderer/src/stores/useGitStore'
 import { useKanbanStore } from '../../src/renderer/src/stores/useKanbanStore'
 import { useWorktreeStatusStore } from '../../src/renderer/src/stores/useWorktreeStatusStore'
 import { useWorktreeStore } from '../../src/renderer/src/stores/useWorktreeStore'
+import { useSettingsStore } from '../../src/renderer/src/stores/useSettingsStore'
 
 const apiMocks = vi.hoisted(() => ({
   dbApi: {
@@ -209,6 +210,8 @@ describe('MergeOnDoneDialog', () => {
     useWorktreeStatusStore.setState({ mergeConflictWorktreeByTicket: {} })
 
     useWorktreeStore.setState({ archiveWorktree: originalArchiveWorktree })
+
+    useSettingsStore.setState({ protectedBranches: '' })
   })
   test('keeps ticket in review when merge returns conflicts', async () => {
     merge.mockResolvedValue({
@@ -370,5 +373,49 @@ describe('MergeOnDoneDialog', () => {
     const secondArchiveButton = await screen.findByRole('button', { name: /^archive$/i })
 
     expect(secondArchiveButton).toBeEnabled()
+  })
+
+  test('moves straight to done without merging when the base branch is protected', async () => {
+    useSettingsStore.setState({ protectedBranches: 'main' })
+
+    render(<MergeOnDoneDialog />)
+
+    await waitFor(() => {
+      expect(ticketMove).toHaveBeenCalledWith('project-1', 'ticket-1', 'done', 100)
+    })
+
+    expect(merge).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /^merge$/i })).not.toBeInTheDocument()
+    expect(useKanbanStore.getState().pendingDoneMove).toBeNull()
+  })
+
+  test('shows the commit step on a protected branch and skips merge after committing', async () => {
+    useSettingsStore.setState({ protectedBranches: 'main' })
+    apiMocks.gitApi.hasUncommittedChanges.mockResolvedValue(true)
+
+    render(<MergeOnDoneDialog />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /^commit$/i }))
+
+    await waitFor(() => {
+      expect(ticketMove).toHaveBeenCalledWith('project-1', 'ticket-1', 'done', 100)
+    })
+
+    expect(merge).not.toHaveBeenCalled()
+    expect(useKanbanStore.getState().pendingDoneMove).toBeNull()
+  })
+
+  test('keeps the normal merge flow when the base branch is not protected', async () => {
+    useSettingsStore.setState({ protectedBranches: 'develop' })
+    merge.mockResolvedValue({ success: true })
+
+    render(<MergeOnDoneDialog />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /^merge$/i }))
+
+    await waitFor(() => {
+      expect(merge).toHaveBeenCalledWith('/repo/main', 'feature')
+    })
+    expect(ticketMove).not.toHaveBeenCalled()
   })
 })

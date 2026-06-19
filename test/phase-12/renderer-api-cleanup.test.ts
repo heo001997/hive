@@ -23100,7 +23100,7 @@ describe('renderer API cleanup', () => {
     expect(handleCommitSource).toContain(
       "toast.warning(`Cannot verify merge status: ${statResult.error ?? 'unknown error'}`)"
     )
-    expect(handleCommitSource).toContain('if (statResult.commitsAhead > 0)')
+    expect(handleCommitSource).toContain('if (statResult.commitsAhead > 0 && !resolved.protectMerge)')
     expect(handleCommitSource).not.toContain('window.gitOps.branchDiffShortStat')
     expect(handleCommitSource).not.toContain(
       'unwrapEnvelope(await window.gitOps.branchDiffShortStat'
@@ -23211,7 +23211,7 @@ describe('renderer API cleanup', () => {
     expect(baseCommitSource).toContain(
       "toast.warning(`Cannot verify merge status: ${statResult.error ?? 'unknown error'}`)"
     )
-    expect(baseCommitSource).toContain('if (statResult.commitsAhead > 0)')
+    expect(baseCommitSource).toContain('if (statResult.commitsAhead > 0 && !resolved.protectMerge)')
     expect(baseCommitSource).not.toContain('window.gitOps.branchDiffShortStat')
     expect(baseCommitSource).not.toContain('unwrapEnvelope(await window.gitOps.branchDiffShortStat')
   })

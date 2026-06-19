@@ -72,6 +72,7 @@ export interface AppSettings {
   autoStartSession: boolean
   autoPullBeforeWorktree: boolean
   warnBeforeQuitting: boolean
+  protectedBranches: string
   breedType: 'dogs' | 'cats'
   vimModeEnabled: boolean
   keepAwakeEnabled: boolean
@@ -191,6 +192,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoStartSession: true,
   autoPullBeforeWorktree: true,
   warnBeforeQuitting: true,
+  protectedBranches: '',
   breedType: 'dogs',
   vimModeEnabled: false,
   keepAwakeEnabled: false,
@@ -413,6 +415,7 @@ function extractSettings(state: SettingsState): AppSettings {
     autoStartSession: state.autoStartSession,
     autoPullBeforeWorktree: state.autoPullBeforeWorktree,
     warnBeforeQuitting: state.warnBeforeQuitting,
+    protectedBranches: state.protectedBranches,
     breedType: state.breedType,
     vimModeEnabled: state.vimModeEnabled,
     keepAwakeEnabled: state.keepAwakeEnabled,
@@ -778,6 +781,7 @@ export const useSettingsStore = create<SettingsState>()(
         autoStartSession: state.autoStartSession,
         autoPullBeforeWorktree: state.autoPullBeforeWorktree,
         warnBeforeQuitting: state.warnBeforeQuitting,
+        protectedBranches: state.protectedBranches,
         breedType: state.breedType,
         vimModeEnabled: state.vimModeEnabled,
         keepAwakeEnabled: state.keepAwakeEnabled,
