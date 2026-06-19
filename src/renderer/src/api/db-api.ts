@@ -119,6 +119,7 @@ type WorktreeUpdateData = {
   github_pr_number?: number | null
   github_pr_url?: string | null
   teleported_to?: string | null
+  base_branch?: string | null
   last_accessed_at?: string
 }
 

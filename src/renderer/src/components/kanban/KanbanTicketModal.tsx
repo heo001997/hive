@@ -3111,6 +3111,23 @@ function ReviewModeContent({
           files={diffSummary}
           loading={diffSummaryLoading}
           error={diffSummaryError}
+          onBaseBranchChange={
+            resolvedWorktree?.id
+              ? async (newBaseBranch) => {
+                  const worktreeId = resolvedWorktree.id
+                  try {
+                    await dbApi.worktree.update(worktreeId, { base_branch: newBaseBranch })
+                    setResolvedBaseBranch(newBaseBranch)
+                    setResolvedWorktree((prev) =>
+                      prev ? { ...prev, base_branch: newBaseBranch } : prev
+                    )
+                    toast.success('Base branch updated')
+                  } catch {
+                    toast.error('Failed to update base branch')
+                  }
+                }
+              : undefined
+          }
         />
       )}
 

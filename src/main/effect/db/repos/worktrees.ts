@@ -169,6 +169,10 @@ const update = (
       updates.push('last_accessed_at = ?')
       values.push(data.last_accessed_at)
     }
+    if (data.base_branch !== undefined) {
+      updates.push('base_branch = ?')
+      values.push(data.base_branch)
+    }
     if (updates.length === 0) return existing
 
     const db = yield* Db

@@ -1,4 +1,5 @@
-import type { JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
+import { Check, Pencil, X } from 'lucide-react'
 
 export interface ReviewTicketDiffFile {
   relativePath: string
@@ -13,14 +14,49 @@ interface ReviewTicketDiffSummaryProps {
   files: ReviewTicketDiffFile[]
   loading: boolean
   error: string | null
+  /** When provided, the base branch becomes editable; called with the new branch on save. */
+  onBaseBranchChange?: (newBaseBranch: string) => void | Promise<void>
 }
 
 export function ReviewTicketDiffSummary({
   baseBranch,
   files,
   loading,
-  error
+  error,
+  onBaseBranchChange
 }: ReviewTicketDiffSummaryProps): JSX.Element | null {
+  const [isEditing, setIsEditing] = useState(false)
+  const [draft, setDraft] = useState(baseBranch ?? '')
+  const [isSaving, setIsSaving] = useState(false)
+
+  // Keep the draft in sync when the resolved base branch changes externally.
+  useEffect(() => {
+    if (!isEditing) setDraft(baseBranch ?? '')
+  }, [baseBranch, isEditing])
+
+  const editable = !!onBaseBranchChange
+
+  const handleSave = async (): Promise<void> => {
+    const next = draft.trim()
+    if (!next || next === baseBranch) {
+      setIsEditing(false)
+      setDraft(baseBranch ?? '')
+      return
+    }
+    setIsSaving(true)
+    try {
+      await onBaseBranchChange?.(next)
+      setIsEditing(false)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleCancel = (): void => {
+    setIsEditing(false)
+    setDraft(baseBranch ?? '')
+  }
+
   if (!baseBranch && !loading && !error) return null
 
   return (
@@ -33,10 +69,69 @@ export function ReviewTicketDiffSummary({
           <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Changed Files
           </h3>
-          {baseBranch && (
-            <p className="text-[11px] text-muted-foreground">
-              Against <span className="font-mono text-foreground">{baseBranch}</span>
-            </p>
+          {isEditing ? (
+            <div className="mt-0.5 flex items-center gap-1">
+              <span className="text-[11px] text-muted-foreground">Against</span>
+              <input
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void handleSave()
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    handleCancel()
+                  }
+                }}
+                disabled={isSaving}
+                placeholder="base branch"
+                className="h-5 w-40 rounded border border-input bg-background px-1 font-mono text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                data-testid="review-diff-summary-base-input"
+              />
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={isSaving}
+                title="Save base branch"
+                className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                data-testid="review-diff-summary-base-save"
+              >
+                <Check className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={isSaving}
+                title="Cancel"
+                className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                data-testid="review-diff-summary-base-cancel"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ) : (
+            (baseBranch || editable) && (
+              <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                Against{' '}
+                <span className="font-mono text-foreground">{baseBranch ?? 'base branch'}</span>
+                {editable && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft(baseBranch ?? '')
+                      setIsEditing(true)
+                    }}
+                    title="Edit base branch"
+                    className="text-muted-foreground hover:text-foreground"
+                    data-testid="review-diff-summary-base-edit"
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                )}
+              </p>
+            )
           )}
         </div>
         {!loading && !error && (
