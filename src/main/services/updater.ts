@@ -28,6 +28,27 @@ function getUpdateChannel(): 'stable' | 'canary' {
   return 'stable'
 }
 
+/**
+ * Whether automatic (background) update checks are enabled.
+ * Read fresh from the DB on every scheduled tick so toggling the setting
+ * in the UI takes effect without restarting the app. Manual checks
+ * (menu item / "Check for Updates" button) are unaffected by this flag.
+ */
+function isAutoUpdateEnabled(): boolean {
+  try {
+    const db = getDatabase()
+    const raw = db.getSetting(APP_SETTINGS_DB_KEY)
+    if (raw) {
+      const settings = JSON.parse(raw)
+      // Default to enabled unless explicitly turned off.
+      return settings.autoUpdateEnabled !== false
+    }
+  } catch {
+    // DB not ready or setting not found — default to enabled
+  }
+  return true
+}
+
 const CHECK_INTERVAL = 5 * 60 * 60 * 1000 // 5 hours
 const INITIAL_DELAY = 10 * 1000 // 10 seconds
 
@@ -104,12 +125,20 @@ export const updaterService = {
       isManualCheck = false
     })
 
+    if (!isAutoUpdateEnabled()) {
+      log.info('Automatic update checks are disabled in settings')
+    }
+
     initialTimeout = setTimeout(() => {
-      this.checkForUpdates()
+      if (isAutoUpdateEnabled()) {
+        this.checkForUpdates()
+      }
     }, INITIAL_DELAY)
 
     checkInterval = setInterval(() => {
-      this.checkForUpdates()
+      if (isAutoUpdateEnabled()) {
+        this.checkForUpdates()
+      }
     }, CHECK_INTERVAL)
   },
 

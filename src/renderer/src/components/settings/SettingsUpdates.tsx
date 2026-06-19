@@ -6,7 +6,7 @@ import { RefreshCw } from 'lucide-react'
 import { updaterApi } from '@/api/updater-api'
 
 export function SettingsUpdates(): React.JSX.Element {
-  const { updateChannel, updateSetting } = useSettingsStore()
+  const { autoUpdateEnabled, updateChannel, updateSetting } = useSettingsStore()
   const [version, setVersion] = useState('')
   const [checking, setChecking] = useState(false)
 
@@ -40,6 +40,34 @@ export function SettingsUpdates(): React.JSX.Element {
           Current version: <span className="font-mono text-foreground">{version}</span>
         </div>
       )}
+
+      {/* Automatic update checks */}
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <label className="text-sm font-medium">Automatically check for updates</label>
+          <p className="text-xs text-muted-foreground">
+            When off, Hive won&apos;t check for or download updates in the background. You can still
+            check manually below.
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={autoUpdateEnabled}
+          onClick={() => updateSetting('autoUpdateEnabled', !autoUpdateEnabled)}
+          className={cn(
+            'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+            autoUpdateEnabled ? 'bg-primary' : 'bg-muted'
+          )}
+          data-testid="auto-update-enabled-toggle"
+        >
+          <span
+            className={cn(
+              'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+              autoUpdateEnabled ? 'translate-x-4' : 'translate-x-0'
+            )}
+          />
+        </button>
+      </div>
 
       {/* Channel selector */}
       <div className="space-y-2">
