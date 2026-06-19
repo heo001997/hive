@@ -5,7 +5,11 @@ import type {
   KanbanTicketBatchCreateResult
 } from '../../../main/db/types'
 import type { OpenCodeMessage } from '@/components/sessions/SessionView'
-import { parseBoardAssistantDraftSet } from '@/lib/board-assistant-drafts'
+import {
+  parseBoardAssistantDraftSet,
+  removeBoardDraftBlocks,
+  hasBoardDraftBlock
+} from '@/lib/board-assistant-drafts'
 import { useKanbanStore } from '@/stores/useKanbanStore'
 import type { SelectedModel } from '@/stores/useSettingsStore'
 import { useSettingsStore, resolveModelForSdk } from '@/stores/useSettingsStore'
@@ -155,8 +159,9 @@ export function resolveBoardChatDefaultModel(
 
 const BOARD_RULES_TAG_RE = /<board-assistant-rules>[\s\S]*?<\/board-assistant-rules>/gi
 const BOARD_CONTEXT_TAG_RE = /<board-assistant-context>[\s\S]*?<\/board-assistant-context>/gi
-const BOARD_DRAFT_BLOCK_RE = /```board-ticket-drafts[\s\S]*?```/gi
-const BOARD_DRAFT_BLOCK_CAPTURE_RE = /```board-ticket-drafts\s*([\s\S]*?)```/i
+
+export const BOARD_DRAFT_PARSE_ERROR =
+  'The assistant proposed ticket drafts, but they could not be read (invalid draft format). Ask it to resend the drafts.'
 
 export function stripBoardAssistantScaffolding(content: string): string {
   const withoutTags = content.replace(BOARD_RULES_TAG_RE, '').replace(BOARD_CONTEXT_TAG_RE, '')
@@ -171,7 +176,7 @@ export function stripBoardAssistantScaffolding(content: string): string {
 }
 
 export function stripBoardDraftBlocks(content: string): string {
-  return content.replace(BOARD_DRAFT_BLOCK_RE, '').trim()
+  return removeBoardDraftBlocks(content).trim()
 }
 
 function normalizeVisibleContent(content: string, role: OpenCodeMessage['role']): string {
@@ -757,11 +762,16 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
   syncTranscript: (messages, isStreaming) => {
     const mergedMessages = mergeTranscriptMessages(get().messages, messages)
     const latestDraftMessage = [...messages].reverse().find((message) => {
-      return message.role === 'assistant' && BOARD_DRAFT_BLOCK_CAPTURE_RE.test(message.content)
+      return message.role === 'assistant' && hasBoardDraftBlock(message.content)
     })
     const parsedDrafts = latestDraftMessage
       ? parseDraftsFromMessage(latestDraftMessage, get().scope, get().selectedTargetProjectId)
       : null
+    // A draft block is present but could not be parsed into drafts. Surface a
+    // visible error instead of silently showing a blank draft state. Only flag
+    // it once streaming has finished so an in-progress (partial) block does not
+    // flash an error.
+    const draftParseFailed = Boolean(latestDraftMessage) && !parsedDrafts && !isStreaming
 
     set((state) =>
       patchActiveSnapshot(state, {
@@ -773,13 +783,20 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
               ? []
               : state.drafts,
         draftSourceMessageId: latestDraftMessage?.id ?? state.draftSourceMessageId,
+        error: draftParseFailed
+          ? BOARD_DRAFT_PARSE_ERROR
+          : parsedDrafts
+            ? null
+            : state.error,
         status: isStreaming
           ? 'thinking'
-          : parsedDrafts && parsedDrafts.length > 0
-            ? 'awaiting_confirmation'
-            : state.status === 'error'
-              ? 'error'
-              : 'idle'
+          : draftParseFailed
+            ? 'error'
+            : parsedDrafts && parsedDrafts.length > 0
+              ? 'awaiting_confirmation'
+              : state.status === 'error'
+                ? 'error'
+                : 'idle'
       })
     )
   },
