@@ -142,6 +142,7 @@ export interface AppSettings {
   codexFastModeAccepted: boolean
 
   // Updates
+  autoUpdateEnabled: boolean
   updateChannel: 'stable' | 'canary'
   skippedUpdateVersion: string | null
 
@@ -227,6 +228,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   stripAtMentions: true,
   codexFastMode: false,
   codexFastModeAccepted: false,
+  autoUpdateEnabled: true,
   updateChannel: 'stable',
   skippedUpdateVersion: null,
   initialSetupComplete: false,
@@ -450,6 +452,7 @@ function extractSettings(state: SettingsState): AppSettings {
     stripAtMentions: state.stripAtMentions,
     codexFastMode: state.codexFastMode,
     codexFastModeAccepted: state.codexFastModeAccepted,
+    autoUpdateEnabled: state.autoUpdateEnabled,
     updateChannel: state.updateChannel,
     skippedUpdateVersion: state.skippedUpdateVersion,
     initialSetupComplete: state.initialSetupComplete,
@@ -817,6 +820,7 @@ export const useSettingsStore = create<SettingsState>()(
         stripAtMentions: state.stripAtMentions,
         codexFastMode: state.codexFastMode,
         codexFastModeAccepted: state.codexFastModeAccepted,
+        autoUpdateEnabled: state.autoUpdateEnabled,
         updateChannel: state.updateChannel,
         skippedUpdateVersion: state.skippedUpdateVersion,
         initialSetupComplete: state.initialSetupComplete,
