@@ -253,6 +253,7 @@ const worktreeUpdateDataSchema = z.object({
   github_pr_number: z.number().nullable().optional(),
   github_pr_url: z.string().nullable().optional(),
   teleported_to: z.string().nullable().optional(),
+  base_branch: z.string().nullable().optional(),
   last_accessed_at: z.string().optional()
 }) satisfies z.ZodType<WorktreeUpdate>
 const worktreeUpdateParamsSchema = z.object({
