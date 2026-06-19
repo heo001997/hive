@@ -34,6 +34,18 @@ export interface StartedHiveServer {
 // stacking listeners.
 let desktopBackendEventForwarder: ((message: unknown) => void) | null = null
 
+// The desktop backend talks to the Electron main process by issuing "desktop
+// commands" over the Node IPC `message` channel. Each in-flight request in the
+// RPC domains (terminal-ops, opencode-ops, …) registers its own short-lived
+// `process.on('message', …)` listener and removes it once the matching reply
+// arrives (or its timeout fires), so the listeners are self-draining and never
+// leak. Node's default per-emitter cap is 10, though, so a normal burst of
+// concurrent commands (startup, multi-session activity) plus the persistent
+// forwarder above trips a spurious `MaxListenersExceededWarning`. Lift the cap
+// to a value comfortably above realistic peak concurrency; it still surfaces a
+// genuine runaway should one ever appear.
+const BACKEND_PROCESS_MAX_LISTENERS = 100
+
 export const startHiveServer = (
   input: ServerConfigInput = {}
 ): Effect.Effect<StartedHiveServer, Error> =>
@@ -41,6 +53,12 @@ export const startHiveServer = (
     const config = yield* resolveServerConfig(input)
     getDatabase().init()
     const eventBus = makeEventBus()
+
+    // Raise the IPC `message` listener cap before any RPC handler can register
+    // its per-request listener (see BACKEND_PROCESS_MAX_LISTENERS above).
+    if (process.getMaxListeners() < BACKEND_PROCESS_MAX_LISTENERS) {
+      process.setMaxListeners(BACKEND_PROCESS_MAX_LISTENERS)
+    }
 
     if (desktopBackendEventForwarder) {
       process.off('message', desktopBackendEventForwarder)
