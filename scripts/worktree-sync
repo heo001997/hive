@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+#
+# worktree-sync — one-shot setup to give THIS Hive checkout its own, fully
+# isolated dev data. Run it once per worktree; after that every command
+# (pnpm dev, pnpm build, …) behaves exactly like a normal Hive checkout — the
+# only difference is where the data lives.
+#
+# Why it exists:
+#   `pnpm dev` already isolates from the daily app (/Applications/Hive.app →
+#   ~/.hive) by pinning the dev tree to ~/.hive-dev / ~/.hive-dev-worktrees.
+#   But every dev clone shares that one ~/.hive-dev sandbox, so two worktrees
+#   running `pnpm dev` at once still race the same SQLite DB.
+#
+# What it does:
+#   Writes a per-worktree .envrc exporting HIVE_DEV_DATA_DIR=<worktree>/.hive-data
+#   and registers it with direnv. scripts/dev-data-setup.mjs honors that var, so
+#   the dev launcher relocates the ENTIRE tree (DB, logs, icons, attachments,
+#   connections, custom commands, project worktrees) under this directory, and
+#   src/main/index.ts relocates the Electron profile (window state, web caches,
+#   localStorage incl. the ticket-import credential cache) there too — so there
+#   is ZERO shared state with the daily app or other worktrees. direnv loads the
+#   .envrc whenever a shell cd's in, so you keep running the normal commands —
+#   no wrapper, no per-command flags.
+#
+#   It then SEEDS the isolated data once (default: copy the SHARED dev sandbox
+#   ~/.hive-dev, or --fresh for an empty DB) so the first `pnpm dev` starts
+#   unattended — no clone/fresh prompt. The source is ~/.hive-dev (your working
+#   dev data), NOT production (~/.hive), and nothing is quit — it's just files.
+#   Only DATA is copied — projects, settings, connections, custom commands; the
+#   dev WORKTREES are NOT copied (you create them fresh here). Degrades to a
+#   fresh DB if copying isn't possible (no sqlite3, or you've never run the
+#   shared `pnpm dev` so ~/.hive-dev doesn't exist yet).
+#
+# Result: separate from ~/.hive (prod), ~/.hive-dev (shared dev), and every
+# other worktree. Ports already auto-resolve (backend scans 3773+, Vite
+# increments from 5173), so nothing else needs assigning.
+#
+# Cleanup: there is no teardown command — all isolated data lives inside this
+# worktree (.hive-data / .hive-data-worktrees, both gitignored), so removing the
+# worktree removes the data with it:  git worktree remove <this-dir>
+
+set -euo pipefail
+
+# Default: seed this worktree's dev data by copying the SHARED dev sandbox
+# (~/.hive-dev) so the first `pnpm dev` is ready with no prompt. `--fresh` empty.
+SYNC_MODE="clone"
+for arg in "$@"; do
+  case "$arg" in
+    -h | --help)
+      echo "usage: scripts/worktree-sync          # set up isolated dev data (copies ~/.hive-dev)"
+      echo "       scripts/worktree-sync --fresh  # ... but start with an empty dev database"
+      echo "then:  pnpm dev                        # runs isolated, like a normal checkout"
+      echo "drop:  git worktree remove <dir>       # removes the worktree and its isolated data"
+      exit 0
+      ;;
+    --fresh) SYNC_MODE="fresh" ;;
+    *)
+      echo "error: unknown argument '$arg' (see --help)." >&2
+      exit 1
+      ;;
+  esac
+done
+
+# --- locate this worktree's root (the dir holding package.json) ---------------
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA_DIR="$ROOT/.hive-data"
+ENVRC="$ROOT/.envrc"
+cd "$ROOT"
+
+# pnpm is pinned (corepack) above the locally-installed version; prefer corepack
+# so install never hits ERR_PNPM_BAD_PM_VERSION.
+pnpm_cmd() {
+  if command -v corepack >/dev/null 2>&1; then
+    corepack pnpm "$@"
+  else
+    pnpm "$@"
+  fi
+}
+
+# yes/no prompt, default No. Returns 0 on an explicit yes.
+confirm() {
+  local reply
+  printf '%s [y/N] ' "$1"
+  read -r reply
+  case "$reply" in
+    [yY] | [yY][eE][sS]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Resolve the shell rc file direnv should be hooked into.
+shell_rc() {
+  case "$(basename "${SHELL:-zsh}")" in
+    zsh) echo "$HOME/.zshrc" ;;
+    bash) [ -f "$HOME/.bashrc" ] && echo "$HOME/.bashrc" || echo "$HOME/.bash_profile" ;;
+    *) echo "" ;;
+  esac
+}
+
+# Ensure `eval "$(direnv hook <shell>)"` is in the shell rc (idempotent, asks).
+# Without it, direnv never loads .envrc and `pnpm dev` would use the SHARED
+# sandbox instead of this worktree — so warn loudly if the user opts out.
+ensure_direnv_hook() {
+  local shell_name rc hook_line
+  shell_name="$(basename "${SHELL:-zsh}")"
+  rc="$(shell_rc)"
+  hook_line="eval \"\$(direnv hook $shell_name)\""
+
+  if [ -n "$rc" ] && [ -f "$rc" ] && grep -q "direnv hook" "$rc"; then
+    return # already hooked
+  fi
+  if [ -z "$rc" ]; then
+    echo "!! Add this to your shell rc or isolation won't load: $hook_line"
+    return
+  fi
+  if confirm "Add the direnv hook to $rc (one-time, required for auto-isolation)?"; then
+    printf '\n# direnv — load per-directory .envrc\n%s\n' "$hook_line" >>"$rc"
+    echo "Hook added to $rc. This shell: run \`$hook_line\` (new shells get it automatically)."
+  else
+    echo "!! Skipped. Until you add \`$hook_line\` to $rc, \`pnpm dev\` here uses the SHARED dev"
+    echo "   data (~/.hive-dev), NOT this worktree."
+  fi
+}
+
+# Verify the required toolchain; install what's missing (asks first). direnv is
+# mandatory here: it's the only thing that loads the .envrc, so without it there
+# is no isolation. Abort if it can't be made available.
+preflight() {
+  echo "==> Checking required tools…"
+
+  local tool
+  for tool in node corepack; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "error: '$tool' not found. Install Node.js 18+ (ships corepack), then re-run." >&2
+      exit 1
+    fi
+  done
+
+  if ! command -v direnv >/dev/null 2>&1; then
+    echo "direnv is not installed — required so a plain \`pnpm dev\` runs isolated."
+    if command -v brew >/dev/null 2>&1 && confirm "Install direnv now via 'brew install direnv'?"; then
+      brew install direnv
+    else
+      echo "error: direnv is required. Install it (https://direnv.net) and re-run." >&2
+      exit 1
+    fi
+  fi
+
+  ensure_direnv_hook
+}
+
+# Confirm direnv exports the var when a shell enters this dir.
+verify() {
+  local exported
+  exported="$(direnv exec "$ROOT" sh -c 'printf %s "${HIVE_DEV_DATA_DIR:-}"' 2>/dev/null || true)"
+  if [ "$exported" = "$DATA_DIR" ]; then
+    echo "✓ verified: cd here exports HIVE_DEV_DATA_DIR=$DATA_DIR"
+  else
+    echo "⚠ direnv did not export the var (got: '${exported:-<empty>}'). Try: direnv allow $ROOT"
+  fi
+}
+
+# --- setup --------------------------------------------------------------------
+if [ ! -f "$ROOT/package.json" ]; then
+  echo "error: $ROOT has no package.json — run inside a Hive checkout." >&2
+  exit 1
+fi
+
+preflight
+
+echo "==> Installing dependencies (corepack pnpm install)…"
+pnpm_cmd install
+
+echo "==> Writing $ENVRC"
+cat >"$ENVRC" <<EOF
+# Generated by scripts/worktree-sync — isolates this worktree's Hive dev data.
+# HIVE_DEV_DATA_DIR relocates the whole dev tree (DB/logs/worktrees/…) here,
+# separate from ~/.hive (prod), ~/.hive-dev (shared dev), and other worktrees.
+export HIVE_DEV_DATA_DIR="$DATA_DIR"
+EOF
+
+echo "==> direnv allow"
+direnv allow "$ROOT"
+verify
+
+# Seed the isolated dev data up front (clone ~/.hive, or empty with --fresh) so
+# the first `pnpm dev` runs unattended — no clone/fresh prompt. Runs under
+# `direnv exec` so HIVE_DEV_DATA_DIR is set, and exports HIVE_DEV_DATA_SYNC so
+# ensureDevDataReady takes the non-interactive path. No-op if .hive-data exists.
+if [ "$SYNC_MODE" = "clone" ]; then
+  echo "==> Seeding isolated dev data (copying ~/.hive-dev data — no worktrees)…"
+else
+  echo "==> Seeding isolated dev data (fresh, empty database)…"
+fi
+direnv exec "$ROOT" env HIVE_DEV_DATA_SYNC="$SYNC_MODE" \
+  node -e 'import("./scripts/dev-data-setup.mjs").then(m => m.ensureDevDataReady()).catch(e => { console.error(e); process.exit(1) })'
+
+echo
+echo "Done. This worktree is isolated and its dev data is seeded."
+echo "Run the normal commands — e.g.: pnpm dev   (starts immediately, no prompt)"

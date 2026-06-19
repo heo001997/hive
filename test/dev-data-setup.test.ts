@@ -1,13 +1,56 @@
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 
 describe('dev data setup', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
   test('exposes the fixed dev data + worktrees dirs', async () => {
     const { DEV_DATA_DIR, DEV_WORKTREES_DIR } = await import('../scripts/dev-data-setup.mjs')
 
     expect(DEV_DATA_DIR).toBe(resolve(homedir(), '.hive-dev'))
     expect(DEV_WORKTREES_DIR).toBe(resolve(homedir(), '.hive-dev-worktrees'))
+  })
+
+  test('HIVE_DEV_DATA_DIR relocates both dev dirs as siblings (per-worktree isolation)', async () => {
+    vi.stubEnv('HIVE_DEV_DATA_DIR', '/wt/standalone/.hive-data')
+    vi.resetModules() // re-evaluate the module so the env override is read at load
+    const { DEV_DATA_DIR, DEV_WORKTREES_DIR } = await import('../scripts/dev-data-setup.mjs')
+
+    expect(DEV_DATA_DIR).toBe('/wt/standalone/.hive-data')
+    expect(DEV_WORKTREES_DIR).toBe('/wt/standalone/.hive-data-worktrees')
+  })
+
+  test('an isolated worktree seeds from the shared dev sandbox, never production', async () => {
+    vi.stubEnv('HIVE_DEV_DATA_DIR', '/wt/standalone/.hive-data')
+    vi.resetModules()
+    const mod = await import('../scripts/dev-data-setup.mjs')
+
+    // The clone SOURCE for an isolated worktree is the fixed shared-dev sandbox,
+    // not the relocated target and not production (~/.hive).
+    expect(mod.IS_ISOLATED_WORKTREE).toBe(true)
+    expect(mod.SHARED_DEV_DATA_DIR).toBe(resolve(homedir(), '.hive-dev'))
+    expect(mod.SHARED_DEV_DATA_DIR).not.toBe(mod.LEGACY_DATA_DIR)
+  })
+
+  test('the shared dev sandbox itself is not flagged isolated (clones from prod)', async () => {
+    vi.resetModules()
+    const mod = await import('../scripts/dev-data-setup.mjs')
+
+    expect(mod.IS_ISOLATED_WORKTREE).toBe(false)
+    expect(mod.LEGACY_DATA_DIR).toBe(resolve(homedir(), '.hive'))
+  })
+
+  test('a relative HIVE_DEV_DATA_DIR is resolved to an absolute path and trimmed', async () => {
+    vi.stubEnv('HIVE_DEV_DATA_DIR', '  rel/.hive-data  ')
+    vi.resetModules()
+    const { DEV_DATA_DIR, DEV_WORKTREES_DIR } = await import('../scripts/dev-data-setup.mjs')
+
+    expect(DEV_DATA_DIR).toBe(resolve('rel/.hive-data'))
+    expect(DEV_WORKTREES_DIR).toBe(resolve('rel/.hive-data-worktrees'))
   })
 
   test('parses the clone-vs-fresh answer (empty defaults to sync)', async () => {
@@ -20,6 +63,21 @@ describe('dev data setup', () => {
       expect(parseSyncAnswer(sync)).toBe('sync')
     }
     expect(parseSyncAnswer(undefined)).toBe('sync')
+  })
+
+  test('parses HIVE_DEV_DATA_SYNC into clone | fresh | null (unset/unknown -> null)', async () => {
+    const { parseSyncMode } = await import('../scripts/dev-data-setup.mjs')
+
+    for (const clone of ['clone', 'CLONE', 'sync', 's', 'y', 'yes', '  clone  ']) {
+      expect(parseSyncMode(clone)).toBe('clone')
+    }
+    for (const fresh of ['fresh', 'F', 'n', 'no', 'scratch', '  fresh  ']) {
+      expect(parseSyncMode(fresh)).toBe('fresh')
+    }
+    // Unset / blank / unrecognized fall back to the interactive prompt.
+    for (const none of ['', '  ', 'huh?', undefined]) {
+      expect(parseSyncMode(none)).toBeNull()
+    }
   })
 
   test('parses the quit-official-app confirm (default No)', async () => {
