@@ -1,6 +1,121 @@
 import type { BoardAssistantDraft } from '../../../main/db/types'
 
-export const BOARD_DRAFT_BLOCK_CAPTURE_RE = /```board-ticket-drafts\s*([\s\S]*?)```/i
+// Matches only the opening fence + label (plus optional trailing horizontal
+// whitespace and one newline). The JSON body and closing fence are located
+// separately by brace-matching so descriptions containing their own ``` code
+// fences do not truncate the block.
+const BOARD_DRAFT_BLOCK_OPEN_SOURCE = '```[ \\t]*board-ticket-drafts[ \\t]*\\r?\\n?'
+export const BOARD_DRAFT_BLOCK_OPEN_RE = new RegExp(BOARD_DRAFT_BLOCK_OPEN_SOURCE, 'i')
+
+interface BoardDraftBlock {
+  /** Index of the opening fence. */
+  start: number
+  /** Index just past the closing fence (or end of content if none found). */
+  end: number
+  /** The balanced JSON object string, or null if no valid object was found. */
+  json: string | null
+}
+
+/**
+ * Scans `content` for a balanced JSON object starting at the first `{` on or
+ * after `fromIndex`, tracking string literals/escapes so that braces and
+ * backtick fences inside string values are ignored.
+ */
+function matchJsonObject(content: string, fromIndex: number): { json: string; end: number } | null {
+  const braceStart = content.indexOf('{', fromIndex)
+  if (braceStart === -1) return null
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+
+  for (let i = braceStart; i < content.length; i += 1) {
+    const char = content[i]
+
+    if (inString) {
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
+      }
+      continue
+    }
+
+    if (char === '"') {
+      inString = true
+    } else if (char === '{') {
+      depth += 1
+    } else if (char === '}') {
+      depth -= 1
+      if (depth === 0) {
+        return { json: content.slice(braceStart, i + 1), end: i + 1 }
+      }
+    }
+  }
+
+  return null
+}
+
+/** Locates every board-ticket-drafts block in `content`, in order. */
+function findBoardDraftBlocks(content: string): BoardDraftBlock[] {
+  const blocks: BoardDraftBlock[] = []
+  const openRe = new RegExp(BOARD_DRAFT_BLOCK_OPEN_SOURCE, 'gi')
+
+  let openMatch: RegExpExecArray | null
+  while ((openMatch = openRe.exec(content)) !== null) {
+    const start = openMatch.index
+    const afterLabel = openMatch.index + openMatch[0].length
+    const matched = matchJsonObject(content, afterLabel)
+
+    if (matched) {
+      // Closing fence is the first ``` after the JSON body; if the model
+      // omitted it, consume to the end of the content.
+      const closingFence = content.indexOf('```', matched.end)
+      const end = closingFence === -1 ? content.length : closingFence + 3
+      blocks.push({ start, end, json: matched.json })
+      openRe.lastIndex = end
+    } else {
+      // Malformed block (no balanced JSON object). Best-effort: strip through
+      // the last fence so a broken JSON blob is not leaked into the chat.
+      const lastFence = content.lastIndexOf('```')
+      const end = lastFence > afterLabel ? lastFence + 3 : content.length
+      blocks.push({ start, end, json: null })
+      openRe.lastIndex = end
+    }
+  }
+
+  return blocks
+}
+
+/** True when `content` contains a board-ticket-drafts fenced block. */
+export function hasBoardDraftBlock(content: string): boolean {
+  return BOARD_DRAFT_BLOCK_OPEN_RE.test(content)
+}
+
+/** Returns the JSON body of the first valid board-ticket-drafts block, if any. */
+export function extractBoardDraftBlockJson(content: string): string | null {
+  for (const block of findBoardDraftBlocks(content)) {
+    if (block.json !== null) return block.json
+  }
+  return null
+}
+
+/** Removes every board-ticket-drafts block from `content`. */
+export function removeBoardDraftBlocks(content: string): string {
+  const blocks = findBoardDraftBlocks(content)
+  if (blocks.length === 0) return content
+
+  let result = ''
+  let cursor = 0
+  for (const block of blocks) {
+    result += content.slice(cursor, block.start)
+    cursor = block.end
+  }
+  result += content.slice(cursor)
+  return result
+}
 
 export interface ParsedBoardAssistantDraft extends BoardAssistantDraft {
   validationIssues: string[]
@@ -27,11 +142,11 @@ export function parseBoardAssistantDraftSet(
   content: string,
   options: ParseBoardAssistantDraftSetOptions = {}
 ): ParsedBoardAssistantDraftSet | null {
-  const match = content.match(BOARD_DRAFT_BLOCK_CAPTURE_RE)
-  if (!match?.[1]) return null
+  const json = extractBoardDraftBlockJson(content)
+  if (json === null) return null
 
   try {
-    const parsed = JSON.parse(match[1]) as { drafts?: unknown[] }
+    const parsed = JSON.parse(json) as { drafts?: unknown[] }
     if (!Array.isArray(parsed.drafts)) return null
 
     const drafts = parsed.drafts
