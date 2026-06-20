@@ -1029,6 +1029,127 @@ describe('git ops RPC domain', () => {
     })
   })
 
+  it('lists the configured remotes for a git worktree', async () => {
+    const dir = makeTempDir()
+    git(dir, ['init'])
+    git(dir, ['remote', 'add', 'origin', 'https://github.com/me/hive.git'])
+    git(dir, ['remote', 'add', 'upstream', 'https://github.com/acme/hive.git'])
+
+    const service = makeLiveGitOpsRpcService()
+
+    await expect(Effect.runPromise(service.listRemotes(dir))).resolves.toEqual({
+      success: true,
+      remotes: expect.arrayContaining([
+        { name: 'origin', url: 'https://github.com/me/hive.git' },
+        { name: 'upstream', url: 'https://github.com/acme/hive.git' }
+      ])
+    })
+  })
+
+  it('targets a cross-repository pull request when a non-origin remote is selected', async () => {
+    const dir = makeTempDir()
+    git(dir, ['init'])
+    git(dir, ['config', 'user.email', 'hive@example.test'])
+    git(dir, ['config', 'user.name', 'Hive Test'])
+    git(dir, ['remote', 'add', 'origin', 'git@github.com:me/hive.git'])
+    git(dir, ['remote', 'add', 'upstream', 'https://github.com/acme/hive.git'])
+    writeFileSync(join(dir, 'tracked.txt'), 'original\n')
+    git(dir, ['add', 'tracked.txt'])
+    git(dir, ['commit', '-m', 'initial'])
+    git(dir, ['branch', '-M', 'main'])
+    git(dir, ['checkout', '-b', 'feature/fork-pr'])
+
+    const calls: Array<ReadonlyArray<string>> = []
+    const runCommand = vi.fn(
+      async (_file: string, args: ReadonlyArray<string>, _options: { cwd: string }) => {
+        calls.push(args)
+        return { stdout: 'https://github.com/acme/hive/pull/7\n', stderr: '' }
+      }
+    )
+    const service = makeLiveGitOpsRpcService({ runCommand })
+
+    const result = await Effect.runPromise(
+      service.createPR(dir, 'main', 'Add RPC', 'Body text', 'upstream')
+    )
+
+    expect(result).toEqual({
+      success: true,
+      url: 'https://github.com/acme/hive/pull/7',
+      number: 7
+    })
+    const ghArgs = calls.find((args) => args[0] === 'pr')
+    expect(ghArgs).toContain('--repo')
+    expect(ghArgs?.[ghArgs.indexOf('--repo') + 1]).toBe('acme/hive')
+    // Head lives on the fork (origin), so it must be owner-qualified.
+    expect(ghArgs).toContain('--head')
+    expect(ghArgs?.[ghArgs.indexOf('--head') + 1]).toBe('me:feature/fork-pr')
+    expect(ghArgs?.[ghArgs.indexOf('--base') + 1]).toBe('main')
+  })
+
+  it('targets the same repository when the origin remote is selected', async () => {
+    const dir = makeTempDir()
+    git(dir, ['init'])
+    git(dir, ['config', 'user.email', 'hive@example.test'])
+    git(dir, ['config', 'user.name', 'Hive Test'])
+    git(dir, ['remote', 'add', 'origin', 'https://github.com/me/hive.git'])
+    writeFileSync(join(dir, 'tracked.txt'), 'original\n')
+    git(dir, ['add', 'tracked.txt'])
+    git(dir, ['commit', '-m', 'initial'])
+    git(dir, ['branch', '-M', 'main'])
+    git(dir, ['checkout', '-b', 'feature/same-repo'])
+
+    const calls: Array<ReadonlyArray<string>> = []
+    const runCommand = vi.fn(
+      async (_file: string, args: ReadonlyArray<string>, _options: { cwd: string }) => {
+        calls.push(args)
+        return { stdout: 'https://github.com/me/hive/pull/3\n', stderr: '' }
+      }
+    )
+    const service = makeLiveGitOpsRpcService({ runCommand })
+
+    const result = await Effect.runPromise(
+      service.createPR(dir, 'main', 'Add RPC', 'Body text', 'origin')
+    )
+
+    expect(result).toEqual({
+      success: true,
+      url: 'https://github.com/me/hive/pull/3',
+      number: 3
+    })
+    const ghArgs = calls.find((args) => args[0] === 'pr')
+    expect(ghArgs?.[ghArgs.indexOf('--repo') + 1]).toBe('me/hive')
+    // Same owner -> head is the plain branch name (no "owner:" prefix).
+    expect(ghArgs?.[ghArgs.indexOf('--head') + 1]).toBe('feature/same-repo')
+  })
+
+  it('preserves a slash-containing base branch that is not a remote prefix', async () => {
+    const dir = makeTempDir()
+    git(dir, ['init'])
+    git(dir, ['config', 'user.email', 'hive@example.test'])
+    git(dir, ['config', 'user.name', 'Hive Test'])
+    git(dir, ['remote', 'add', 'origin', 'https://github.com/me/hive.git'])
+    writeFileSync(join(dir, 'tracked.txt'), 'original\n')
+    git(dir, ['add', 'tracked.txt'])
+    git(dir, ['commit', '-m', 'initial'])
+    git(dir, ['branch', '-M', 'main'])
+    git(dir, ['checkout', '-b', 'feature/slash-base'])
+
+    const calls: Array<ReadonlyArray<string>> = []
+    const runCommand = vi.fn(
+      async (_file: string, args: ReadonlyArray<string>, _options: { cwd: string }) => {
+        calls.push(args)
+        return { stdout: 'https://github.com/me/hive/pull/5\n', stderr: '' }
+      }
+    )
+    const service = makeLiveGitOpsRpcService({ runCommand })
+
+    await Effect.runPromise(service.createPR(dir, 'release/2.0', 'Add RPC', 'Body text', 'origin'))
+
+    const ghArgs = calls.find((args) => args[0] === 'pr')
+    // "release" is not a remote, so the whole branch name must be kept intact.
+    expect(ghArgs?.[(ghArgs?.indexOf('--base') ?? -1) + 1]).toBe('release/2.0')
+  })
+
   it('generates pull request content with git range context', async () => {
     const dir = makeTempDir()
     git(dir, ['init'])
