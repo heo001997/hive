@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react'
-import { Bot, CheckSquare, Send, Sparkles, Square, Trash2 } from 'lucide-react'
+import { Bot, CheckSquare, Pencil, Send, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { ModelSelector } from '@/components/sessions/ModelSelector'
 import { AssistantCanvas } from '@/components/sessions/AssistantCanvas'
 import { UserBubble } from '@/components/sessions/UserBubble'
@@ -579,6 +579,8 @@ function BoardChatMessageList({
   activePermission,
   activeApproval,
   sessionId,
+  editableMessageId,
+  onEditMessage,
   onToggleDraft,
   onCreateAll,
   onCreateSelected,
@@ -598,6 +600,8 @@ function BoardChatMessageList({
   activePermission: PermissionRequest | null
   activeApproval: CommandApprovalRequest | null
   sessionId: string | null
+  editableMessageId: string | null
+  onEditMessage: (content: string) => void
   onToggleDraft: (draftId: string) => void
   onCreateAll: () => void
   onCreateSelected: () => void
@@ -658,10 +662,24 @@ function BoardChatMessageList({
         const sanitizedContent = sanitizeBoardMessageContent(message)
         const sanitizedParts = sanitizeStreamingParts(message.parts, message.role)
 
+        const isEditable = message.role === 'user' && message.id === editableMessageId
+
         return (
           <div key={message.id} className="space-y-3">
             {message.role === 'user' ? (
-              <UserBubble content={sanitizedContent} timestamp={message.timestamp} />
+              <div className={isEditable ? 'group relative' : ''}>
+                <UserBubble content={sanitizedContent} timestamp={message.timestamp} />
+                {isEditable && (
+                  <button
+                    type="button"
+                    className="absolute right-1 top-1 rounded-md p-1 opacity-0 transition-opacity hover:bg-muted/60 group-hover:opacity-100"
+                    title="Edit message"
+                    onClick={() => onEditMessage(sanitizedContent)}
+                  >
+                    <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                  </button>
+                )}
+              </div>
             ) : (
               <AssistantCanvas
                 content={sanitizedContent}
@@ -763,22 +781,42 @@ function BoardChatComposer({
   disabled,
   sending,
   canSend,
+  isEditing,
   textareaRef,
   onChange,
   onSend,
-  onStop
+  onStop,
+  onCancelEdit
 }: {
   value: string
   disabled: boolean
   sending: boolean
   canSend: boolean
+  isEditing: boolean
   textareaRef: RefObject<HTMLTextAreaElement | null>
   onChange: (value: string) => void
   onSend: () => void
   onStop: () => void
+  onCancelEdit: () => void
 }): React.JSX.Element {
   return (
     <div className="border-t border-border/70 px-4 py-3">
+      {isEditing && (
+        <div className="mb-2 flex items-center justify-between gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs text-primary">
+          <span className="flex items-center gap-1.5 font-medium">
+            <Pencil className="h-3.5 w-3.5" />
+            Editing message
+          </span>
+          <button
+            type="button"
+            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:bg-primary/15"
+            onClick={onCancelEdit}
+          >
+            <X className="h-3.5 w-3.5" />
+            Cancel
+          </button>
+        </div>
+      )}
       <div className="rounded-3xl border border-border/70 bg-muted/20 p-2 shadow-sm">
         <Textarea
           ref={textareaRef}
@@ -792,6 +830,11 @@ function BoardChatComposer({
           className="min-h-[84px] resize-none border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
+            if (event.key === 'Escape' && isEditing) {
+              event.preventDefault()
+              onCancelEdit()
+              return
+            }
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
               onSend()
@@ -875,6 +918,11 @@ export function BoardAssistantView({
   const setComposerValue = useBoardChatStore((state) => state.setComposerValue)
   const resetState = useBoardChatStore((state) => state.resetState)
   const activateScope = useBoardChatStore((state) => state.activateScope)
+  const revertMessageID = useBoardChatStore((state) => state.revertMessageID)
+  const setRevertMessageID = useBoardChatStore((state) => state.setRevertMessageID)
+  const isEditingMessage = useBoardChatStore((state) => state.isEditingMessage)
+  const setIsEditingMessage = useBoardChatStore((state) => state.setIsEditingMessage)
+  const setEditingMessageContent = useBoardChatStore((state) => state.setEditingMessageContent)
 
   const composerFocusRef = useRef<HTMLTextAreaElement | null>(null)
   const availableAgentSdks = useSettingsStore((state) => state.availableAgentSdks)
@@ -899,6 +947,12 @@ export function BoardAssistantView({
   const handleMaterializedSessionId = useCallback(
     (nextOpencodeSessionId: string) => {
       updateOpencodeSessionId(nextOpencodeSessionId)
+      // After a fork (edit + re-send), the materialized event signals the forked
+      // transcript is ready to reload. Clear all editing state so the rewound
+      // tail and "Editing" badge go away once the new transcript streams in.
+      setRevertMessageID(null)
+      setIsEditingMessage(false)
+      setEditingMessageContent(null)
       if (sessionId) {
         void dbApi.session
           .update(sessionId, {
@@ -907,7 +961,7 @@ export function BoardAssistantView({
           .catch(() => {})
       }
     },
-    [sessionId, updateOpencodeSessionId]
+    [sessionId, setEditingMessageContent, setIsEditingMessage, setRevertMessageID, updateOpencodeSessionId]
   )
 
   useEffect(() => {
@@ -1097,6 +1151,28 @@ export function BoardAssistantView({
     }
   }, [isStreaming, streamingContent, streamingParts])
 
+  // Only the last transcript user message is editable. undo() in the backend
+  // always rewinds to the most recent user message — there is no arbitrary
+  // targeting — so the pencil is hidden while the assistant is busy.
+  const editableMessageId = useMemo(() => {
+    if (status !== 'idle') return null
+    const userMsgs = messages.filter((m) => m.role === 'user' && m.kind === 'transcript')
+    return userMsgs.at(-1)?.id ?? null
+  }, [messages, status])
+
+  // Immediately hide the rewound tail after undo() so the undone messages do not
+  // flash before the forked transcript reloads.
+  //
+  // NOTE: Unlike SessionView, BoardAssistantView does not clear its messages on a
+  // `session.materialized(wasFork: true)` event. This filter plus the transcript
+  // reload (which replaces the store messages with the forked transcript) covers
+  // the gap; handleMaterializedSessionId clears revertMessageID once that lands.
+  const visibleMessages = useMemo(() => {
+    if (!revertMessageID) return messages
+    const idx = messages.findIndex((m) => m.id === revertMessageID)
+    return idx === -1 ? messages : messages.slice(0, idx)
+  }, [messages, revertMessageID])
+
   const canInteract = scope !== null && scope.kind !== 'pinned'
   const hasInvalidDrafts = drafts.some((draft) => draft.validationIssues.length > 0)
   const canSend =
@@ -1170,9 +1246,37 @@ export function BoardAssistantView({
       return
     }
 
+    // Edit flow (lazy undo): the actual undo() only fires here, on Send. It
+    // rewinds the conversation to the most recent user message; the re-sent
+    // prompt below then forks a new branch. On failure we stay in editing state
+    // so the user keeps their edited text and can retry or cancel.
+    if (isEditingMessage) {
+      if (!runtimePath || !opencodeSessionId) {
+        toast.error('Board assistant is not connected.')
+        return
+      }
+      try {
+        const undoResult = unwrapEnvelope(await opencodeApi.undo(runtimePath, opencodeSessionId))
+        if (!undoResult.success) {
+          toast.error(undoResult.error || 'Nothing to undo')
+          return
+        }
+        setRevertMessageID(undoResult.revertMessageID ?? null)
+        setIsEditingMessage(false)
+        setEditingMessageContent(null)
+      } catch {
+        toast.error('Failed to edit message.')
+        return
+      }
+    }
+
     try {
       setError(null)
       setStatus(sessionId ? 'thinking' : 'starting')
+      // Clear the revert marker before the optimistic local message is appended;
+      // otherwise visibleMessages would slice off the new message along with the
+      // rewound tail. The forked transcript reload replaces the tail afterwards.
+      setRevertMessageID(null)
       addLocalUserMessage(input)
       setComposerValue('')
 
@@ -1200,13 +1304,35 @@ export function BoardAssistantView({
     addLocalSystemMessage,
     addLocalUserMessage,
     composerValue,
+    isEditingMessage,
+    opencodeSessionId,
+    runtimePath,
     scope,
     selectedTargetProjectId,
     sessionId,
     setComposerValue,
+    setEditingMessageContent,
     setError,
+    setIsEditingMessage,
+    setRevertMessageID,
     setStatus
   ])
+
+  const handleStartEdit = useCallback(
+    (content: string) => {
+      setEditingMessageContent(content)
+      setIsEditingMessage(true)
+      setComposerValue(content)
+      composerFocusRef.current?.focus()
+    },
+    [setComposerValue, setEditingMessageContent, setIsEditingMessage]
+  )
+
+  const handleCancelEdit = useCallback(() => {
+    setIsEditingMessage(false)
+    setEditingMessageContent(null)
+    setComposerValue('')
+  }, [setComposerValue, setEditingMessageContent, setIsEditingMessage])
 
   const handleStop = useCallback(async () => {
     const state = useBoardChatStore.getState()
@@ -1512,7 +1638,7 @@ export function BoardAssistantView({
       )}
 
       <BoardChatMessageList
-        messages={messages}
+        messages={visibleMessages}
         drafts={drafts}
         draftSourceMessageId={draftSourceMessageId}
         streamingMessage={streamingMessage}
@@ -1520,6 +1646,8 @@ export function BoardAssistantView({
         activePermission={activePermission}
         activeApproval={activeApproval}
         sessionId={sessionId}
+        editableMessageId={editableMessageId}
+        onEditMessage={handleStartEdit}
         onToggleDraft={toggleDraftSelected}
         onCreateAll={() => {
           void handleCreateDrafts(false)
@@ -1549,6 +1677,7 @@ export function BoardAssistantView({
         disabled={!canInteract || (scope.kind === 'connection' && !selectedTargetProjectId)}
         sending={status === 'starting' || status === 'thinking'}
         canSend={canSend}
+        isEditing={isEditingMessage}
         textareaRef={composerFocusRef}
         onChange={setComposerValue}
         onSend={() => {
@@ -1557,6 +1686,7 @@ export function BoardAssistantView({
         onStop={() => {
           void handleStop()
         }}
+        onCancelEdit={handleCancelEdit}
       />
     </div>
   )
