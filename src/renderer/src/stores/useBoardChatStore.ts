@@ -81,6 +81,9 @@ export interface BoardChatSnapshot {
   selectedAgentSdkOverride: 'opencode' | 'claude-code' | 'codex' | null
   selectedModelOverride: SelectedModel | null
   composerValue: string
+  revertMessageID: string | null
+  isEditingMessage: boolean
+  editingMessageContent: string | null
 }
 
 interface BoardChatState extends BoardChatSnapshot {
@@ -127,6 +130,9 @@ interface BoardChatState extends BoardChatSnapshot {
   updateOpencodeSessionId: (opencodeSessionId: string) => void
   clearRuntimeSession: () => void
   setComposerValue: (value: string) => void
+  setRevertMessageID: (revertMessageID: string | null) => void
+  setIsEditingMessage: (isEditingMessage: boolean) => void
+  setEditingMessageContent: (editingMessageContent: string | null) => void
   resetState: (options?: ResetBoardChatOptions) => void
 }
 
@@ -248,7 +254,10 @@ function createInitialSnapshot(options?: ResetBoardChatOptions): BoardChatSnapsh
     runtimePath: null,
     selectedAgentSdkOverride: options?.selectedAgentSdkOverride ?? null,
     selectedModelOverride: options?.selectedModelOverride ?? null,
-    composerValue: ''
+    composerValue: '',
+    revertMessageID: null,
+    isEditingMessage: false,
+    editingMessageContent: null
   }
 }
 
@@ -274,7 +283,10 @@ function getSnapshotFromState(state: BoardChatState): BoardChatSnapshot {
     runtimePath: state.runtimePath,
     selectedAgentSdkOverride: state.selectedAgentSdkOverride,
     selectedModelOverride: state.selectedModelOverride,
-    composerValue: state.composerValue
+    composerValue: state.composerValue,
+    revertMessageID: state.revertMessageID,
+    isEditingMessage: state.isEditingMessage,
+    editingMessageContent: state.editingMessageContent
   }
 }
 
@@ -358,6 +370,9 @@ function createBaseState(): Omit<
   | 'updateOpencodeSessionId'
   | 'clearRuntimeSession'
   | 'setComposerValue'
+  | 'setRevertMessageID'
+  | 'setIsEditingMessage'
+  | 'setEditingMessageContent'
   | 'resetState'
 > {
   return {
@@ -1062,6 +1077,12 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
     ),
   setComposerValue: (composerValue) =>
     set((state) => patchActiveSnapshot(state, { composerValue })),
+  setRevertMessageID: (revertMessageID) =>
+    set((state) => patchActiveSnapshot(state, { revertMessageID })),
+  setIsEditingMessage: (isEditingMessage) =>
+    set((state) => patchActiveSnapshot(state, { isEditingMessage })),
+  setEditingMessageContent: (editingMessageContent) =>
+    set((state) => patchActiveSnapshot(state, { editingMessageContent })),
   resetState: (options) =>
     set((state) =>
       replaceActiveSnapshot(
