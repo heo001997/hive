@@ -229,17 +229,16 @@ export function useSessionStream({
         if (result.success && result.messages) {
           const refreshed = mapOpencodeMessagesToSessionViewMessages(result.messages as unknown[])
 
-          if (refreshed.length > 0) {
-            setMessages(refreshed)
-          } else if (streamedPartsSnapshot.length > 0 || streamedContentSnapshot.length > 0) {
-            // Fallback: use appendStreamedAssistantFallback
-            setMessages((current) =>
-              appendStreamedAssistantFallback(current, {
-                streamedContent: streamedContentSnapshot,
-                streamedParts: streamedPartsSnapshot
-              })
-            )
-          }
+          // Preserve any partial streamed content (e.g. user clicked Stop)
+          // that the reloaded transcript doesn't already cover, by appending
+          // it as a synthetic assistant message. appendStreamedAssistantFallback
+          // is a no-op when the partial is empty or already covered.
+          setMessages(
+            appendStreamedAssistantFallback(refreshed, {
+              streamedContent: streamedContentSnapshot,
+              streamedParts: streamedPartsSnapshot
+            })
+          )
         }
       } catch (error) {
         console.error('[useSessionStream] Failed to refresh messages:', error)
