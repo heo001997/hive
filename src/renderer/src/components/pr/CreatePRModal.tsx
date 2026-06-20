@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   GitPullRequest,
   GitBranch,
+  GitFork,
   Check,
   Loader2,
   AlertCircle,
@@ -25,6 +26,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { toast } from '@/lib/toast'
 import { resolvePRContentProvider } from '@/lib/pr-content-provider'
 import { useGitStore, type GitFileStatus } from '@/stores/useGitStore'
+import type { GitRemote } from '@/api/git-api'
 import { usePRNotificationStore } from '@/stores/usePRNotificationStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
@@ -94,7 +96,10 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [baseBranch, setBaseBranch] = useState('')
+  const [baseRemote, setBaseRemote] = useState('origin')
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
+  const [remoteDropdownOpen, setRemoteDropdownOpen] = useState(false)
+  const [remotes, setRemotes] = useState<GitRemote[]>([])
   const [remoteBranches, setRemoteBranches] = useState<{ name: string; isRemote: boolean }[]>([])
   const [commitCount, setCommitCount] = useState<number | null>(null)
   const [loadingBranches, setLoadingBranches] = useState(false)
@@ -134,20 +139,41 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
     setCommitError('')
     setIsStaging(false)
 
-    // Pre-fill base branch from store
-    setBaseBranch(prTargetBranch?.replace(/^origin\//, '') ?? 'main')
-
-    // Fetch remote branches
+    // Fetch remotes + remote branches together so we can scope the base-branch
+    // list to the chosen repository (origin vs. upstream).
     setLoadingBranches(true)
-    gitApi
-      .listBranchesWithStatus(worktreePath)
-      .then((result) => {
-        if (result.success) {
-          setRemoteBranches(result.branches.filter((b) => b.isRemote))
+    Promise.all([
+      gitApi.listRemotes(worktreePath),
+      gitApi.listBranchesWithStatus(worktreePath)
+    ])
+      .then(([remotesResult, branchesResult]) => {
+        const remoteList: GitRemote[] =
+          remotesResult.success && remotesResult.remotes.length > 0
+            ? remotesResult.remotes
+            : [{ name: 'origin', url: null }]
+        setRemotes(remoteList)
+
+        if (branchesResult.success) {
+          setRemoteBranches(branchesResult.branches.filter((b) => b.isRemote))
+        }
+
+        // Restore the previously selected "<remote>/<branch>" target if any.
+        const names = remoteList.map((r) => r.name)
+        const stored = prTargetBranch ?? ''
+        const slashIndex = stored.indexOf('/')
+        const maybeRemote = slashIndex > 0 ? stored.slice(0, slashIndex) : ''
+        if (maybeRemote && names.includes(maybeRemote)) {
+          setBaseRemote(maybeRemote)
+          setBaseBranch(stored.slice(slashIndex + 1) || 'main')
+        } else {
+          setBaseRemote(names.includes('origin') ? 'origin' : (names[0] ?? 'origin'))
+          setBaseBranch(stored.replace(/^[^/]+\//, '') || 'main')
         }
       })
       .catch(() => {
-        // Non-critical
+        // Non-critical — keep defaults
+        setBaseRemote('origin')
+        setBaseBranch(prTargetBranch?.replace(/^[^/]+\//, '') ?? 'main')
       })
       .finally(() => setLoadingBranches(false))
 
@@ -161,41 +187,74 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
       })
   }, [open, worktreePath, prTargetBranch, loadFileStatuses, sessionTitles])
 
-  // ── Refresh commit count when base branch changes ───────────────
+  // ── Comparison ref: the remote-qualified base, e.g. "upstream/main" ──
+  const comparisonRef = useMemo(
+    () => (baseRemote && baseBranch ? `${baseRemote}/${baseBranch}` : baseBranch),
+    [baseRemote, baseBranch]
+  )
+
+  // ── Refresh commit count when base branch/remote changes ────────
   useEffect(() => {
-    if (!open || !baseBranch) return
+    if (!open || !comparisonRef) return
     setCommitCount(null)
     gitApi
-      .getRangeDiff(worktreePath, baseBranch)
+      .getRangeDiff(worktreePath, comparisonRef)
       .then((rd) => setCommitCount(rd.commitCount))
       .catch(() => {
         // Non-critical
       })
-  }, [open, worktreePath, baseBranch])
+  }, [open, worktreePath, comparisonRef])
 
-  // ── Derived: clean branch names for dropdown ────────────────────
-  const branchOptions = useMemo(() => {
-    const seen = new Set<string>()
-    const result: string[] = []
-    for (const b of remoteBranches) {
-      // Strip origin/ prefix for display
-      const name = b.name.replace(/^origin\//, '')
-      if (!seen.has(name)) {
+  // ── Derived: branch names for the selected remote ───────────────
+  const branchOptionsFor = useCallback(
+    (remote: string): string[] => {
+      const prefix = `${remote}/`
+      const seen = new Set<string>()
+      const result: string[] = []
+      for (const b of remoteBranches) {
+        if (!b.name.startsWith(prefix)) continue
+        const name = b.name.slice(prefix.length)
+        // Skip the symbolic "origin/HEAD" pointer
+        if (name === 'HEAD' || seen.has(name)) continue
         seen.add(name)
         result.push(name)
       }
-    }
-    // Ensure current baseBranch is in the list
+      return result.sort((a, b) => {
+        if (a === defaultBranchName) return -1
+        if (b === defaultBranchName) return 1
+        return a.localeCompare(b)
+      })
+    },
+    [remoteBranches, defaultBranchName]
+  )
+
+  const branchOptions = useMemo(() => {
+    const result = branchOptionsFor(baseRemote)
+    // Ensure the current baseBranch is always selectable
     if (baseBranch && !result.includes(baseBranch)) {
-      result.unshift(baseBranch)
+      return [baseBranch, ...result]
     }
-    // Sort alphabetically, but pin the default branch to the top
-    return result.sort((a, b) => {
-      if (a === defaultBranchName) return -1
-      if (b === defaultBranchName) return 1
-      return a.localeCompare(b)
-    })
-  }, [remoteBranches, baseBranch, defaultBranchName])
+    return result
+  }, [branchOptionsFor, baseRemote, baseBranch])
+
+  // ── Switch target repository, picking a sensible default branch ──
+  const handleSelectRemote = useCallback(
+    (remote: string) => {
+      setBaseRemote(remote)
+      setRemoteDropdownOpen(false)
+      const opts = branchOptionsFor(remote)
+      const next =
+        defaultBranchName && opts.includes(defaultBranchName)
+          ? defaultBranchName
+          : opts.includes('main')
+            ? 'main'
+            : opts.includes('master')
+              ? 'master'
+              : (opts[0] ?? baseBranch)
+      if (next) setBaseBranch(next)
+    },
+    [branchOptionsFor, defaultBranchName, baseBranch]
+  )
 
   // ── Commit phase handlers ────────────────────────────────────
   const handleStageAll = useCallback(async () => {
@@ -239,9 +298,9 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
         description: result.commitHash ? `Commit: ${result.commitHash.slice(0, 7)}` : undefined
       })
       // Refresh commit count and branch info after committing
-      if (baseBranch) {
+      if (comparisonRef) {
         gitApi
-          .getRangeDiff(worktreePath, baseBranch)
+          .getRangeDiff(worktreePath, comparisonRef)
           .then((rd) => setCommitCount(rd.commitCount))
           .catch(() => {})
       }
@@ -250,7 +309,7 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
     } else {
       setCommitError(result.error ?? 'Commit failed')
     }
-  }, [worktreePath, commitSummary, commitDescription, gitCommit, baseBranch])
+  }, [worktreePath, commitSummary, commitDescription, gitCommit, comparisonRef])
 
   const handleSkipCommit = useCallback(() => {
     setPhase('form')
@@ -262,14 +321,18 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
 
     // Capture form values before closing
     const targetBase = baseBranch
+    const targetRemote = baseRemote || 'origin'
     const prTitle = title.trim()
     const prBody = body.trim()
     const branchName = branchInfo?.name ?? 'Pull Request'
     const provider = resolvePRContentProvider(defaultAgentSdk, availableAgentSdks)
 
+    // Remote-qualified base ref (e.g. "upstream/main") used for diffs/content.
+    const targetRef = `${targetRemote}/${targetBase}`
+
     // Persist the selected target branch so the Header dropdowns keep showing it
     // after the push changes branchInfo.tracking
-    const normalizedTarget = targetBase.startsWith('origin/') ? targetBase : `origin/${targetBase}`
+    const normalizedTarget = targetRef
     useGitStore.getState().setPrTargetBranch(worktreeId, normalizedTarget)
     // Also pin the review dropdown so it doesn't shift to the pushed branch
     if (!useGitStore.getState().reviewTargetBranch.get(worktreeId)) {
@@ -319,7 +382,7 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
             'No AI provider available for PR content generation. Using default title and description.'
         } else {
           try {
-            const genResult = await gitApi.generatePRContent(worktreePath, targetBase, provider)
+            const genResult = await gitApi.generatePRContent(worktreePath, targetRef, provider)
             if (genResult.success) {
               if (!finalTitle && genResult.title) finalTitle = genResult.title
               if (!finalBody && genResult.body) finalBody = genResult.body
@@ -343,7 +406,13 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
 
       // Step 3: Create PR
       update(notifId, { message: 'Creating pull request...' })
-      const createResult = await gitApi.createPR(worktreePath, targetBase, finalTitle, finalBody)
+      const createResult = await gitApi.createPR(
+        worktreePath,
+        targetBase,
+        finalTitle,
+        finalBody,
+        targetRemote
+      )
 
       if (!createResult.success) {
         // The backend populates url/number even on failure when a PR already
@@ -442,6 +511,7 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
     worktreePath,
     worktreeId,
     baseBranch,
+    baseRemote,
     title,
     body,
     defaultAgentSdk,
@@ -584,6 +654,65 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
           )}
         </div>
       </div>
+
+      {/* Target repository dropdown — only when more than one remote exists */}
+      {remotes.length > 1 && (
+        <div className="space-y-1.5">
+          <label htmlFor="pr-base-remote" className="text-sm font-medium text-foreground">
+            Target repository
+          </label>
+          <Popover open={remoteDropdownOpen} onOpenChange={setRemoteDropdownOpen}>
+            <PopoverTrigger asChild>
+              <button
+                id="pr-base-remote"
+                type="button"
+                className={cn(
+                  'flex items-center justify-between w-full px-3 py-2 text-sm border rounded-md',
+                  'bg-background hover:bg-accent/50 transition-colors text-left'
+                )}
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <GitFork className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <span className="truncate">{baseRemote}</span>
+                </span>
+                <ChevronDown
+                  className={cn(
+                    'h-3.5 w-3.5 text-muted-foreground transition-transform',
+                    remoteDropdownOpen && 'rotate-180'
+                  )}
+                />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+              <div className="max-h-[200px] overflow-y-auto">
+                {remotes.map((remote) => (
+                  <button
+                    key={remote.name}
+                    type="button"
+                    className={cn(
+                      'flex items-center gap-2 w-full px-3 py-2 text-sm text-left',
+                      'hover:bg-accent transition-colors',
+                      remote.name === baseRemote && 'bg-accent'
+                    )}
+                    onClick={() => handleSelectRemote(remote.name)}
+                  >
+                    <GitFork className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <span className="flex flex-col min-w-0">
+                      <span className="truncate">{remote.name}</span>
+                      {remote.url && (
+                        <span className="truncate text-xs text-muted-foreground">{remote.url}</span>
+                      )}
+                    </span>
+                    {remote.name === baseRemote && (
+                      <Check className="h-3 w-3 ml-auto text-primary shrink-0" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+        </div>
+      )}
 
       {/* Base branch dropdown */}
       <div className="space-y-1.5">

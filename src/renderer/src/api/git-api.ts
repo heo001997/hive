@@ -179,6 +179,17 @@ type GitRemoteUrlResult = {
   error?: string
 }
 
+export type GitRemote = {
+  name: string
+  url: string | null
+}
+
+export type GitListRemotesResult = {
+  success: boolean
+  remotes: GitRemote[]
+  error?: string
+}
+
 type GitDiffStatFile = {
   path: string
   additions: number
@@ -240,13 +251,15 @@ export const gitApi = {
     worktreePath: string,
     baseBranch: string,
     title: string,
-    body: string
+    body: string,
+    remote?: string
   ): Promise<GitCreatePRResult> =>
     getRendererRpcClient().request<GitCreatePRResult>('gitOps.createPR', {
       worktreePath,
       baseBranch,
       title,
-      body
+      body,
+      remote
     }),
   branchDiffShortStat: async (
     worktreePath: string,
@@ -375,6 +388,10 @@ export const gitApi = {
     getRendererRpcClient().request<GitRemoteUrlResult>('gitOps.getRemoteUrl', {
       worktreePath,
       remote
+    }),
+  listRemotes: async (worktreePath: string): Promise<GitListRemotesResult> =>
+    getRendererRpcClient().request<GitListRemotesResult>('gitOps.listRemotes', {
+      worktreePath
     }),
   getRangeDiff: async (worktreePath: string, baseBranch: string): Promise<GitRangeDiffResult> =>
     getRendererRpcClient().request<GitRangeDiffResult>('gitOps.getRangeDiff', {

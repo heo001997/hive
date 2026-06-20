@@ -428,6 +428,48 @@ describe('gitApi', () => {
     })
   })
 
+  it('routes createPR with an explicit target remote', async () => {
+    const result = {
+      success: true,
+      url: 'https://github.com/acme/hive/pull/9',
+      number: 9
+    }
+    const request = vi.fn().mockResolvedValue(result)
+    const subscribe = vi.fn()
+
+    setRendererRpcClient({ request, subscribe })
+
+    await expect(
+      gitApi.createPR('/tmp/hive', 'main', 'Add RPC', 'Body text', 'upstream')
+    ).resolves.toBe(result)
+    expect(request).toHaveBeenCalledWith('gitOps.createPR', {
+      worktreePath: '/tmp/hive',
+      baseBranch: 'main',
+      title: 'Add RPC',
+      body: 'Body text',
+      remote: 'upstream'
+    })
+  })
+
+  it('routes listRemotes through the renderer RPC client', async () => {
+    const result = {
+      success: true,
+      remotes: [
+        { name: 'origin', url: 'https://github.com/me/hive.git' },
+        { name: 'upstream', url: 'https://github.com/acme/hive.git' }
+      ]
+    }
+    const request = vi.fn().mockResolvedValue(result)
+    const subscribe = vi.fn()
+
+    setRendererRpcClient({ request, subscribe })
+
+    await expect(gitApi.listRemotes('/tmp/hive')).resolves.toBe(result)
+    expect(request).toHaveBeenCalledWith('gitOps.listRemotes', {
+      worktreePath: '/tmp/hive'
+    })
+  })
+
   it('routes getRemoteUrl through the renderer RPC client', async () => {
     const result = {
       success: true,

@@ -10006,6 +10006,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -10167,6 +10172,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -10334,6 +10344,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -10495,6 +10510,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -10662,6 +10682,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -10823,6 +10848,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -10990,6 +11020,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -11151,6 +11186,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -11318,6 +11358,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -11479,6 +11524,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -11646,6 +11696,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -11807,6 +11862,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -11974,6 +12034,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -12135,6 +12200,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -12302,6 +12372,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -12463,6 +12538,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -12630,6 +12710,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -12791,6 +12876,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -12958,6 +13048,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -13119,6 +13214,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -13286,6 +13386,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -13447,6 +13552,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -13616,6 +13726,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -13777,6 +13892,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -13944,6 +14064,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -14105,6 +14230,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -14272,6 +14402,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -14433,6 +14568,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -14756,6 +14896,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -14917,6 +15062,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -15084,6 +15234,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -15245,6 +15400,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -15412,6 +15572,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -15573,6 +15738,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -15740,6 +15910,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -15901,6 +16076,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -16068,6 +16248,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -16229,6 +16414,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -16396,6 +16586,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -16557,6 +16752,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -16722,6 +16922,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -16890,6 +17095,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -17188,6 +17398,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -17350,6 +17565,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -17510,6 +17730,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -17673,6 +17898,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -17833,6 +18063,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -17995,6 +18230,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -18329,6 +18569,11 @@ describe('rpc router', () => {
               remote: remote || 'origin'
             }
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -18495,6 +18740,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -18656,6 +18906,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: (worktreePath) =>
           Effect.sync(() => {
@@ -18824,6 +19079,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -19388,6 +19648,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -19560,6 +19825,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -19721,6 +19991,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -19888,6 +20163,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -20049,6 +20329,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -20216,6 +20501,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -20377,6 +20667,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -20550,6 +20845,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -20711,6 +21011,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -20877,6 +21182,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({
@@ -21056,6 +21366,11 @@ describe('rpc router', () => {
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
           }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
+          }),
         getDiffStat: () =>
           Effect.succeed({
             success: true,
@@ -21220,6 +21535,11 @@ describe('rpc router', () => {
             success: true,
             url: 'https://github.com/example/hive.git',
             remote: 'origin'
+          }),
+        listRemotes: () =>
+          Effect.succeed({
+            success: true,
+            remotes: [{ name: 'origin', url: 'https://github.com/example/hive.git' }]
           }),
         getDiffStat: () =>
           Effect.succeed({

@@ -135,6 +135,17 @@ export interface GitRemoteUrlResult {
   readonly error?: string
 }
 
+export interface GitRemote {
+  readonly name: string
+  readonly url: string | null
+}
+
+export interface GitListRemotesResult {
+  readonly success: boolean
+  readonly remotes: GitRemote[]
+  readonly error?: string
+}
+
 export interface GitDiffStatFile {
   path: string
   additions: number
@@ -353,6 +364,9 @@ export interface GitOpsRpcService {
     worktreePath: string,
     remote?: string
   ) => Effect.Effect<GitRemoteUrlResult, unknown, never>
+  readonly listRemotes: (
+    worktreePath: string
+  ) => Effect.Effect<GitListRemotesResult, unknown, never>
   readonly getDiffStat: (worktreePath: string) => Effect.Effect<GitDiffStatResult, unknown, never>
   readonly getBranchDiffFiles: (
     worktreePath: string,
@@ -372,7 +386,8 @@ export interface GitOpsRpcService {
     worktreePath: string,
     baseBranch: string,
     title: string,
-    body: string
+    body: string,
+    baseRemote?: string
   ) => Effect.Effect<GitCreatePullRequestResult, unknown, never>
   readonly generatePRContent: (
     worktreePath: string,
@@ -470,7 +485,8 @@ const createPullRequestParamsSchema = z
     worktreePath: z.string().min(1),
     baseBranch: z.string().min(1),
     title: z.string(),
-    body: z.string()
+    body: z.string(),
+    remote: z.string().optional()
   })
   .strict()
 const generatePullRequestContentParamsSchema = z
@@ -553,6 +569,16 @@ const invalidBranch = (branch: string): boolean => !branch || branch.startsWith(
 
 const normalizeBranchDisplayName = (branchName: string): string =>
   branchName.startsWith('remotes/') ? branchName.replace(/^remotes\//, '') : branchName
+
+// Parse an "owner/repo" slug from a git remote URL (https or ssh forms).
+// e.g. git@github.com:owner/repo.git -> { owner, name: 'repo' }
+const parseRepoSlug = (url: string | null | undefined): { owner: string; name: string } | null => {
+  if (!url) return null
+  const cleaned = url.trim().replace(/\.git$/, '')
+  const match = cleaned.match(/[:/]([^/:]+)\/([^/]+?)$/)
+  if (!match) return null
+  return { owner: match[1], name: match[2] }
+}
 
 const canonicalizePathForComparison = (path: string): string => {
   try {
@@ -1265,6 +1291,28 @@ export const makeLiveGitOpsRpcService = (
         },
         catch: (cause) => cause
       }),
+    listRemotes: (worktreePath) =>
+      Effect.tryPromise({
+        try: async (): Promise<GitListRemotesResult> => {
+          try {
+            const remotes = await simpleGit(worktreePath).getRemotes(true)
+            return {
+              success: true,
+              remotes: remotes.map((candidate) => ({
+                name: candidate.name,
+                url: candidate.refs?.fetch || candidate.refs?.push || null
+              }))
+            }
+          } catch (error) {
+            return {
+              success: false,
+              remotes: [],
+              error: error instanceof Error ? error.message : 'Unknown error'
+            }
+          }
+        },
+        catch: (cause) => cause
+      }),
     getDiffStat: (worktreePath) =>
       Effect.tryPromise({
         try: async (): Promise<GitDiffStatResult> => {
@@ -1472,14 +1520,55 @@ export const makeLiveGitOpsRpcService = (
         },
         catch: () => false
       }),
-    createPR: (worktreePath, baseBranch, title, body) =>
+    createPR: (worktreePath, baseBranch, title, body, baseRemote) =>
       Effect.tryPromise({
         try: async (): Promise<GitCreatePullRequestResult> => {
           if (invalidBranch(baseBranch)) {
             return { success: false, error: 'Invalid branch name' }
           }
 
-          const normalizedBaseBranch = baseBranch.replace(/^[^/]+\//, '')
+          // Strip a leading "<remote>/" prefix only when it matches a real
+          // remote, so slash-containing base branches (e.g. release/2.0) survive.
+          let normalizedBaseBranch = baseBranch
+
+          // Resolve the target repository (base) and head from the selected
+          // remote. Passing --repo/--head explicitly makes the command
+          // non-interactive even when the worktree is a fork with multiple
+          // remotes (otherwise gh would prompt for parent vs. fork).
+          const repoArgs: string[] = []
+          try {
+            const remoteName = baseRemote?.trim() || 'origin'
+            const remotes = await simpleGit(worktreePath).getRemotes(true)
+            const firstSegment = baseBranch.split('/')[0]
+            if (remotes.some((candidate) => candidate.name === firstSegment)) {
+              normalizedBaseBranch = baseBranch.slice(firstSegment.length + 1)
+            }
+            const baseRemoteObj = remotes.find((candidate) => candidate.name === remoteName)
+            const baseSlug = parseRepoSlug(
+              baseRemoteObj?.refs?.push || baseRemoteObj?.refs?.fetch
+            )
+            if (baseSlug) {
+              repoArgs.push('--repo', `${baseSlug.owner}/${baseSlug.name}`)
+              const currentBranch = (await simpleGit(worktreePath).branch()).current
+              if (currentBranch) {
+                // The branch is pushed to origin (the fork). When the base repo
+                // belongs to a different owner, the head must be qualified as
+                // "owner:branch" so gh creates a cross-repository pull request.
+                const originObj = remotes.find((candidate) => candidate.name === 'origin')
+                const originSlug = parseRepoSlug(originObj?.refs?.push || originObj?.refs?.fetch)
+                const headArg =
+                  originSlug && originSlug.owner !== baseSlug.owner
+                    ? `${originSlug.owner}:${currentBranch}`
+                    : currentBranch
+                repoArgs.push('--head', headArg)
+              }
+            }
+          } catch {
+            // No remote metadata available — best-effort strip of a leading
+            // "<something>/" prefix and let gh detect the remote/head.
+            normalizedBaseBranch = baseBranch.replace(/^[^/]+\//, '')
+          }
+
           const tempDir = mkdtempSync(join(tmpdir(), 'hive-gh-pr-'))
           const tempFile = join(tempDir, 'body.md')
 
@@ -1492,6 +1581,7 @@ export const makeLiveGitOpsRpcService = (
                 'create',
                 '--base',
                 normalizedBaseBranch,
+                ...repoArgs,
                 '--title',
                 title,
                 '--body-file',
@@ -2244,6 +2334,17 @@ export const makeGitOpsRpcHandlers = (
         })
     ],
     [
+      'gitOps.listRemotes',
+      (params) =>
+        Effect.gen(function* () {
+          const { worktreePath } = yield* Effect.try({
+            try: () => worktreePathParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.listRemotes(worktreePath)
+        })
+    ],
+    [
       'gitOps.getDiffStat',
       (params) =>
         Effect.gen(function* () {
@@ -2302,11 +2403,11 @@ export const makeGitOpsRpcHandlers = (
       'gitOps.createPR',
       (params) =>
         Effect.gen(function* () {
-          const { worktreePath, baseBranch, title, body } = yield* Effect.try({
+          const { worktreePath, baseBranch, title, body, remote } = yield* Effect.try({
             try: () => createPullRequestParamsSchema.parse(params),
             catch: (cause) => cause
           })
-          return yield* service.createPR(worktreePath, baseBranch, title, body)
+          return yield* service.createPR(worktreePath, baseBranch, title, body, remote)
         })
     ],
     [

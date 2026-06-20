@@ -2009,7 +2009,8 @@ describe('git ops RPC mocked provider', () => {
       })
     )
 
-    expect(createPR).toHaveBeenCalledWith('/repo', 'main', 'Ship feature', 'PR body')
+    // The optional target remote is forwarded as undefined when not provided.
+    expect(createPR).toHaveBeenCalledWith('/repo', 'main', 'Ship feature', 'PR body', undefined)
     expect(response).toEqual({
       id: 'git-create-pr-1',
       ok: true,
