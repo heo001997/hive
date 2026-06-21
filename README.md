@@ -47,7 +47,7 @@
 
 ## Installation
 
-Hive supports **macOS**, **Windows**, and **Linux**.
+Hive runs natively on **macOS**, **Windows**, and **Linux**.
 
 ### macOS
 
