@@ -17,6 +17,7 @@ import { telegramApi } from '@/api/telegram-api'
 import { settingsApi } from '@/api/settings-api'
 import type { CustomProjectCommand } from '@/lib/custom-commands'
 import { validateCustomCommand } from '@/lib/custom-commands'
+import { DEFAULT_KANBAN_COLUMN_COLORS } from '@/lib/kanban-column-colors'
 import { toast } from '@/lib/toast'
 
 // ==========================================
@@ -81,6 +82,8 @@ export interface AppSettings {
   mergeConflictMode: MergeConflictMode
   boardMode: 'toggle' | 'sticky-tab'
   followUpTriggerColumn: FollowUpTriggerColumn
+  /** Per-column head color on the Kanban board. Value is a preset key (e.g. 'blue') or a hex string. */
+  kanbanColumnColors: Record<string, string>
   autoPinBaseWorktreeOnBoardPrompt: boolean
   /** Auto-create a kanban ticket on the first message of a manually-created session. */
   automaticallyCreateTicket: boolean
@@ -202,6 +205,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   mergeConflictMode: 'always-ask',
   boardMode: 'sticky-tab',
   followUpTriggerColumn: 'done',
+  kanbanColumnColors: { ...DEFAULT_KANBAN_COLUMN_COLORS },
   autoPinBaseWorktreeOnBoardPrompt: false,
   automaticallyCreateTicket: false,
   defaultEditor: 'vscode',
@@ -312,6 +316,7 @@ interface SettingsState extends AppSettings {
   ) => SelectedModel | null
   setLastHandoffOverride: (value: AppSettings['lastHandoffOverride']) => void
   toggleFavoriteModel: (providerID: string, modelID: string) => void
+  setKanbanColumnColor: (column: string, value: string) => void
   setModelVariantDefault: (providerID: string, modelID: string, variant: string) => void
   getModelVariantDefault: (providerID: string, modelID: string) => string | undefined
   resetToDefaults: () => void
@@ -359,6 +364,11 @@ async function loadSettingsFromDatabase(): Promise<AppSettings | null> {
           pet: {
             ...DEFAULT_SETTINGS.pet,
             ...(parsed.pet || {})
+          },
+          // Merge so new columns always have a default even for older saved settings.
+          kanbanColumnColors: {
+            ...DEFAULT_SETTINGS.kanbanColumnColors,
+            ...(parsed.kanbanColumnColors || {})
           },
           teleport: parsed.teleport ?? null
         }
@@ -426,6 +436,7 @@ function extractSettings(state: SettingsState): AppSettings {
     mergeConflictMode: state.mergeConflictMode,
     boardMode: state.boardMode,
     followUpTriggerColumn: state.followUpTriggerColumn,
+    kanbanColumnColors: state.kanbanColumnColors,
     autoPinBaseWorktreeOnBoardPrompt: state.autoPinBaseWorktreeOnBoardPrompt,
     automaticallyCreateTicket: state.automaticallyCreateTicket,
     defaultEditor: state.defaultEditor,
@@ -716,6 +727,13 @@ export const useSettingsStore = create<SettingsState>()(
         saveToDatabase(settings)
       },
 
+      setKanbanColumnColor: (column: string, value: string) => {
+        const updated = { ...get().kanbanColumnColors, [column]: value }
+        set({ kanbanColumnColors: updated })
+        const settings = extractSettings({ ...get(), kanbanColumnColors: updated } as SettingsState)
+        saveToDatabase(settings)
+      },
+
       resetToDefaults: () => {
         set({ ...DEFAULT_SETTINGS })
         saveToDatabase(DEFAULT_SETTINGS)
@@ -793,6 +811,7 @@ export const useSettingsStore = create<SettingsState>()(
         mergeConflictMode: state.mergeConflictMode,
         boardMode: state.boardMode,
         followUpTriggerColumn: state.followUpTriggerColumn,
+        kanbanColumnColors: state.kanbanColumnColors,
         autoPinBaseWorktreeOnBoardPrompt: state.autoPinBaseWorktreeOnBoardPrompt,
         automaticallyCreateTicket: state.automaticallyCreateTicket,
         defaultEditor: state.defaultEditor,

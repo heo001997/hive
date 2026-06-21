@@ -5,6 +5,8 @@ import { cn } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 import { lastSendMode } from '@/lib/message-send-times'
 import { Switch } from '@/components/ui/switch'
+import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { KanbanTicketCard } from '@/components/kanban/KanbanTicketCard'
 import { TicketCreateModal } from '@/components/kanban/TicketCreateModal'
@@ -38,6 +40,15 @@ import type { MarkdownCardPlaceholder } from '@/stores/useKanbanStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useUsageStore, resolveDefaultUsageProvider } from '@/stores/useUsageStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
+import {
+  KANBAN_COLUMN_COLOR_ORDER,
+  KANBAN_COLUMN_COLOR_PRESETS,
+  KANBAN_COLUMN_COLOR_LABELS,
+  columnColorValue,
+  resolveColumnColor,
+  isHexColor,
+  hexToRgba
+} from '@/lib/kanban-column-colors'
 import { isBlockerSatisfied } from '@/lib/blocker-utils'
 import type {
   KanbanTicket,
@@ -65,6 +76,78 @@ const COLUMN_TITLES: Record<ColumnType, string> = {
   in_progress: 'In Progress',
   review: 'Review',
   done: 'Done'
+}
+
+// ── Column head color picker (preset swatches + custom hex) ─────────
+function ColumnColorPicker({
+  value,
+  onChange
+}: {
+  value: string
+  onChange: (value: string) => void
+}) {
+  const [hexDraft, setHexDraft] = useState(isHexColor(value) ? value : '')
+  const hexValid = isHexColor(hexDraft)
+  const customActive = isHexColor(value)
+
+  const commitHex = (): void => {
+    if (hexValid) onChange(hexDraft.trim())
+  }
+
+  return (
+    <div className="flex w-52 flex-col gap-3">
+      <div className="grid grid-cols-5 gap-2">
+        {KANBAN_COLUMN_COLOR_ORDER.map((key) => (
+          <button
+            key={key}
+            type="button"
+            title={KANBAN_COLUMN_COLOR_LABELS[key]}
+            onClick={() => onChange(key)}
+            className={cn(
+              'h-7 w-7 rounded-full border border-black/10 transition-transform hover:scale-110 dark:border-white/10',
+              KANBAN_COLUMN_COLOR_PRESETS[key].swatch,
+              value === key && 'ring-2 ring-foreground ring-offset-2 ring-offset-popover'
+            )}
+          />
+        ))}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Input
+          value={hexDraft}
+          onChange={(e) => setHexDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commitHex()
+            }
+          }}
+          placeholder="#FF5733"
+          spellCheck={false}
+          className={cn('h-7 text-xs', customActive && 'ring-1 ring-foreground')}
+        />
+        <button
+          type="button"
+          disabled={!hexValid}
+          onClick={commitHex}
+          className="h-7 shrink-0 rounded-md border px-2 text-xs font-medium transition-colors hover:bg-muted/40 disabled:pointer-events-none disabled:opacity-50"
+        >
+          Set
+        </button>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => onChange('none')}
+        className={cn(
+          'rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/40',
+          value === 'none' && 'ring-1 ring-foreground'
+        )}
+      >
+        None (default gray)
+      </button>
+    </div>
+  )
 }
 
 function fileNameFromPath(filePath: string): string {
@@ -248,6 +331,13 @@ export function KanbanColumn({
   const showArchived = useKanbanStore(
     useCallback((state) => state.showArchivedByProject[projectId] ?? false, [projectId])
   )
+
+  // ── Column head color (global, per-column preference) ────────────
+  const columnColor = useSettingsStore(
+    useCallback((state) => columnColorValue(state.kanbanColumnColors, column), [column])
+  )
+  const setKanbanColumnColor = useSettingsStore((state) => state.setKanbanColumnColor)
+  const resolvedColor = resolveColumnColor(columnColor)
 
   // ── Measure header and pick title fit mode (In Progress column only) ─────
   useLayoutEffect(() => {
@@ -664,7 +754,18 @@ export function KanbanColumn({
           <div
             ref={headerRef}
             data-title-mode={isInProgressColumn ? titleMode : 'centered'}
-            className="relative flex items-center px-2 pb-3"
+            className={cn(
+              'relative flex items-center rounded-md border border-transparent px-2 py-2 transition-colors',
+              resolvedColor.preset?.header
+            )}
+            style={
+              resolvedColor.customHex
+                ? {
+                    backgroundColor: hexToRgba(resolvedColor.customHex, 0.1),
+                    borderColor: hexToRgba(resolvedColor.customHex, 0.25)
+                  }
+                : undefined
+            }
           >
             {/* Left spacer — mirrors right toggle width to keep title centered.
                 For In Progress, only rendered in 'centered' mode so that
@@ -695,15 +796,46 @@ export function KanbanColumn({
                 </button>
               )}
 
-              <h3 className="whitespace-nowrap text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {isInProgressColumn && titleMode === 'abbreviated'
-                  ? 'In Prog'
-                  : COLUMN_TITLES[column]}
-              </h3>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    title="Change column color"
+                    className={cn(
+                      'inline-flex items-center whitespace-nowrap rounded text-xs font-semibold uppercase tracking-wider transition-colors hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                      resolvedColor.preset?.title ??
+                        (resolvedColor.customHex ? undefined : 'text-muted-foreground')
+                    )}
+                    style={resolvedColor.customHex ? { color: resolvedColor.customHex } : undefined}
+                  >
+                    {isInProgressColumn && titleMode === 'abbreviated'
+                      ? 'In Prog'
+                      : COLUMN_TITLES[column]}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="center" className="w-auto p-3">
+                  <ColumnColorPicker
+                    value={columnColor}
+                    onChange={(value) => setKanbanColumnColor(column, value)}
+                  />
+                </PopoverContent>
+              </Popover>
 
               <span
                 ref={badgeRef}
-                className="inline-flex h-5 min-w-[20px] items-center justify-center gap-0.5 rounded-full bg-muted/40 px-1.5 text-[11px] font-medium text-muted-foreground"
+                className={cn(
+                  'inline-flex h-5 min-w-[20px] items-center justify-center gap-0.5 rounded-full px-1.5 text-[11px] font-medium',
+                  resolvedColor.preset?.badge ??
+                    (resolvedColor.customHex ? undefined : 'bg-muted/40 text-muted-foreground')
+                )}
+                style={
+                  resolvedColor.customHex
+                    ? {
+                        backgroundColor: hexToRgba(resolvedColor.customHex, 0.15),
+                        color: resolvedColor.customHex
+                      }
+                    : undefined
+                }
               >
                 {showArchived && archivedTickets && archivedTickets.length > 0 ? (
                   <>
