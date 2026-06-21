@@ -1243,9 +1243,6 @@ describe('git ops RPC domain', () => {
             stderr: ''
           }
         }
-        if (file === 'git' && args.join(' ') === 'branch --show-current') {
-          return { stdout: 'feature\n', stderr: '' }
-        }
         return { stdout: '', stderr: '' }
       }
     )
@@ -1253,7 +1250,10 @@ describe('git ops RPC domain', () => {
     const service = makeLiveGitOpsRpcService({ runCommand })
     const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
 
-    expect(result).toEqual({ success: true })
+    expect(result).toEqual({
+      success: true,
+      localBasePull: { baseBranch: 'main', pulled: true }
+    })
     expect(calls).toEqual([
       {
         file: 'gh',
@@ -1272,15 +1272,131 @@ describe('git ops RPC domain', () => {
       },
       {
         file: 'git',
-        args: ['branch', '--show-current'],
-        cwd: '/tmp/hive-feature'
+        args: ['status', '--porcelain'],
+        cwd: '/tmp/hive-main'
       },
       {
         file: 'git',
-        args: ['merge', 'feature'],
+        args: ['pull', '--ff-only'],
         cwd: '/tmp/hive-main'
       }
     ])
+  })
+
+  it('stashes a dirty base branch around the post-merge pull', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        calls.push({ file, args, cwd: options.cwd })
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-main', 'HEAD abc123', 'branch refs/heads/main'].join('\n'),
+            stderr: ''
+          }
+        }
+        if (file === 'git' && args.join(' ') === 'status --porcelain') {
+          return { stdout: ' M tracked.txt\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result).toEqual({
+      success: true,
+      localBasePull: { baseBranch: 'main', pulled: true }
+    })
+    const baseCalls = calls.filter((c) => c.cwd === '/tmp/hive-main').map((c) => c.args.join(' '))
+    expect(baseCalls).toEqual([
+      'status --porcelain',
+      'stash push -u -m hive-pre-pull',
+      'pull --ff-only',
+      'stash pop'
+    ])
+  })
+
+  it('reports a warning when the post-merge pull fails but keeps the merge successful', async () => {
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-main', 'HEAD abc123', 'branch refs/heads/main'].join('\n'),
+            stderr: ''
+          }
+        }
+        if (file === 'git' && args[0] === 'pull' && options.cwd === '/tmp/hive-main') {
+          throw new Error('there is no tracking information for the current branch')
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result.success).toBe(true)
+    expect(result.localBasePull?.pulled).toBe(false)
+    expect(result.localBasePull?.warning).toContain('Could not auto-pull main locally')
+    expect(result.localBasePull?.warning).not.toContain('hive-pre-pull')
+  })
+
+  it('leaves the stash intact and warns when stash pop conflicts after the pull', async () => {
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-main', 'HEAD abc123', 'branch refs/heads/main'].join('\n'),
+            stderr: ''
+          }
+        }
+        if (file === 'git' && args.join(' ') === 'status --porcelain') {
+          return { stdout: ' M tracked.txt\n', stderr: '' }
+        }
+        if (file === 'git' && args.join(' ') === 'stash pop' && options.cwd === '/tmp/hive-main') {
+          throw new Error('CONFLICT (content): Merge conflict in tracked.txt')
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result.success).toBe(true)
+    expect(result.localBasePull?.pulled).toBe(false)
+    expect(result.localBasePull?.warning).toContain('hive-pre-pull')
+    expect(result.localBasePull?.warning).toContain('git stash pop')
+  })
+
+  it('skips the local pull when the base branch is not checked out in a worktree', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        calls.push({ file, args, cwd: options.cwd })
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-feature', 'HEAD abc123', 'branch refs/heads/feature'].join(
+              '\n'
+            ),
+            stderr: ''
+          }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result).toEqual({ success: true, localBasePull: undefined })
+    expect(calls.some((c) => c.args.join(' ') === 'pull')).toBe(false)
+    expect(calls.some((c) => c.args[0] === 'merge')).toBe(false)
   })
 
   it('checks whether a branch is merged into HEAD', async () => {
