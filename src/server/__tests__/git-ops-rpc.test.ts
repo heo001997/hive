@@ -1235,6 +1235,9 @@ describe('git ops RPC domain', () => {
       async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
         calls.push({ file, args, cwd: options.cwd })
         if (file === 'gh' && args[0] === 'pr' && args[1] === 'view') {
+          if (args.includes('mergeable,baseRefName')) {
+            return { stdout: '{"mergeable":"MERGEABLE","baseRefName":"main"}', stderr: '' }
+          }
           return { stdout: 'main\n', stderr: '' }
         }
         if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
@@ -1255,6 +1258,11 @@ describe('git ops RPC domain', () => {
       localBasePull: { baseBranch: 'main', pulled: true }
     })
     expect(calls).toEqual([
+      {
+        file: 'gh',
+        args: ['pr', 'view', '123', '--json', 'mergeable,baseRefName'],
+        cwd: '/tmp/hive-feature'
+      },
       {
         file: 'gh',
         args: ['pr', 'merge', '123', '--merge'],
@@ -1281,6 +1289,51 @@ describe('git ops RPC domain', () => {
         cwd: '/tmp/hive-main'
       }
     ])
+  })
+
+  it('returns an actionable conflict error without attempting the merge when the PR conflicts', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string> }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>) => {
+        calls.push({ file, args })
+        if (file === 'gh' && args[1] === 'view' && args.includes('mergeable,baseRefName')) {
+          return { stdout: '{"mergeable":"CONFLICTING","baseRefName":"main"}', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 24))
+
+    expect(result.success).toBe(false)
+    expect(result.conflicted).toBe(true)
+    expect(result.error).toContain('PR #24 has conflicts with main')
+    expect(result.error).toContain('git fetch origin main && git merge origin/main')
+    // The doomed `gh pr merge` is never attempted.
+    expect(calls.some((c) => c.file === 'gh' && c.args[1] === 'merge')).toBe(false)
+  })
+
+  it('maps a conflict failure from gh pr merge to an actionable error', async () => {
+    const runCommand = vi.fn(async (file: string, args: ReadonlyArray<string>) => {
+      // Mergeability is still being computed by GitHub at pre-flight time.
+      if (file === 'gh' && args[1] === 'view' && args.includes('mergeable,baseRefName')) {
+        return { stdout: '{"mergeable":"UNKNOWN","baseRefName":"main"}', stderr: '' }
+      }
+      if (file === 'gh' && args[1] === 'merge') {
+        throw new Error(
+          'Command failed: gh pr merge 24 --merge\nPull request heo001997/hive#24 is not mergeable: the merge commit cannot be cleanly created.'
+        )
+      }
+      return { stdout: '', stderr: '' }
+    })
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 24))
+
+    expect(result.success).toBe(false)
+    expect(result.conflicted).toBe(true)
+    expect(result.error).toContain('PR #24 has conflicts')
   })
 
   it('stashes a dirty base branch around the post-merge pull', async () => {

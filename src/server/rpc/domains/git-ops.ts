@@ -41,6 +41,10 @@ export interface GitOperationResult {
   readonly success: boolean
   readonly error?: string
   readonly localBasePull?: GitLocalBasePullResult
+  // Set by prMerge when the merge failed specifically because the PR branch
+  // conflicts with its base — lets the UI show a recoverable, actionable message
+  // instead of treating it like an unexpected failure.
+  readonly conflicted?: boolean
 }
 
 export interface GitBranchWithStatus {
@@ -618,6 +622,60 @@ const pullLocalBaseBranch = async (
       pulled: false,
       warning: `Could not auto-pull ${baseBranch} locally: ${message}.${stashNote}`
     }
+  }
+}
+
+// Phrases GitHub/gh emit when a PR cannot be merged because its branch conflicts
+// with the base. Matched against the raw error so a merge that fails for conflict
+// reasons (despite passing the pre-flight check) still yields an actionable message.
+const PR_MERGE_CONFLICT_PHRASES = [
+  'not mergeable',
+  'merge commit cannot be cleanly created',
+  'cannot be cleanly created',
+  'resolve the merge conflicts'
+]
+
+const isPrMergeConflictError = (message: string): boolean => {
+  const lower = message.toLowerCase()
+  return PR_MERGE_CONFLICT_PHRASES.some((phrase) => lower.includes(phrase))
+}
+
+// A clear, actionable message for the common case: the PR branch has diverged from
+// its base and has real conflicts, so GitHub can't create the merge commit. Replaces
+// gh's raw multi-line stderr dump in the UI.
+const prMergeConflictMessage = (prNumber: number, baseBranch?: string): string => {
+  const base = baseBranch && baseBranch.length > 0 ? baseBranch : 'its base branch'
+  const ref = baseBranch && baseBranch.length > 0 ? baseBranch : '<base>'
+  return (
+    `PR #${prNumber} has conflicts with ${base} and can't be merged automatically. ` +
+    `In the feature worktree run \`git fetch origin ${ref} && git merge origin/${ref}\`, ` +
+    `resolve the conflicts, push, then merge again.`
+  )
+}
+
+// Ask GitHub whether the PR can be merged before attempting the merge. GitHub computes
+// mergeability asynchronously: 'CONFLICTING' is a hard no, 'MERGEABLE' is a yes, and
+// 'UNKNOWN' means it's still computing — in which case we proceed and let the merge
+// attempt (and its error mapping) decide. Never throws: any failure (gh missing, no
+// network, non-JSON output) falls through to the merge attempt.
+const checkPrMergeability = async (
+  runCommand: CommandRunner,
+  worktreePath: string,
+  prNumber: number
+): Promise<{ conflicted: boolean; baseBranch?: string }> => {
+  try {
+    const { stdout } = await runCommand(
+      'gh',
+      ['pr', 'view', String(prNumber), '--json', 'mergeable,baseRefName'],
+      { cwd: worktreePath }
+    )
+    const parsed = JSON.parse(stdout) as { mergeable?: string; baseRefName?: string }
+    return {
+      conflicted: parsed.mergeable === 'CONFLICTING',
+      baseBranch: parsed.baseRefName
+    }
+  } catch {
+    return { conflicted: false }
   }
 }
 
@@ -1766,6 +1824,19 @@ export const makeLiveGitOpsRpcService = (
       Effect.tryPromise({
         try: async (): Promise<GitOperationResult> => {
           try {
+            // Pre-flight: GitHub refuses to create the merge commit when the PR
+            // branch conflicts with its base, and `gh pr merge` then exits with a
+            // raw multi-line stderr dump. Detect that up front and return an
+            // actionable message instead of attempting a doomed merge.
+            const mergeability = await checkPrMergeability(runCommand, worktreePath, prNumber)
+            if (mergeability.conflicted) {
+              return {
+                success: false,
+                conflicted: true,
+                error: prMergeConflictMessage(prNumber, mergeability.baseBranch)
+              }
+            }
+
             await runCommand('gh', ['pr', 'merge', String(prNumber), '--merge'], {
               cwd: worktreePath
             })
@@ -1806,10 +1877,17 @@ export const makeLiveGitOpsRpcService = (
 
             return { success: true, localBasePull }
           } catch (error) {
-            return {
-              success: false,
-              error: error instanceof Error ? error.message : String(error)
+            const message = error instanceof Error ? error.message : String(error)
+            // The merge itself failed for conflict reasons (e.g. mergeability was
+            // still 'UNKNOWN' at pre-flight). Surface the same actionable message.
+            if (isPrMergeConflictError(message)) {
+              return {
+                success: false,
+                conflicted: true,
+                error: prMergeConflictMessage(prNumber)
+              }
             }
+            return { success: false, error: message }
           }
         },
         catch: (cause) => cause

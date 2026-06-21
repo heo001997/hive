@@ -347,6 +347,9 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
         }
         setPrLiveState((prev) => ({ state: 'MERGED', title: prev?.title }))
         return true
+      } else if (result.conflicted) {
+        toast.error(result.error ?? 'PR has conflicts with its base branch')
+        return false
       } else {
         toast.error(`Merge failed: ${result.error}`)
         return false

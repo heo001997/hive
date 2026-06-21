@@ -104,6 +104,9 @@ function PRNotificationCard({
           toast.warning(pull.warning)
         }
         setMergePhase('merged')
+      } else if (result.conflicted) {
+        toast.error(result.error ?? 'PR has conflicts with its base branch')
+        setMergePhase('idle')
       } else {
         toast.error(`Merge failed: ${result.error}`)
         setMergePhase('idle')
