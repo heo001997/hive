@@ -96,6 +96,10 @@ export interface KanbanRpcService {
     id: string,
     sortOrder: number
   ) => Effect.Effect<void, unknown, never>
+  readonly reorderTicketsBatch?: (
+    projectId: string,
+    updates: { id: string; sortOrder: number }[]
+  ) => Effect.Effect<void, unknown, never>
   readonly getTicketsBySession?: (
     sessionId: string
   ) => Effect.Effect<KanbanTicket[], unknown, never>
@@ -297,6 +301,12 @@ const reorderTicketParamsSchema = z
     projectId: z.string(),
     id: z.string(),
     sortOrder: z.number()
+  })
+  .strict()
+const reorderBatchParamsSchema = z
+  .object({
+    projectId: z.string(),
+    updates: z.array(z.object({ id: z.string(), sortOrder: z.number() }))
   })
   .strict()
 const sessionIdParamsSchema = z.object({ sessionId: z.string() }).strict()
@@ -558,6 +568,14 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
       try: async () => {
         const { getKanbanBackendForProject } = await import('../../../main/services/kanban-backend')
         return getKanbanBackendForProject(projectId).reorder(projectId, id, sortOrder)
+      },
+      catch: (cause) => cause
+    }),
+  reorderTicketsBatch: (projectId, updates) =>
+    Effect.tryPromise({
+      try: async () => {
+        const { getKanbanBackendForProject } = await import('../../../main/services/kanban-backend')
+        return getKanbanBackendForProject(projectId).reorderBatch(projectId, updates)
       },
       catch: (cause) => cause
     }),
@@ -1144,6 +1162,22 @@ export const makeKanbanRpcHandlers = (
             return yield* Effect.die(new Error('kanban.ticket.reorder service is not implemented'))
           }
           return yield* service.reorderTicket(projectId, id, sortOrder)
+        })
+    ],
+    [
+      'kanban.ticket.reorderBatch',
+      (params) =>
+        Effect.gen(function* () {
+          const { projectId, updates } = yield* Effect.try({
+            try: () => reorderBatchParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          if (!service.reorderTicketsBatch) {
+            return yield* Effect.die(
+              new Error('kanban.ticket.reorderBatch service is not implemented')
+            )
+          }
+          return yield* service.reorderTicketsBatch(projectId, updates)
         })
     ],
     [

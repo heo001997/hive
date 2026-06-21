@@ -2842,6 +2842,23 @@ export class DatabaseService {
     )
   }
 
+  /**
+   * One-shot batch reorder (e.g. column sort). Rewrites only `sort_order` and
+   * deliberately does NOT touch `updated_at` — unlike {@link reorderKanbanTicket},
+   * which bumps it for drag-and-drop. Bumping here would corrupt the very field
+   * being sorted when sorting by "Updated".
+   */
+  reorderKanbanTicketsBatch(updates: { id: string; sortOrder: number }[]): void {
+    const db = this.getDb()
+    const stmt = db.prepare('UPDATE kanban_tickets SET sort_order = ? WHERE id = ?')
+    const tx = db.transaction(() => {
+      for (const { id, sortOrder } of updates) {
+        stmt.run(sortOrder, id)
+      }
+    })
+    tx()
+  }
+
   addTicketTokens(ticketId: string, tokens: number): void {
     const db = this.getDb()
     const now = new Date().toISOString()

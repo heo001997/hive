@@ -1,6 +1,15 @@
 import { useState, useCallback, useRef, useLayoutEffect } from 'react'
 import { motion } from 'motion/react'
-import { AlertTriangle, ChevronRight, ChevronDown, FileText, Plus, Zap, Archive } from 'lucide-react'
+import {
+  AlertTriangle,
+  ChevronRight,
+  ChevronDown,
+  FileText,
+  Plus,
+  Zap,
+  Archive,
+  ArrowDownUp
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from '@/lib/toast'
 import { lastSendMode } from '@/lib/message-send-times'
@@ -27,6 +36,15 @@ import {
   ContextMenuContent,
   ContextMenuItem
 } from '@/components/ui/context-menu'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator
+} from '@/components/ui/dropdown-menu'
+import type { SortField, SortDir } from '@/lib/kanban-sort'
 import {
   useKanbanStore,
   getKanbanDragData,
@@ -414,6 +432,20 @@ export function KanbanColumn({
     [projectId]
   )
 
+  // ── One-shot column sort ─────────────────────────────────────────
+  const handleSort = useCallback(
+    (field: SortField, dir: SortDir) => {
+      useKanbanStore
+        .getState()
+        .applyColumnSort(tickets, field, dir)
+        .catch((err) => {
+          console.error('Column sort failed:', err)
+          toast.error('Failed to sort column')
+        })
+    },
+    [tickets]
+  )
+
   const handleArchiveAll = useCallback(async () => {
     try {
       if (isPinnedMode) {
@@ -767,10 +799,11 @@ export function KanbanColumn({
                 : undefined
             }
           >
-            {/* Left spacer — mirrors right toggle width to keep title centered.
-                For In Progress, only rendered in 'centered' mode so that
-                'right'/'abbreviated' modes can reclaim that space. */}
-            {(isDoneColumn || (isInProgressColumn && titleMode === 'centered')) && (
+            {/* Left spacer — mirrors the right controls cluster width to keep the
+                title centered. Every column now has a right cluster (Sort by menu
+                + optional toggle). For In Progress, only rendered in 'centered'
+                mode so 'right'/'abbreviated' modes can reclaim that space. */}
+            {(!isInProgressColumn || titleMode === 'centered') && (
               <div className="w-[50px] shrink" aria-hidden="true" />
             )}
 
@@ -847,50 +880,100 @@ export function KanbanColumn({
               </span>
             </div>
 
-            {/* Flow mode toggle — right of title, vertically centered.
-                ON (default) = flow mode: automated worktree picker on drop.
-                OFF = simple mode: direct drop, no modal. */}
-            {isInProgressColumn && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div ref={toggleRef} className="ml-2 flex shrink-0 items-center gap-1.5">
-                    <Zap
-                      className={cn(
-                        'h-3 w-3',
-                        !isSimpleMode ? 'text-amber-500' : 'text-muted-foreground/50'
-                      )}
-                    />
-                    <Switch
-                      data-testid="simple-mode-toggle"
-                      size="sm"
-                      checked={!isSimpleMode}
-                      onCheckedChange={(checked) => handleSimpleModeToggle(!checked)}
-                    />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={8}>
-                  Send to agent when dragged to this column
-                </TooltipContent>
-              </Tooltip>
-            )}
+            {/* Right controls cluster — per-column toggle (flow / archive) plus
+                the Sort by menu (every column). For In Progress, toggleRef wraps
+                the whole cluster so the title-fit measurement accounts for it. */}
+            <div
+              ref={isInProgressColumn ? toggleRef : undefined}
+              className="ml-2 flex shrink-0 items-center gap-1.5"
+            >
+              {/* Flow mode toggle.
+                  ON (default) = flow mode: automated worktree picker on drop.
+                  OFF = simple mode: direct drop, no modal. */}
+              {isInProgressColumn && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-1.5">
+                      <Zap
+                        className={cn(
+                          'h-3 w-3',
+                          !isSimpleMode ? 'text-amber-500' : 'text-muted-foreground/50'
+                        )}
+                      />
+                      <Switch
+                        data-testid="simple-mode-toggle"
+                        size="sm"
+                        checked={!isSimpleMode}
+                        onCheckedChange={(checked) => handleSimpleModeToggle(!checked)}
+                      />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8}>
+                    Send to agent when dragged to this column
+                  </TooltipContent>
+                </Tooltip>
+              )}
 
-            {/* Archive toggle — right of title, vertically centered */}
-            {isDoneColumn && (
-              <div className="ml-2 flex shrink-0 items-center gap-1.5">
-                <Archive
-                  className={cn(
-                    'h-3 w-3',
-                    showArchived ? 'text-muted-foreground' : 'text-muted-foreground/50'
-                  )}
-                />
-                <Switch
-                  data-testid="archive-toggle"
-                  size="sm"
-                  checked={showArchived}
-                  onCheckedChange={handleToggleShowArchived}
-                />
-              </div>
-            )}
+              {/* Archive toggle */}
+              {isDoneColumn && (
+                <div className="flex items-center gap-1.5">
+                  <Archive
+                    className={cn(
+                      'h-3 w-3',
+                      showArchived ? 'text-muted-foreground' : 'text-muted-foreground/50'
+                    )}
+                  />
+                  <Switch
+                    data-testid="archive-toggle"
+                    size="sm"
+                    checked={showArchived}
+                    onCheckedChange={handleToggleShowArchived}
+                  />
+                </div>
+              )}
+
+              {/* Sort by — one-shot column reorder. Leaves the column in manual
+                  order afterwards (drag still works); no persistent sort mode. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    title="Sort column"
+                    aria-label="Sort column"
+                    data-testid="kanban-column-sort"
+                    disabled={tickets.length === 0}
+                    className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40"
+                  >
+                    <ArrowDownUp className="h-3.5 w-3.5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuLabel>Created</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => handleSort('created', 'desc')}>
+                    Newest first
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => handleSort('created', 'asc')}>
+                    Oldest first
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Updated</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => handleSort('updated', 'desc')}>
+                    Newest first
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => handleSort('updated', 'asc')}>
+                    Oldest first
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Title</DropdownMenuLabel>
+                  <DropdownMenuItem onSelect={() => handleSort('title', 'asc')}>
+                    A → Z
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => handleSort('title', 'desc')}>
+                    Z → A
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
 
             {/* Hidden measurement spans — inherit font styles via cascade; used
                 by useLayoutEffect to decide titleMode. Absolute-positioned off-screen. */}
@@ -936,7 +1019,7 @@ export function KanbanColumn({
         <motion.div
           layoutScroll
           data-testid={`kanban-drop-area-${column}`}
-          className="flex flex-1 flex-col gap-2 overflow-y-auto px-1 pb-2 rounded-md min-h-[60px]"
+          className="mt-2 flex flex-1 flex-col gap-2 overflow-y-auto px-1 pb-2 rounded-md min-h-[60px]"
         >
           {tickets.length === 0 &&
           invalidPlaceholders.length === 0 &&

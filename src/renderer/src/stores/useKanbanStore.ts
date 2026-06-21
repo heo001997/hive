@@ -16,6 +16,7 @@ import {
   type KanbanSessionEvent
 } from './store-coordination'
 import { isPlanLike } from '../lib/constants'
+import { sortTicketsBy, SORT_STEP, type SortField, type SortDir } from '../lib/kanban-sort'
 import { useConnectionStore } from './useConnectionStore'
 import { usePinnedStore } from './usePinnedStore'
 import { useWorktreeStatusStore } from './useWorktreeStatusStore'
@@ -219,6 +220,7 @@ interface KanbanState {
     sortOrder: number
   ) => Promise<void>
   reorderTicket: (ticketId: string, projectId: string, newSortOrder: number) => Promise<void>
+  applyColumnSort: (tickets: KanbanTicket[], field: SortField, dir: SortDir) => Promise<void>
   toggleBoardView: () => void
   setSimpleMode: (projectId: string, enabled: boolean) => Promise<void>
   archiveTicket: (ticketId: string, projectId: string) => Promise<void>
@@ -809,6 +811,68 @@ export const useKanbanStore = create<KanbanState>()(
           set((state) => {
             const next = new Map(state.tickets)
             next.set(projectId, snapshot)
+            return { tickets: next }
+          })
+          throw err
+        }
+      },
+
+      // ── applyColumnSort (one-shot, optimistic) ───────────────────
+      // Reorders the given column's displayed tickets once, by field/dir,
+      // assigning fresh evenly-spaced sort_order across the GLOBAL ordered
+      // list (so multi-project merges reproduce the interleave). No persistent
+      // sort mode — drag still works afterwards. updated_at is preserved by the
+      // no-bump reorderBatch backend path.
+      applyColumnSort: async (tickets: KanbanTicket[], field: SortField, dir: SortDir) => {
+        if (tickets.length === 0) return
+
+        const ordered = sortTicketsBy(tickets, field, dir)
+        const newOrder = new Map<string, number>()
+        ordered.forEach((t, i) => newOrder.set(t.id, (i + 1) * SORT_STEP))
+
+        // Snapshot every affected project for revert-on-failure.
+        const affectedProjectIds = new Set(ordered.map((t) => t.project_id))
+        const snapshots = new Map<string, KanbanTicket[]>()
+        for (const pid of affectedProjectIds) {
+          snapshots.set(
+            pid,
+            (get().tickets.get(pid) ?? []).map((t) => ({ ...t }))
+          )
+        }
+
+        // Optimistic single set across all affected projects.
+        set((state) => {
+          const next = new Map(state.tickets)
+          for (const pid of affectedProjectIds) {
+            const updated = (next.get(pid) ?? []).map((t) =>
+              newOrder.has(t.id) ? { ...t, sort_order: newOrder.get(t.id)! } : t
+            )
+            next.set(pid, updated)
+          }
+          return { tickets: next }
+        })
+
+        // Group updates by project_id; persist each project's batch in parallel.
+        const updatesByProject = new Map<string, { id: string; sortOrder: number }[]>()
+        for (const t of ordered) {
+          const arr = updatesByProject.get(t.project_id) ?? []
+          arr.push({ id: t.id, sortOrder: newOrder.get(t.id)! })
+          updatesByProject.set(t.project_id, arr)
+        }
+
+        try {
+          await Promise.all(
+            [...updatesByProject.entries()].map(([pid, updates]) =>
+              kanban.ticket.reorderBatch(pid, updates)
+            )
+          )
+        } catch (err) {
+          // Revert all affected projects on failure.
+          set((state) => {
+            const next = new Map(state.tickets)
+            for (const [pid, snap] of snapshots) {
+              next.set(pid, snap)
+            }
             return { tickets: next }
           })
           throw err
