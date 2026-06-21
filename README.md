@@ -1,4 +1,4 @@
-<div align="center"> <!-- MAIN conflict seed -->
+<div align="center">
   <img src="resources/icon.png" alt="Hive" width="128" />
   <h1>Hive</h1>
   <p><strong>An open-source AI agent orchestrator for parallel coding across projects.</strong></p>

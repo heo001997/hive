@@ -22,7 +22,8 @@ import {
   Upload,
   Lock,
   Plus,
-  Map as MapIcon
+  Map as MapIcon,
+  Wand2
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -1664,6 +1665,20 @@ function EditModeContent({
                 {lifecycle.isMergingPR ? 'Merging...' : 'Merge PR'}
               </Button>
             )}
+          {ticket.column === 'done' && ticket.worktree_id && lifecycle.prMergeConflict && (
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-1.5 bg-amber-600/10 border-amber-500/30 text-amber-500 hover:bg-amber-600/20"
+              onClick={() =>
+                lifecycle.autoResolvePrMergeConflict(ticket.current_session_id ?? undefined)
+              }
+              data-testid="pr-auto-resolve-button"
+            >
+              <Wand2 className="h-3.5 w-3.5" />
+              Auto Resolve Conflict &amp; Merge
+            </Button>
+          )}
           {ticket.column === 'done' && ticket.worktree_id && (
             <Button
               type="button"
@@ -3224,6 +3239,20 @@ function ReviewModeContent({
               {lifecycle.isMergingPR ? 'Merging...' : 'Merge PR'}
             </Button>
           )}
+        {ticket.worktree_id && lifecycle.prMergeConflict && (
+          <Button
+            type="button"
+            variant="outline"
+            className="gap-1.5 bg-amber-600/10 border-amber-500/30 text-amber-500 hover:bg-amber-600/20"
+            onClick={() =>
+              lifecycle.autoResolvePrMergeConflict(ticket.current_session_id ?? undefined)
+            }
+            data-testid="pr-auto-resolve-button"
+          >
+            <Wand2 className="h-3.5 w-3.5" />
+            Auto Resolve Conflict &amp; Merge
+          </Button>
+        )}
         <Button
           type="button"
           data-testid="review-move-done-btn"

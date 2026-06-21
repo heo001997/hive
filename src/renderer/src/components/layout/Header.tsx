@@ -19,7 +19,8 @@ import {
   Hammer,
   Map,
   Check,
-  MoonStar
+  MoonStar,
+  Wand2
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { Button } from '@/components/ui/button'
@@ -400,6 +401,19 @@ export function Header(): React.JSX.Element {
               )}
             </Button>
           )}
+        {lifecycle.prMergeConflict && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs bg-amber-600/10 border-amber-600/30 text-amber-500 hover:bg-amber-600/20"
+            onClick={() => lifecycle.autoResolvePrMergeConflict()}
+            title="Send the conflict-resolution prompt to this ticket's Claude Code terminal"
+            data-testid="pr-auto-resolve-button"
+          >
+            <Wand2 className="h-3.5 w-3.5 mr-1" />
+            Auto Resolve Conflict &amp; Merge
+          </Button>
+        )}
         {!isConnectionMode && selectedWorktree && (
           <>
             <div className="flex items-center">

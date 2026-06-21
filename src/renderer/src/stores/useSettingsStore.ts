@@ -18,6 +18,7 @@ import { settingsApi } from '@/api/settings-api'
 import type { CustomProjectCommand } from '@/lib/custom-commands'
 import { validateCustomCommand } from '@/lib/custom-commands'
 import { DEFAULT_KANBAN_COLUMN_COLORS } from '@/lib/kanban-column-colors'
+import { DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT } from '@/lib/autoResolveConflictPrompt'
 import { toast } from '@/lib/toast'
 
 // ==========================================
@@ -80,6 +81,8 @@ export interface AppSettings {
   taskListCollapsed: boolean
   goalStatusCollapsed: boolean
   mergeConflictMode: MergeConflictMode
+  /** Editable prompt fired into the ticket terminal by "Auto Resolve Conflict & Merge". */
+  autoResolveConflictPrompt: string
   boardMode: 'toggle' | 'sticky-tab'
   followUpTriggerColumn: FollowUpTriggerColumn
   /** Per-column head color on the Kanban board. Value is a preset key (e.g. 'blue') or a hex string. */
@@ -203,6 +206,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   taskListCollapsed: false,
   goalStatusCollapsed: false,
   mergeConflictMode: 'always-ask',
+  autoResolveConflictPrompt: DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT,
   boardMode: 'sticky-tab',
   followUpTriggerColumn: 'done',
   kanbanColumnColors: { ...DEFAULT_KANBAN_COLUMN_COLORS },
@@ -434,6 +438,7 @@ function extractSettings(state: SettingsState): AppSettings {
     taskListCollapsed: state.taskListCollapsed,
     goalStatusCollapsed: state.goalStatusCollapsed,
     mergeConflictMode: state.mergeConflictMode,
+    autoResolveConflictPrompt: state.autoResolveConflictPrompt,
     boardMode: state.boardMode,
     followUpTriggerColumn: state.followUpTriggerColumn,
     kanbanColumnColors: state.kanbanColumnColors,
@@ -809,6 +814,7 @@ export const useSettingsStore = create<SettingsState>()(
         taskListCollapsed: state.taskListCollapsed,
         goalStatusCollapsed: state.goalStatusCollapsed,
         mergeConflictMode: state.mergeConflictMode,
+        autoResolveConflictPrompt: state.autoResolveConflictPrompt,
         boardMode: state.boardMode,
         followUpTriggerColumn: state.followUpTriggerColumn,
         kanbanColumnColors: state.kanbanColumnColors,

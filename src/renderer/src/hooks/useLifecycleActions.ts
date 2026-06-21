@@ -7,6 +7,7 @@ import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { toast } from '@/lib/toast'
 import { copyTextToClipboard } from '@/lib/clipboard'
 import { REVIEW_PROMPTS, DEFAULT_REVIEW_PROMPT_TYPE } from '@/constants/reviewPrompts'
+import { buildAutoResolveConflictPrompt } from '@/lib/autoResolveConflictPrompt'
 import { resolveSessionCreationSelection } from '@/lib/handoffSelection'
 import { useSettingsStore, resolveModelForSdk } from '@/stores/useSettingsStore'
 import { messageSendTimes, userExplicitSendTimes, lastSendMode } from '@/lib/message-send-times'
@@ -45,10 +46,14 @@ interface LifecycleActions {
   reviewTargetBranch: string | undefined
   isCleanTree: boolean
   isDefault: boolean
+  // Set when the last mergePR() failed because the PR branch conflicts with its base.
+  prMergeConflict: { prNumber: number; baseBranch?: string } | null
 
   // Actions
   createCodeReview: (targetBranch?: string) => Promise<string | null>
   mergePR: () => Promise<boolean>
+  // Inject the auto-resolve prompt into the ticket's Claude CLI terminal and run it.
+  autoResolvePrMergeConflict: (sessionId?: string) => Promise<boolean>
   archiveWorktree: () => Promise<boolean>
   attachPR: (prNumber: number) => void
   detachPR: () => void
@@ -87,6 +92,20 @@ function resolveProjectPath(worktreeId: string): string | null {
   if (!projectId) return null
   const project = useProjectStore.getState().projects.find((p) => p.id === projectId)
   return project?.path ?? null
+}
+
+// Resolve the Claude CLI session whose terminal we should inject the prompt into.
+// Prefers an explicit override (the ticket's current_session_id), then the active
+// session if it belongs to this worktree, then the most recent CLI session.
+function resolveClaudeCliSessionId(worktreeId: string, override?: string): string | null {
+  if (override) return override
+  const sessionStore = useSessionStore.getState()
+  const sessions = sessionStore.sessionsByWorktree.get(worktreeId) ?? []
+  const cli = sessions.filter((s) => s.agent_sdk === 'claude-code-cli')
+  if (cli.length === 0) return null
+  const active = sessionStore.activeSessionId
+  if (active && cli.some((s) => s.id === active)) return active
+  return cli[cli.length - 1].id
 }
 
 const noopString = async () => null
@@ -140,6 +159,10 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
   const [isArchiving, setIsArchiving] = useState(false)
   const [prLiveState, setPrLiveState] = useState<{ state?: string; title?: string } | null>(null)
   const [remoteBranches, setRemoteBranches] = useState<{ name: string }[]>([])
+  const [prMergeConflict, setPrMergeConflict] = useState<{
+    prNumber: number
+    baseBranch?: string
+  } | null>(null)
 
   // --- Ensure remote info is loaded for this worktree (needed for isGitHub check) ---
   useEffect(() => {
@@ -181,6 +204,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
   // --- Clear live state when attached PR changes ---
   useEffect(() => {
     setPrLiveState(null)
+    setPrMergeConflict(null)
   }, [storeAttachedPR?.number])
 
   // --- Actions ---
@@ -333,6 +357,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     if (!pr?.number) return false
 
     setIsMergingPR(true)
+    setPrMergeConflict(null)
     try {
       const result = await gitApi.prMerge(worktree.path, pr.number)
       if (result.success) {
@@ -348,6 +373,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
         setPrLiveState((prev) => ({ state: 'MERGED', title: prev?.title }))
         return true
       } else if (result.conflicted) {
+        setPrMergeConflict({ prNumber: pr.number, baseBranch: result.baseBranch })
         toast.error(result.error ?? 'PR has conflicts with its base branch')
         return false
       } else {
@@ -361,6 +387,70 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
       setIsMergingPR(false)
     }
   }, [worktreeId, worktree?.path])
+
+  const autoResolvePrMergeConflict = useCallback(
+    async (sessionIdOverride?: string): Promise<boolean> => {
+      if (!worktreeId || !worktree?.path) return false
+
+      const conflict = prMergeConflict
+      const prNumber = conflict?.prNumber ?? useGitStore.getState().attachedPR.get(worktreeId)?.number
+      if (!prNumber) {
+        toast.error('No PR to resolve')
+        return false
+      }
+
+      const sessionId = resolveClaudeCliSessionId(worktreeId, sessionIdOverride)
+      if (!sessionId) {
+        toast.error("Open the ticket's Claude Code terminal first, then try again")
+        return false
+      }
+
+      const branch = useGitStore.getState().branchInfoByWorktree.get(worktree.path)
+      const featureBranch = branch?.name || 'this branch'
+      // The base comes from the PR (server-supplied). Never fall back to the
+      // branch's own upstream — that's `origin/<featureBranch>`, never the merge
+      // base. Default to `main`, and guard against a stale server result that
+      // omitted baseBranch: a branch can't be merged into itself.
+      let baseBranch = conflict?.baseBranch?.trim() || 'main'
+      if (baseBranch === featureBranch) baseBranch = 'main'
+
+      const template = useSettingsStore.getState().autoResolveConflictPrompt
+      const prompt = buildAutoResolveConflictPrompt(template, {
+        prNumber,
+        baseBranch,
+        featureBranch
+      })
+
+      // Surface the session so Tu can watch it run.
+      useSessionStore.getState().setActiveWorktree(worktreeId)
+      useSessionStore.getState().setActiveSession(sessionId)
+
+      // Deliver to the live PTY; if the terminal hasn't spawned yet, spawn it with
+      // the prompt queued as the first message (mirrors sendFollowupToSession).
+      const delivery = unwrapEnvelope(await terminalApi.sendClaudeCliPrompt(sessionId, prompt))
+      if (!delivery.delivered) {
+        const created = unwrapEnvelope(
+          await terminalApi.createClaudeCli(sessionId, { pendingPrompt: prompt })
+        )
+        if (!created.success) {
+          toast.error(created.error ?? 'Could not reach the Claude Code terminal')
+          return false
+        }
+      }
+
+      messageSendTimes.set(sessionId, Date.now())
+      userExplicitSendTimes.set(sessionId, Date.now())
+      snapshotTokenBaseline(sessionId)
+      lastSendMode.set(sessionId, 'build')
+      useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'working')
+      bumpWorktreeLastMessage({ worktreeId })
+
+      setPrMergeConflict(null)
+      toast.success('Sent conflict-resolution prompt to the Claude Code terminal')
+      return true
+    },
+    [worktreeId, worktree?.path, prMergeConflict]
+  )
 
   const archiveWorktreeAction = useCallback(async (): Promise<boolean> => {
     if (!worktreeId) return false
@@ -491,8 +581,10 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
       reviewTargetBranch: undefined,
       isCleanTree: true,
       isDefault: false,
+      prMergeConflict: null,
       createCodeReview: noopString,
       mergePR: noopBool,
+      autoResolvePrMergeConflict: noopBool,
       archiveWorktree: noopBool,
       attachPR: noopVoid,
       detachPR: noopVoid,
@@ -519,10 +611,12 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     reviewTargetBranch: storeReviewTargetBranch,
     isCleanTree,
     isDefault,
+    prMergeConflict,
 
     // Actions
     createCodeReview,
     mergePR,
+    autoResolvePrMergeConflict,
     archiveWorktree: archiveWorktreeAction,
     attachPR: attachPRAction,
     detachPR: detachPRAction,
