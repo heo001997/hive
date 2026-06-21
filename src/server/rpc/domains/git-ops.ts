@@ -424,6 +424,10 @@ export interface GitOpsRpcService {
     worktreePath: string,
     prNumber: number
   ) => Effect.Effect<GitOperationResult, unknown, never>
+  readonly rebasePR: (
+    worktreePath: string,
+    prNumber: number
+  ) => Effect.Effect<GitOperationResult, unknown, never>
   readonly syncLocalBaseToRemote: (
     worktreePath: string,
     baseBranch: string
@@ -2007,6 +2011,88 @@ export const makeLiveGitOpsRpcService = (
         },
         catch: (cause) => cause
       }),
+    rebasePR: (worktreePath, prNumber) =>
+      Effect.tryPromise({
+        try: async (): Promise<GitOperationResult> => {
+          try {
+            // 1. Resolve the PR base branch from GitHub.
+            const prInfoResult = await runCommand(
+              'gh',
+              ['pr', 'view', String(prNumber), '--json', 'baseRefName', '-q', '.baseRefName'],
+              { cwd: worktreePath }
+            )
+            const baseBranch = prInfoResult.stdout.trim()
+            if (!baseBranch) {
+              return { success: false, error: 'Could not determine PR base branch' }
+            }
+
+            // 2. Resolve the remote tracking the current branch (default origin).
+            let remote = 'origin'
+            try {
+              const upstream = await runCommand(
+                'git',
+                ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+                { cwd: worktreePath }
+              )
+              const tracking = upstream.stdout.trim()
+              if (tracking.includes('/')) {
+                remote = tracking.split('/')[0]
+              }
+            } catch {
+              // No upstream configured — fall back to origin.
+            }
+
+            // 3. Fetch the latest base branch from the remote.
+            await runCommand('git', ['fetch', remote], { cwd: worktreePath })
+
+            // 4. Rebase onto the remote base branch.
+            try {
+              await runCommand('git', ['rebase', `${remote}/${baseBranch}`], {
+                cwd: worktreePath
+              })
+            } catch (rebaseError) {
+              // Collect conflicting files before aborting so the user knows
+              // what they need to resolve manually.
+              let conflictFiles: string[] = []
+              try {
+                const conflicts = await runCommand(
+                  'git',
+                  ['diff', '--name-only', '--diff-filter=U'],
+                  { cwd: worktreePath }
+                )
+                conflictFiles = conflicts.stdout
+                  .split('\n')
+                  .map((line) => line.trim())
+                  .filter(Boolean)
+              } catch {
+                // Best-effort — fall back to the raw rebase error below.
+              }
+              try {
+                await runCommand('git', ['rebase', '--abort'], { cwd: worktreePath })
+              } catch {
+                // Ignore abort failures; the working tree is already reported.
+              }
+              const error = conflictFiles.length
+                ? `Rebase conflicts in: ${conflictFiles.join(', ')}`
+                : rebaseError instanceof Error
+                  ? rebaseError.message
+                  : 'Rebase failed'
+              return { success: false, error }
+            }
+
+            // 5. Force-push (with lease) to update the PR on the remote.
+            await runCommand('git', ['push', '--force-with-lease'], { cwd: worktreePath })
+
+            return { success: true }
+          } catch (error) {
+            return {
+              success: false,
+              error: error instanceof Error ? error.message : String(error)
+            }
+          }
+        },
+        catch: (cause) => cause
+      }),
     syncLocalBaseToRemote: (worktreePath, baseBranch) =>
       Effect.tryPromise({
         // Fast-forward the locally checked-out base branch to origin/<base> using the
@@ -2700,6 +2786,24 @@ export const makeGitOpsRpcHandlers = (
             catch: (cause) => cause
           })
           const result = yield* service.prMerge(worktreePath, prNumber)
+          if (result.success) {
+            yield* context.eventBus.publish({
+              channel: GIT_STATUS_CHANGED_CHANNEL,
+              payload: { worktreePath }
+            })
+          }
+          return result
+        })
+    ],
+    [
+      'gitOps.rebasePR',
+      (params, context) =>
+        Effect.gen(function* () {
+          const { worktreePath, prNumber } = yield* Effect.try({
+            try: () => prMergeParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          const result = yield* service.rebasePR(worktreePath, prNumber)
           if (result.success) {
             yield* context.eventBus.publish({
               channel: GIT_STATUS_CHANGED_CHANNEL,

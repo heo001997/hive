@@ -54,22 +54,24 @@ describe('dev desktop script', () => {
     expect(env.HIVE_WORKTREES_DIR).toBe(DEV_WORKTREES_DIR)
   })
 
-  test('ignores an inherited HIVE_SERVER_ENTRY_PATH (always pins the fresh dev bundle)', async () => {
+  test('ignores an inherited HIVE_SERVER_ENTRY_PATH so each worktree loads its own bundle', async () => {
     const { createDevDesktopEnv } = await import('../scripts/dev-desktop.mjs')
 
     const env = createDevDesktopEnv({
       cwd: '/repo/hive',
       env: {
         PATH: '/bin',
-        // A leaked entry path (e.g. from another worktree/main clone) must NOT
-        // win: the launcher rebuilds <cwd>/.dev-server/server.js every run, so it
-        // always pins that — loading a stale bundle causes schema drift and
-        // "RPC parameters failed validation".
-        HIVE_SERVER_ENTRY_PATH: '/custom/server.js'
+        // Leaked from a sibling clone (e.g. the shared ~/.hive-dev app that
+        // spawned this process). Honoring it would make THIS worktree run the
+        // other clone's stale server bundle — dev is always isolated, so the
+        // entry path is re-derived from cwd and the static dir is dropped.
+        HIVE_SERVER_ENTRY_PATH: '/other/clone/.dev-server/server.js',
+        HIVE_SERVER_STATIC_DIR: '/other/clone/renderer-web'
       }
     })
 
     expect(env.HIVE_SERVER_ENTRY_PATH).toBe(resolve('/repo/hive/.dev-server/server.js'))
+    expect(env.HIVE_SERVER_STATIC_DIR).toBeUndefined()
   })
 
   test('does not pass ELECTRON_RUN_AS_NODE into electron-vite dev', async () => {

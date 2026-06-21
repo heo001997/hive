@@ -18,6 +18,10 @@ import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { opencodeApi } from '@/api/opencode-api'
 import { dbApi } from '@/api/db-api'
 import { kanbanApi } from '@/api/kanban-api'
+import type { Attachment, AttachmentInput } from '@/components/sessions/AttachmentPreview'
+import { buildDisplayContent, MAX_ATTACHMENTS } from '@/lib/file-attachment-utils'
+import { parseUserMessageAttachments } from '@/lib/parse-user-message-attachments'
+import { toast } from '@/lib/toast'
 
 export type BoardChatStatus = 'idle' | 'starting' | 'thinking' | 'awaiting_confirmation' | 'error'
 
@@ -81,6 +85,7 @@ export interface BoardChatSnapshot {
   selectedAgentSdkOverride: 'opencode' | 'claude-code' | 'codex' | null
   selectedModelOverride: SelectedModel | null
   composerValue: string
+  composerAttachments: Attachment[]
   revertMessageID: string | null
   isEditingMessage: boolean
   editingMessageContent: string | null
@@ -115,7 +120,7 @@ interface BoardChatState extends BoardChatSnapshot {
   minimizeDrawer: () => void
   restoreDrawer: () => void
   setTranscriptMessages: (messages: OpenCodeMessage[]) => void
-  addLocalUserMessage: (content: string) => void
+  addLocalUserMessage: (content: string, attachments?: Attachment[]) => void
   addLocalSystemMessage: (content: string) => void
   setDrafts: (drafts: TicketDraft[], sourceMessageId: string) => void
   clearDrafts: () => void
@@ -130,6 +135,9 @@ interface BoardChatState extends BoardChatSnapshot {
   updateOpencodeSessionId: (opencodeSessionId: string) => void
   clearRuntimeSession: () => void
   setComposerValue: (value: string) => void
+  addComposerAttachment: (input: AttachmentInput) => void
+  removeComposerAttachment: (id: string) => void
+  clearComposerAttachments: () => void
   setRevertMessageID: (revertMessageID: string | null) => void
   setIsEditingMessage: (isEditingMessage: boolean) => void
   setEditingMessageContent: (editingMessageContent: string | null) => void
@@ -191,7 +199,12 @@ function normalizeVisibleContent(content: string, role: OpenCodeMessage['role'])
       ? stripBoardAssistantScaffolding(content)
       : stripBoardDraftBlocks(stripBoardAssistantScaffolding(content))
 
-  return visible.replace(/\s+/g, ' ').trim().toLowerCase()
+  // Strip attachment XML blocks (data-attachment, attached_files, ...) so an
+  // optimistic local message and its transcript echo normalize to the same key
+  // and dedupe, regardless of how each side encodes the attachments.
+  const withoutAttachments = parseUserMessageAttachments(visible).cleanText
+
+  return withoutAttachments.replace(/\s+/g, ' ').trim().toLowerCase()
 }
 
 function mergeTranscriptMessages(
@@ -221,11 +234,19 @@ function mergeTranscriptMessages(
   ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
 }
 
-function makeLocalMessage(role: OpenCodeMessage['role'], content: string): BoardChatMessage {
+function makeLocalMessage(
+  role: OpenCodeMessage['role'],
+  content: string,
+  attachments?: Attachment[]
+): BoardChatMessage {
+  // Encode attachments into the message content as XML blocks so UserBubble
+  // renders thumbnails/cards exactly the way it does for transcript messages.
+  const finalContent =
+    attachments && attachments.length > 0 ? buildDisplayContent(attachments, content) : content
   return {
     id: `board-chat-${role}-${crypto.randomUUID()}`,
     role,
-    content,
+    content: finalContent,
     timestamp: new Date().toISOString(),
     kind: 'local'
   }
@@ -255,6 +276,7 @@ function createInitialSnapshot(options?: ResetBoardChatOptions): BoardChatSnapsh
     selectedAgentSdkOverride: options?.selectedAgentSdkOverride ?? null,
     selectedModelOverride: options?.selectedModelOverride ?? null,
     composerValue: '',
+    composerAttachments: [],
     revertMessageID: null,
     isEditingMessage: false,
     editingMessageContent: null
@@ -284,6 +306,7 @@ function getSnapshotFromState(state: BoardChatState): BoardChatSnapshot {
     selectedAgentSdkOverride: state.selectedAgentSdkOverride,
     selectedModelOverride: state.selectedModelOverride,
     composerValue: state.composerValue,
+    composerAttachments: state.composerAttachments,
     revertMessageID: state.revertMessageID,
     isEditingMessage: state.isEditingMessage,
     editingMessageContent: state.editingMessageContent
@@ -370,6 +393,9 @@ function createBaseState(): Omit<
   | 'updateOpencodeSessionId'
   | 'clearRuntimeSession'
   | 'setComposerValue'
+  | 'addComposerAttachment'
+  | 'removeComposerAttachment'
+  | 'clearComposerAttachments'
   | 'setRevertMessageID'
   | 'setIsEditingMessage'
   | 'setEditingMessageContent'
@@ -1026,10 +1052,10 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
 
   setTranscriptMessages: (messages) => get().syncTranscript(messages, false),
 
-  addLocalUserMessage: (content) =>
+  addLocalUserMessage: (content, attachments) =>
     set((state) =>
       patchActiveSnapshot(state, {
-        messages: [...state.messages, makeLocalMessage('user', content)]
+        messages: [...state.messages, makeLocalMessage('user', content, attachments)]
       })
     ),
 
@@ -1077,6 +1103,27 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
     ),
   setComposerValue: (composerValue) =>
     set((state) => patchActiveSnapshot(state, { composerValue })),
+  addComposerAttachment: (input) =>
+    set((state) => {
+      if (state.composerAttachments.length >= MAX_ATTACHMENTS) {
+        toast.warning(`Maximum ${MAX_ATTACHMENTS} attachments reached`)
+        return {}
+      }
+      return patchActiveSnapshot(state, {
+        composerAttachments: [
+          ...state.composerAttachments,
+          { id: crypto.randomUUID(), ...input }
+        ]
+      })
+    }),
+  removeComposerAttachment: (id) =>
+    set((state) =>
+      patchActiveSnapshot(state, {
+        composerAttachments: state.composerAttachments.filter((a) => a.id !== id)
+      })
+    ),
+  clearComposerAttachments: () =>
+    set((state) => patchActiveSnapshot(state, { composerAttachments: [] })),
   setRevertMessageID: (revertMessageID) =>
     set((state) => patchActiveSnapshot(state, { revertMessageID })),
   setIsEditingMessage: (isEditingMessage) =>

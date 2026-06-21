@@ -29,13 +29,16 @@ export const createDevDesktopEnv = ({ cwd = process.cwd(), env = process.env } =
   // server child re-derives its own HIVE_SERVER_DB_PATH from the dev base dir.
   delete childEnv.HIVE_SERVER_DB_PATH
   delete childEnv.HIVE_SERVER_BASE_DIR
-  // Strip an inherited server-entry override too. A parent shell that exported
-  // HIVE_SERVER_ENTRY_PATH (e.g. leaked from another worktree/main clone) would
-  // make this dev app load THAT checkout's stale server bundle against this
-  // checkout's renderer — schema drift -> "RPC parameters failed validation".
-  // copyDevServerBundle() rebuilds <cwd>/.dev-server/server.js every launch, so
-  // we always pin to the freshly-built bundle of the checkout being run.
+  // Strip inherited server-bundle overrides for the SAME isolation reason.
+  // backend-config.ts honors HIVE_SERVER_ENTRY_PATH / HIVE_SERVER_STATIC_DIR
+  // verbatim, so when one dev instance spawns another — the shared ~/.hive-dev
+  // app launching a Claude sub-agent, or a second worktree's `pnpm dev` — these
+  // leak in and make THIS worktree load the OTHER clone's (often stale) server
+  // bundle, e.g. one missing a just-added RPC handler. A worktree's dev bundle
+  // is always <cwd>/.dev-server/server.js, so ignore any inherited value and
+  // re-derive the entry path from this worktree's cwd below.
   delete childEnv.HIVE_SERVER_ENTRY_PATH
+  delete childEnv.HIVE_SERVER_STATIC_DIR
 
   return {
     ...childEnv,

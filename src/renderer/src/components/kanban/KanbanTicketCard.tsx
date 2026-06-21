@@ -432,7 +432,8 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
   const rightAlignedSlot: 'conflicts' | 'busy' | 'reviewing' | 'completed-review' | null =
     useMemo(() => {
       if (!isArchived && hasConflicts && ticket.worktree_id) return 'conflicts'
-      if ((isBusy || isAsking) && ticket.mode && !isBlocked) return 'busy'
+      if ((isBusy || isAsking) && ticket.mode && !isBlocked && ticket.column === 'in_progress')
+        return 'busy'
       if (isBeingReviewed) return 'reviewing'
       if (completedReviewSessionId) return 'completed-review'
       return null
@@ -444,6 +445,7 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
       isBeingReviewed,
       isBlocked,
       isBusy,
+      ticket.column,
       ticket.mode,
       ticket.worktree_id
     ])
