@@ -14,6 +14,12 @@ import {
 import { ModelSelector } from '@/components/sessions/ModelSelector'
 import { AssistantCanvas } from '@/components/sessions/AssistantCanvas'
 import { UserBubble } from '@/components/sessions/UserBubble'
+import { AttachmentButton } from '@/components/sessions/AttachmentButton'
+import { AttachmentPreview } from '@/components/sessions/AttachmentPreview'
+import { buildMessageParts, escapeXmlAttr, isImageMime } from '@/lib/file-attachment-utils'
+import { parseUserMessageAttachments } from '@/lib/parse-user-message-attachments'
+import { cn } from '@/lib/utils'
+import { fileApi } from '@/api/file-api'
 import { QuestionPrompt } from '@/components/sessions/QuestionPrompt'
 import { PermissionPrompt } from '@/components/sessions/PermissionPrompt'
 import { CommandApprovalPrompt } from '@/components/sessions/CommandApprovalPrompt'
@@ -100,6 +106,24 @@ function buildScopeKey(scope: BoardChatScope | null): string {
   return 'pinned'
 }
 
+/** Re-emit parsed attachments as the XML blocks UserBubble knows how to render. */
+function buildAttachmentXml(parsed: ReturnType<typeof parseUserMessageAttachments>): string {
+  const blocks: string[] = []
+  for (const d of parsed.dataAttachments) {
+    blocks.push(
+      `<data-attachment mime="${escapeXmlAttr(d.mime)}" name="${escapeXmlAttr(d.name)}">${d.dataUrl}</data-attachment>`
+    )
+  }
+  if (parsed.files.length > 0) {
+    blocks.push(
+      '<attached_files>\n' +
+        parsed.files.map((f) => `<file path="${escapeXmlAttr(f.path)}">${f.name}</file>`).join('\n') +
+        '\n</attached_files>'
+    )
+  }
+  return blocks.join('\n')
+}
+
 function sanitizeBoardMessageContent(message: BoardChatMessage): string {
   const withoutScaffolding = stripBoardAssistantScaffolding(message.content)
   if (message.role === 'assistant') {
@@ -107,7 +131,14 @@ function sanitizeBoardMessageContent(message: BoardChatMessage): string {
     const parsedDrafts = parseBoardAssistantDraftSet(message.content)
     return withoutDrafts || (parsedDrafts ? 'Proposed ticket drafts below.' : withoutDrafts)
   }
-  return withoutScaffolding
+  // User message: stripping scaffolding also drops any attachment blocks that sit
+  // before the "User request:" marker. Re-attach them (parsed from the full,
+  // unstripped content) so thumbnails survive on the transcript echo.
+  const parsed = parseUserMessageAttachments(message.content)
+  const cleanText = parseUserMessageAttachments(withoutScaffolding).cleanText
+  const attachmentXml = buildAttachmentXml(parsed)
+  if (!attachmentXml) return cleanText
+  return cleanText ? `${attachmentXml}\n${cleanText}` : attachmentXml
 }
 
 function sanitizeStreamingParts(
@@ -878,7 +909,9 @@ function BoardChatMessageList({
                     type="button"
                     className="absolute right-1 top-1 rounded-md p-1 opacity-0 transition-opacity hover:bg-muted/60 group-hover:opacity-100"
                     title="Edit message"
-                    onClick={() => onEditMessage(sanitizedContent)}
+                    onClick={() =>
+                      onEditMessage(parseUserMessageAttachments(sanitizedContent).cleanText)
+                    }
                   >
                     <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
                   </button>
@@ -977,8 +1010,81 @@ function BoardChatComposer({
   onStop: () => void
   onCancelEdit: () => void
 }): React.JSX.Element {
+  const attachments = useBoardChatStore((state) => state.composerAttachments)
+  const addComposerAttachment = useBoardChatStore((state) => state.addComposerAttachment)
+  const removeComposerAttachment = useBoardChatStore((state) => state.removeComposerAttachment)
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  const addFile = useCallback(
+    (file: File) => {
+      if (isImageMime(file.type)) {
+        const reader = new FileReader()
+        reader.onload = () => {
+          addComposerAttachment({
+            kind: 'data',
+            name: file.name || 'pasted-image.png',
+            mime: file.type,
+            dataUrl: reader.result as string
+          })
+        }
+        reader.onerror = () => console.error(`Failed to read file: ${file.name}`)
+        reader.readAsDataURL(file)
+        return
+      }
+      try {
+        addComposerAttachment({
+          kind: 'path',
+          name: file.name,
+          mime: file.type || 'application/octet-stream',
+          filePath: fileApi.getPathForFile(file)
+        })
+      } catch (error) {
+        console.error('Failed to resolve dropped file path', error)
+      }
+    },
+    [addComposerAttachment]
+  )
+
+  const handlePaste = useCallback(
+    (event: React.ClipboardEvent) => {
+      const items = event.clipboardData?.items
+      if (!items) return
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith('image/')) {
+          event.preventDefault()
+          const file = item.getAsFile()
+          if (file) addFile(file)
+        }
+      }
+    },
+    [addFile]
+  )
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault()
+      setIsDragOver(false)
+      const files = event.dataTransfer?.files
+      if (!files || files.length === 0) return
+      for (const file of Array.from(files)) addFile(file)
+    },
+    [addFile]
+  )
+
   return (
-    <div className="border-t border-border/70 px-4 py-3">
+    <div
+      className="border-t border-border/70 px-4 py-3"
+      onDragOver={(event) => {
+        if (disabled) return
+        event.preventDefault()
+        setIsDragOver(true)
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node)) return
+        setIsDragOver(false)
+      }}
+      onDrop={handleDrop}
+    >
       {isEditing && (
         <div className="mb-2 flex items-center justify-between gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs text-primary">
           <span className="flex items-center gap-1.5 font-medium">
@@ -995,7 +1101,15 @@ function BoardChatComposer({
           </button>
         </div>
       )}
-      <div className="rounded-3xl border border-border/70 bg-muted/20 p-2 shadow-sm">
+      <div
+        className={cn(
+          'rounded-3xl border bg-muted/20 p-2 shadow-sm transition-colors',
+          isDragOver ? 'border-primary border-dashed bg-primary/5' : 'border-border/70'
+        )}
+      >
+        {attachments.length > 0 && (
+          <AttachmentPreview attachments={attachments} onRemove={removeComposerAttachment} />
+        )}
         <Textarea
           ref={textareaRef}
           value={value}
@@ -1003,10 +1117,11 @@ function BoardChatComposer({
           placeholder={
             disabled
               ? 'Select a target project to start.'
-              : 'Can create local tickets. Ask for breakdowns, revisions, or smaller tasks.'
+              : 'Can create local tickets. Paste or drop an image to attach.'
           }
           className="min-h-[84px] resize-none border-0 bg-transparent p-2 shadow-none focus-visible:ring-0"
           onChange={(event) => onChange(event.target.value)}
+          onPaste={handlePaste}
           onKeyDown={(event) => {
             if (event.key === 'Escape' && isEditing) {
               event.preventDefault()
@@ -1020,9 +1135,12 @@ function BoardChatComposer({
           }}
         />
         <div className="flex items-center justify-between gap-3 px-2 pb-1">
-          <span className="text-xs text-muted-foreground">
-            Enter to send. Shift+Enter for a new line.
-          </span>
+          <div className="flex items-center gap-2">
+            <AttachmentButton onAttach={addComposerAttachment} disabled={disabled} />
+            <span className="text-xs text-muted-foreground">
+              Enter to send. Shift+Enter for a new line.
+            </span>
+          </div>
           {sending ? (
             <Button type="button" size="sm" variant="destructive" onClick={onStop}>
               <Square className="h-4 w-4" />
@@ -1078,6 +1196,8 @@ export function BoardAssistantView({
   const selectedAgentSdkOverride = useBoardChatStore((state) => state.selectedAgentSdkOverride)
   const selectedModelOverride = useBoardChatStore((state) => state.selectedModelOverride)
   const composerValue = useBoardChatStore((state) => state.composerValue)
+  const composerAttachments = useBoardChatStore((state) => state.composerAttachments)
+  const clearComposerAttachments = useBoardChatStore((state) => state.clearComposerAttachments)
 
   const setTranscriptMessages = useBoardChatStore((state) => state.setTranscriptMessages)
   const addLocalUserMessage = useBoardChatStore((state) => state.addLocalUserMessage)
@@ -1347,7 +1467,7 @@ export function BoardAssistantView({
     canInteract &&
     Boolean(
       (scope?.kind === 'project' ? scope.projectId : selectedTargetProjectId) &&
-      composerValue.trim()
+      (composerValue.trim() || composerAttachments.length > 0)
     ) &&
     status !== 'starting' &&
     status !== 'thinking'
@@ -1404,7 +1524,8 @@ export function BoardAssistantView({
     if (!scope || scope.kind === 'pinned') return
 
     const input = composerValue.trim()
-    if (!input) return
+    const attachments = composerAttachments
+    if (!input && attachments.length === 0) return
 
     const targetProjectId = scope.kind === 'project' ? scope.projectId : selectedTargetProjectId
 
@@ -1445,8 +1566,9 @@ export function BoardAssistantView({
       // otherwise visibleMessages would slice off the new message along with the
       // rewound tail. The forked transcript reload replaces the tail afterwards.
       setRevertMessageID(null)
-      addLocalUserMessage(input)
+      addLocalUserMessage(input, attachments)
       setComposerValue('')
+      clearComposerAttachments()
 
       const runtime = await ensureRuntimeSession(scope, targetProjectId)
       if (!runtime) {
@@ -1454,8 +1576,12 @@ export function BoardAssistantView({
       }
 
       const prompt = buildBoardPrompt(input, scope, targetProjectId)
+      // With attachments, send structured parts (image/file parts + text) so the
+      // agent receives the images; otherwise keep the plain-string fast path.
+      const messageOrParts =
+        attachments.length > 0 ? buildMessageParts(attachments, prompt) : prompt
       const result = unwrapEnvelope(
-        await opencodeApi.prompt(runtime.runtimePath, runtime.opencodeSessionId, prompt)
+        await opencodeApi.prompt(runtime.runtimePath, runtime.opencodeSessionId, messageOrParts)
       )
       if (!result.success) {
         throw new Error(result.error || 'The assistant could not send your message.')
@@ -1471,6 +1597,8 @@ export function BoardAssistantView({
   }, [
     addLocalSystemMessage,
     addLocalUserMessage,
+    clearComposerAttachments,
+    composerAttachments,
     composerValue,
     isEditingMessage,
     opencodeSessionId,
