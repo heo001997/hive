@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react'
-import { Bot, CheckSquare, Pencil, Send, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { ArrowDown, Bot, CheckSquare, Pencil, Send, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { ModelSelector } from '@/components/sessions/ModelSelector'
 import { AssistantCanvas } from '@/components/sessions/AssistantCanvas'
 import { UserBubble } from '@/components/sessions/UserBubble'
@@ -624,12 +624,33 @@ function BoardChatMessageList({
   ) => void
 }): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const userHasScrolledUpRef = useRef(false)
+  const [userHasScrolledUp, setUserHasScrolledUp] = useState(false)
   const selectedCount = drafts.filter((draft) => draft.selected).length
   const creatableSelectedCount = drafts.filter((draft) => draft.selected && !draft.createdAt).length
   const dependencyCount = drafts.reduce((count, draft) => count + draft.dependsOn.length, 0)
   const invalidDraftCount = drafts.filter((draft) => draft.validationIssues.length > 0).length
 
+  const isNearBottom = (): boolean => {
+    const el = scrollRef.current
+    if (!el) return true
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 100
+  }
+
   useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = (): void => {
+      const scrolledUp = !isNearBottom()
+      userHasScrolledUpRef.current = scrolledUp
+      setUserHasScrolledUp(scrolledUp)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => {
+    if (userHasScrolledUpRef.current) return
     const element = scrollRef.current
     if (!element) return
     element.scrollTop = element.scrollHeight
@@ -644,7 +665,7 @@ function BoardChatMessageList({
   ])
 
   return (
-    <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+    <div ref={scrollRef} className="relative flex-1 space-y-4 overflow-y-auto px-4 py-4">
       {messages.map((message) => {
         if (message.role === 'system') {
           return (
@@ -743,6 +764,23 @@ function BoardChatMessageList({
           </div>
         )
       })}
+
+      {userHasScrolledUp && streamingMessage && (
+        <button
+          type="button"
+          onClick={() => {
+            userHasScrolledUpRef.current = false
+            setUserHasScrolledUp(false)
+            scrollRef.current?.scrollTo({
+              top: scrollRef.current.scrollHeight,
+              behavior: 'smooth'
+            })
+          }}
+          className="sticky bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs text-primary-foreground shadow-md"
+        >
+          <ArrowDown className="h-3 w-3" /> New messages
+        </button>
+      )}
 
       {streamingMessage && (
         <AssistantCanvas
