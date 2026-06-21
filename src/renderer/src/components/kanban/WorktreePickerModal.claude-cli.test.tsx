@@ -469,7 +469,8 @@ describe('WorktreePickerModal Claude CLI launch', () => {
       sort_order: 1,
       plan_ready: false,
       goal_mode: false,
-      goal_success_criteria: null
+      goal_success_criteria: null,
+      auto_approve_review: false
     })
     expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', {
       sessionId: 'connection-session-1',
