@@ -139,7 +139,7 @@ Open a worktree → Click **"New Session"** → Start coding with OpenCode, Clau
 
 ## 🔌 Worktree Connections - The Game Changer
 
-Hive's **Worktree Connections** feature lets you link two worktrees together, creating a bridge between different branches or features. This is incredibly powerful for development workflows that require cross-branch awareness.
+Hive's **Worktree Connections** feature lets you link two worktrees together, creating a bridge between different branches or features. This is remarkably powerful for development workflows that require cross-branch awareness.
 
 ### What Are Worktree Connections?
 
