@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react'
-import { Bot, CheckSquare, Pencil, Send, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import {
+  Bot,
+  CheckSquare,
+  History,
+  Pencil,
+  Send,
+  Sparkles,
+  Square,
+  Trash2,
+  X
+} from 'lucide-react'
 import { ModelSelector } from '@/components/sessions/ModelSelector'
 import { AssistantCanvas } from '@/components/sessions/AssistantCanvas'
 import { UserBubble } from '@/components/sessions/UserBubble'
@@ -17,7 +27,11 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
 import { useSessionStream } from '@/hooks/useSessionStream'
-import { parseBoardAssistantDraftSet } from '@/lib/board-assistant-drafts'
+import {
+  parseBoardAssistantDraftSet,
+  type ParsedBoardAssistantDraft,
+  type ParsedBoardAssistantDraftSet
+} from '@/lib/board-assistant-drafts'
 import { toast } from '@/lib/toast'
 import {
   useBoardChatStore,
@@ -141,6 +155,45 @@ function getAgentSdkLabel(agentSdk: 'opencode' | 'claude-code' | 'codex'): strin
 function truncateDescription(description: string | null | undefined): string | null {
   if (!description) return null
   return description.length > 240 ? `${description.slice(0, 237)}...` : description
+}
+
+// Sentinel value for a built draft's `createdAt` when its id is already in the
+// store's createdDraftIds. Only its truthiness is read (to disable/badge the
+// card); these built drafts are ephemeral UI state, never persisted.
+const CREATED_DRAFT_MARKER = 'created'
+
+// Turn a parsed draft set into the rich TicketDraft[] used for ticket creation.
+// Shared by the auto-activation effect (which stores the latest set as active)
+// and inline creation from a historical panel's parsed set. The generated `id`
+// is deterministic (messageId:draftKey:projectId) so it can be matched against
+// the store's createdDraftIds to detect an already-created historical set.
+function buildTicketDrafts(
+  messageId: string,
+  parsedDrafts: ParsedBoardAssistantDraft[],
+  scope: BoardChatScope,
+  targetProjectId: string,
+  projects: Array<{ id: string; name: string }>
+): TicketDraft[] {
+  const titleByDraftKey = new Map(parsedDrafts.map((draft) => [draft.draftKey, draft.title]))
+  return parsedDrafts.map((draft) => {
+    const projectId = scope.kind === 'project' ? targetProjectId : draft.projectId || targetProjectId
+    return {
+      id: `${messageId}:${draft.draftKey}:${projectId}`,
+      draftKey: draft.draftKey,
+      title: draft.title,
+      description: draft.description,
+      dependsOn: draft.dependsOn,
+      resolvedDependsOnTitles: draft.dependsOn.map(
+        (dependency) => titleByDraftKey.get(dependency) ?? dependency
+      ),
+      warnings: draft.warnings,
+      validationIssues: draft.validationIssues,
+      projectId,
+      projectName: projects.find((project) => project.id === projectId)?.name ?? 'Unknown project',
+      selected: true,
+      createdAt: null
+    }
+  })
 }
 
 async function resolveProjectRuntime(
@@ -570,6 +623,139 @@ function BoardChatDraftProposalCard({
   )
 }
 
+// A fully-interactive draft panel rendered for EVERY assistant message that
+// proposes ticket drafts — there is no read-only "historical" tier. Selection
+// is local to the panel, so each proposal in the transcript can be created
+// (all or a chosen subset) and revised independently. Per-draft created-state
+// is derived from the store's createdDraftIds (via each draft's `createdAt`),
+// so it survives the view unmounting (e.g. navigateToBoard) and remounting —
+// creating tickets a second time from the same panel is impossible.
+//
+// `isActive` marks the latest proposal (the one tracked by draftSourceMessageId):
+// it gets the "Draft proposals" heading and a Cancel button that clears the
+// active store slot. Older proposals get a "Previous proposals" heading and the
+// same Create/Revise controls, minus Cancel (there is no active slot to clear).
+function BoardChatDraftPanel({
+  drafts,
+  isActive,
+  onCreate,
+  onRevise,
+  onCancel
+}: {
+  drafts: TicketDraft[]
+  isActive: boolean
+  onCreate: (draftsToCreate: TicketDraft[]) => Promise<boolean>
+  onRevise: (drafts: TicketDraft[]) => void
+  onCancel: () => void
+}): React.JSX.Element {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set(drafts.filter((draft) => !draft.createdAt).map((draft) => draft.id))
+  )
+  const [creating, setCreating] = useState(false)
+
+  const toggleDraft = (draftId: string): void => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(draftId)) next.delete(draftId)
+      else next.add(draftId)
+      return next
+    })
+  }
+
+  const dependencyCount = drafts.reduce((count, draft) => count + draft.dependsOn.length, 0)
+  const invalidDraftCount = drafts.filter((draft) => draft.validationIssues.length > 0).length
+  const hasInvalidDrafts = invalidDraftCount > 0
+  const creatableDrafts = drafts.filter((draft) => !draft.createdAt)
+  const allCreated = drafts.length > 0 && creatableDrafts.length === 0
+  const selectedCreatableDrafts = creatableDrafts.filter((draft) => selectedIds.has(draft.id))
+  const decoratedDrafts = drafts.map((draft) => ({ ...draft, selected: selectedIds.has(draft.id) }))
+
+  const runCreate = async (draftsToCreate: TicketDraft[]): Promise<void> => {
+    if (creating || draftsToCreate.length === 0) return
+    setCreating(true)
+    try {
+      await onCreate(draftsToCreate)
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  return (
+    <div
+      className={
+        isActive
+          ? 'space-y-3 rounded-3xl border border-border/70 bg-muted/20 p-3'
+          : 'space-y-3 rounded-3xl border border-dashed border-border/60 bg-muted/10 p-3'
+      }
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          {isActive ? <Sparkles className="h-3.5 w-3.5" /> : <History className="h-3.5 w-3.5" />}
+          {isActive ? 'Draft proposals' : 'Previous proposals'}
+        </div>
+        {!isActive && (
+          <span className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            Historical
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        <span>{drafts.length} drafts</span>
+        <span>
+          {dependencyCount} dependenc{dependencyCount === 1 ? 'y' : 'ies'}
+        </span>
+        {invalidDraftCount > 0 && (
+          <span className="text-destructive">{invalidDraftCount} invalid</span>
+        )}
+      </div>
+      <div className="space-y-2">
+        {decoratedDrafts.map((draft) => (
+          <BoardChatDraftProposalCard key={draft.id} draft={draft} onToggle={toggleDraft} />
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-3">
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => {
+            void runCreate(creatableDrafts)
+          }}
+          disabled={hasInvalidDrafts || creating || allCreated}
+        >
+          {allCreated ? 'Created' : creating ? 'Creating…' : 'Create all'}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            void runCreate(selectedCreatableDrafts)
+          }}
+          disabled={hasInvalidDrafts || creating || selectedCreatableDrafts.length === 0}
+        >
+          <CheckSquare className="h-4 w-4" />
+          Create selected
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={() => onRevise(drafts)}>
+          Revise with AI
+        </Button>
+        {isActive && (
+          <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
+            Dismiss
+          </Button>
+        )}
+        <span className="ml-auto text-xs text-muted-foreground">
+          {hasInvalidDrafts
+            ? 'Fix validation issues first'
+            : allCreated
+              ? 'All tickets created'
+              : `${selectedCreatableDrafts.length}/${creatableDrafts.length} selected`}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function BoardChatMessageList({
   messages,
   drafts,
@@ -581,12 +767,10 @@ function BoardChatMessageList({
   sessionId,
   editableMessageId,
   onEditMessage,
-  onToggleDraft,
-  onCreateAll,
-  onCreateSelected,
+  buildDraftsForMessage,
+  onCreate,
   onRevise,
   onCancelDrafts,
-  hasInvalidDrafts,
   onQuestionReply,
   onQuestionReject,
   onPermissionReply,
@@ -602,12 +786,10 @@ function BoardChatMessageList({
   sessionId: string | null
   editableMessageId: string | null
   onEditMessage: (content: string) => void
-  onToggleDraft: (draftId: string) => void
-  onCreateAll: () => void
-  onCreateSelected: () => void
-  onRevise: () => void
+  buildDraftsForMessage: (parsed: ParsedBoardAssistantDraftSet, messageId: string) => TicketDraft[]
+  onCreate: (draftsToCreate: TicketDraft[]) => Promise<boolean>
+  onRevise: (drafts: TicketDraft[]) => void
   onCancelDrafts: () => void
-  hasInvalidDrafts: boolean
   onQuestionReply: (requestId: string, answers: QuestionAnswer[]) => void
   onQuestionReject: (requestId: string) => void
   onPermissionReply: (
@@ -624,10 +806,6 @@ function BoardChatMessageList({
   ) => void
 }): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const selectedCount = drafts.filter((draft) => draft.selected).length
-  const creatableSelectedCount = drafts.filter((draft) => draft.selected && !draft.createdAt).length
-  const dependencyCount = drafts.reduce((count, draft) => count + draft.dependsOn.length, 0)
-  const invalidDraftCount = drafts.filter((draft) => draft.validationIssues.length > 0).length
 
   useEffect(() => {
     const element = scrollRef.current
@@ -659,6 +837,10 @@ function BoardChatMessageList({
 
         const parsedDrafts =
           message.role === 'assistant' ? parseBoardAssistantDraftSet(message.content) : null
+        const messageDrafts =
+          parsedDrafts && parsedDrafts.drafts.length > 0
+            ? buildDraftsForMessage(parsedDrafts, message.id)
+            : []
         const sanitizedContent = sanitizeBoardMessageContent(message)
         const sanitizedParts = sanitizeStreamingParts(message.parts, message.role)
 
@@ -688,57 +870,14 @@ function BoardChatMessageList({
               />
             )}
 
-            {message.id === draftSourceMessageId && drafts.length > 0 && parsedDrafts && (
-              <div className="space-y-3 rounded-3xl border border-border/70 bg-muted/20 p-3">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  <Sparkles className="h-3.5 w-3.5" />
-                  Draft proposals
-                </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  <span>{drafts.length} drafts</span>
-                  <span>
-                    {dependencyCount} dependenc{dependencyCount === 1 ? 'y' : 'ies'}
-                  </span>
-                  {invalidDraftCount > 0 && (
-                    <span className="text-destructive">{invalidDraftCount} invalid</span>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  {drafts.map((draft) => (
-                    <BoardChatDraftProposalCard
-                      key={draft.id}
-                      draft={draft}
-                      onToggle={onToggleDraft}
-                    />
-                  ))}
-                </div>
-                <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-3">
-                  <Button type="button" size="sm" onClick={onCreateAll} disabled={hasInvalidDrafts}>
-                    Create all
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={onCreateSelected}
-                    disabled={hasInvalidDrafts}
-                  >
-                    <CheckSquare className="h-4 w-4" />
-                    Create selected
-                  </Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={onRevise}>
-                    Revise with AI
-                  </Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={onCancelDrafts}>
-                    Cancel
-                  </Button>
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {hasInvalidDrafts
-                      ? 'Fix validation issues first'
-                      : `${creatableSelectedCount}/${selectedCount} ready`}
-                  </span>
-                </div>
-              </div>
+            {messageDrafts.length > 0 && (
+              <BoardChatDraftPanel
+                drafts={messageDrafts}
+                isActive={message.id === draftSourceMessageId}
+                onCreate={onCreate}
+                onRevise={onRevise}
+                onCancel={onCancelDrafts}
+              />
             )}
           </div>
         )
@@ -889,6 +1028,7 @@ export function BoardAssistantView({
   const storedScope = useBoardChatStore((state) => state.scope)
   const messages = useBoardChatStore((state) => state.messages)
   const drafts = useBoardChatStore((state) => state.drafts)
+  const createdDraftIds = useBoardChatStore((state) => state.createdDraftIds)
   const draftSourceMessageId = useBoardChatStore((state) => state.draftSourceMessageId)
   const status = useBoardChatStore((state) => state.status)
   const selectedTargetProjectId = useBoardChatStore((state) => state.selectedTargetProjectId)
@@ -906,7 +1046,6 @@ export function BoardAssistantView({
   const setDrafts = useBoardChatStore((state) => state.setDrafts)
   const clearDrafts = useBoardChatStore((state) => state.clearDrafts)
   const markDraftsCreated = useBoardChatStore((state) => state.markDraftsCreated)
-  const toggleDraftSelected = useBoardChatStore((state) => state.toggleDraftSelected)
   const setStatus = useBoardChatStore((state) => state.setStatus)
   const setSelectedTargetProjectId = useBoardChatStore((state) => state.setSelectedTargetProjectId)
   const setSelectedAgentSdkOverride = useBoardChatStore(
@@ -1067,9 +1206,14 @@ export function BoardAssistantView({
     return null
   }, [messages, scope, selectedTargetProjectId])
 
+  // Auto-activate the newest draft set, but only the FIRST time we see a given
+  // draft message. Tracking this with a ref (rather than comparing against
+  // draftSourceMessageId) means we activate each new draft message exactly once
+  // and never fight any later store change on subsequent renders.
+  const autoActivatedDraftIdRef = useRef<string | null>(null)
   useEffect(() => {
     if (!latestDraftResult || !scope) return
-    if (draftSourceMessageId === latestDraftResult.messageId) return
+    if (autoActivatedDraftIdRef.current === latestDraftResult.messageId) return
 
     const targetProjectId =
       scope.kind === 'project'
@@ -1080,35 +1224,18 @@ export function BoardAssistantView({
 
     if (!targetProjectId) return
 
-    const titleByDraftKey = new Map(
-      latestDraftResult.drafts.map((draft) => [draft.draftKey, draft.title])
-    )
-
+    autoActivatedDraftIdRef.current = latestDraftResult.messageId
     setDrafts(
-      latestDraftResult.drafts.map((draft) => ({
-        id: `${latestDraftResult.messageId}:${draft.draftKey}:${scope.kind === 'project' ? targetProjectId : draft.projectId || targetProjectId}`,
-        draftKey: draft.draftKey,
-        title: draft.title,
-        description: draft.description,
-        dependsOn: draft.dependsOn,
-        resolvedDependsOnTitles: draft.dependsOn.map(
-          (dependency) => titleByDraftKey.get(dependency) ?? dependency
-        ),
-        warnings: draft.warnings,
-        validationIssues: draft.validationIssues,
-        projectId: scope.kind === 'project' ? targetProjectId : draft.projectId || targetProjectId,
-        projectName:
-          projects.find(
-            (project) =>
-              project.id ===
-              (scope.kind === 'project' ? targetProjectId : draft.projectId || targetProjectId)
-          )?.name ?? 'Unknown project',
-        selected: true,
-        createdAt: null
-      })),
+      buildTicketDrafts(
+        latestDraftResult.messageId,
+        latestDraftResult.drafts,
+        scope,
+        targetProjectId,
+        projects
+      ),
       latestDraftResult.messageId
     )
-  }, [draftSourceMessageId, latestDraftResult, projects, scope, selectedTargetProjectId, setDrafts])
+  }, [latestDraftResult, projects, scope, selectedTargetProjectId, setDrafts])
 
   useEffect(() => {
     if (error) {
@@ -1121,13 +1248,16 @@ export function BoardAssistantView({
       return
     }
 
-    if (drafts.length > 0) {
+    // Only "awaiting confirmation" while the active set still has uncreated
+    // drafts. Once every draft is created the chat returns to idle (re-enabling
+    // the edit-message pencil) without needing an explicit Cancel.
+    if (drafts.some((draft) => !draft.createdAt)) {
       setStatus('awaiting_confirmation')
       return
     }
 
     setStatus('idle')
-  }, [drafts.length, error, isStreaming, setStatus])
+  }, [drafts, error, isStreaming, setStatus])
 
   const activeQuestion = useQuestionStore((state) =>
     sessionId ? state.getActiveQuestion(sessionId) : null
@@ -1174,7 +1304,6 @@ export function BoardAssistantView({
   }, [messages, revertMessageID])
 
   const canInteract = scope !== null && scope.kind !== 'pinned'
-  const hasInvalidDrafts = drafts.some((draft) => draft.validationIssues.length > 0)
   const canSend =
     canInteract &&
     Boolean(
@@ -1358,13 +1487,13 @@ export function BoardAssistantView({
     setError(null)
   }, [setError, setStatus])
 
-  const handleCreateDrafts = useCallback(
-    async (onlySelected: boolean) => {
-      const draftsToCreate = drafts.filter(
-        (draft) => !draft.createdAt && (!onlySelected || draft.selected)
-      )
+  // Shared ticket-creation core used by both the active panel (store drafts) and
+  // historical panels (drafts rebuilt inline from a parsed set). Returns true on
+  // full success so callers can reflect a "Created" state.
+  const createTicketsFromDrafts = useCallback(
+    async (draftsToCreate: TicketDraft[]): Promise<boolean> => {
       if (draftsToCreate.length === 0) {
-        return
+        return false
       }
 
       try {
@@ -1444,13 +1573,42 @@ export function BoardAssistantView({
         )
         navigateToBoard()
         toast.success(`Created ${ticketCount} ticket${ticketCount === 1 ? '' : 's'}.`)
+        return true
       } catch (error) {
         const message =
           error instanceof Error ? error.message : 'Failed to create one or more tickets.'
         toast.error(message)
+        return false
       }
     },
-    [addLocalSystemMessage, drafts, markDraftsCreated, navigateToBoard]
+    [addLocalSystemMessage, markDraftsCreated, navigateToBoard]
+  )
+
+  // Build the rich TicketDraft[] for any message's parsed draft set, resolving
+  // the target project and stamping each draft's createdAt from the store's
+  // createdDraftIds. Every panel renders + creates from these directly, so
+  // per-draft created-state survives the view unmounting (e.g. navigateToBoard)
+  // and remounting, and a retry after a partial failure only re-creates the
+  // not-yet-created drafts. Returns [] when there is no resolvable project.
+  const buildDraftsForMessage = useCallback(
+    (parsed: ParsedBoardAssistantDraftSet, messageId: string): TicketDraft[] => {
+      if (!scope) return []
+
+      const targetProjectId =
+        scope.kind === 'project'
+          ? scope.projectId
+          : scope.kind === 'connection'
+            ? selectedTargetProjectId
+            : null
+      if (!targetProjectId) return []
+
+      const createdSet = new Set(createdDraftIds)
+      return buildTicketDrafts(messageId, parsed.drafts, scope, targetProjectId, projects).map(
+        (draft) =>
+          createdSet.has(draft.id) ? { ...draft, createdAt: CREATED_DRAFT_MARKER } : draft
+      )
+    },
+    [createdDraftIds, projects, scope, selectedTargetProjectId]
   )
 
   const handleClear = useCallback(async () => {
@@ -1506,16 +1664,27 @@ export function BoardAssistantView({
     ]
   )
 
-  const handleRevise = useCallback(() => {
-    setComposerValue(
-      'Revise the current draft tickets. Keep them small, specific, and implementation-ready.'
-    )
-    composerFocusRef.current?.focus()
-  }, [setComposerValue])
+  const handleRevise = useCallback(
+    (draftsToRevise: TicketDraft[]) => {
+      const titles = draftsToRevise
+        .map((draft) => `“${draft.title}”`)
+        .join(', ')
+      setComposerValue(
+        titles
+          ? `Revise these draft tickets: ${titles}. Keep them small, specific, and implementation-ready.`
+          : 'Revise the current draft tickets. Keep them small, specific, and implementation-ready.'
+      )
+      composerFocusRef.current?.focus()
+    },
+    [setComposerValue]
+  )
 
+  // Dismiss the pending (active) proposal: clear the active store slot so the
+  // chat returns to idle. The panel itself stays in the transcript, demoted to a
+  // historical set, so its tickets can still be created later.
   const handleCancelDrafts = useCallback(() => {
     clearDrafts()
-    addLocalSystemMessage('Draft proposals discarded.')
+    addLocalSystemMessage('Dismissed the pending proposal. You can still create it from above.')
   }, [addLocalSystemMessage, clearDrafts])
 
   const handleSelectTargetProject = useCallback(
@@ -1648,16 +1817,10 @@ export function BoardAssistantView({
         sessionId={sessionId}
         editableMessageId={editableMessageId}
         onEditMessage={handleStartEdit}
-        onToggleDraft={toggleDraftSelected}
-        onCreateAll={() => {
-          void handleCreateDrafts(false)
-        }}
-        onCreateSelected={() => {
-          void handleCreateDrafts(true)
-        }}
+        buildDraftsForMessage={buildDraftsForMessage}
+        onCreate={createTicketsFromDrafts}
         onRevise={handleRevise}
         onCancelDrafts={handleCancelDrafts}
-        hasInvalidDrafts={hasInvalidDrafts}
         onQuestionReply={(requestId, answers) => {
           void handleQuestionReply(requestId, answers)
         }}
