@@ -1285,7 +1285,12 @@ describe('git ops RPC domain', () => {
       },
       {
         file: 'git',
-        args: ['pull', '--ff-only'],
+        args: ['fetch', 'origin', 'main'],
+        cwd: '/tmp/hive-main'
+      },
+      {
+        file: 'git',
+        args: ['merge', '--ff-only', 'origin/main'],
         cwd: '/tmp/hive-main'
       }
     ])
@@ -1366,7 +1371,8 @@ describe('git ops RPC domain', () => {
     expect(baseCalls).toEqual([
       'status --porcelain',
       'stash push -u -m hive-pre-pull',
-      'pull --ff-only',
+      'fetch origin main',
+      'merge --ff-only origin/main',
       'stash pop'
     ])
   })
@@ -1381,8 +1387,8 @@ describe('git ops RPC domain', () => {
             stderr: ''
           }
         }
-        if (file === 'git' && args[0] === 'pull' && options.cwd === '/tmp/hive-main') {
-          throw new Error('there is no tracking information for the current branch')
+        if (file === 'git' && args[0] === 'merge' && options.cwd === '/tmp/hive-main') {
+          throw new Error('Not possible to fast-forward, aborting.')
         }
         return { stdout: '', stderr: '' }
       }
@@ -1426,7 +1432,7 @@ describe('git ops RPC domain', () => {
     expect(result.localBasePull?.warning).toContain('git stash pop')
   })
 
-  it('skips the local pull when the base branch is not checked out in a worktree', async () => {
+  it('fast-forwards the local base ref when the base branch is not checked out in a worktree', async () => {
     const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
     const runCommand = vi.fn(
       async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
@@ -1447,9 +1453,43 @@ describe('git ops RPC domain', () => {
     const service = makeLiveGitOpsRpcService({ runCommand })
     const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
 
-    expect(result).toEqual({ success: true, localBasePull: undefined })
-    expect(calls.some((c) => c.args.join(' ') === 'pull')).toBe(false)
+    // No working tree to fast-forward, so the local <base> ref is advanced directly with a
+    // `<base>:<base>` fetch refspec (run from the feature worktree) instead.
+    expect(result).toEqual({
+      success: true,
+      localBasePull: { baseBranch: 'main', pulled: true }
+    })
+    expect(
+      calls.some(
+        (c) =>
+          c.file === 'git' &&
+          c.args.join(' ') === 'fetch origin main:main' &&
+          c.cwd === '/tmp/hive-feature'
+      )
+    ).toBe(true)
+    // The local merge is never replayed.
     expect(calls.some((c) => c.args[0] === 'merge')).toBe(false)
+    expect(calls.some((c) => c.args.join(' ') === 'pull --ff-only')).toBe(false)
+  })
+
+  it('syncs a checked-out base branch to origin via syncLocalBaseToRemote', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        calls.push({ file, args, cwd: options.cwd })
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(
+      service.syncLocalBaseToRemote('/tmp/hive-main', 'main')
+    )
+
+    expect(result).toEqual({ baseBranch: 'main', pulled: true })
+    const baseCalls = calls.map((c) => c.args.join(' '))
+    expect(baseCalls).toEqual(['status --porcelain', 'fetch origin main', 'merge --ff-only origin/main'])
+    expect(calls.every((c) => c.cwd === '/tmp/hive-main')).toBe(true)
   })
 
   it('checks whether a branch is merged into HEAD', async () => {

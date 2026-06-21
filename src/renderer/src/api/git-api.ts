@@ -455,6 +455,14 @@ export const gitApi = {
       worktreePath,
       prNumber
     }),
+  syncLocalBaseToRemote: async (
+    worktreePath: string,
+    baseBranch: string
+  ): Promise<GitLocalBasePullResult> =>
+    getRendererRpcClient().request<GitLocalBasePullResult>('gitOps.syncLocalBaseToRemote', {
+      worktreePath,
+      baseBranch
+    }),
   listBranchesWithStatus: async (projectPath: string): Promise<GitListBranchesWithStatusResult> =>
     getRendererRpcClient().request<GitListBranchesWithStatusResult>(
       'gitOps.listBranchesWithStatus',
