@@ -13,6 +13,12 @@ type ScriptRunProjectResult = {
   error?: string
 }
 
+type ScriptRunArchiveResult = {
+  success: boolean
+  output: string
+  error?: string
+}
+
 type ScriptPortResult = {
   port: number | null
 }
@@ -71,6 +77,11 @@ export const scriptApi = {
       commands,
       cwd,
       worktreeId
+    }),
+  runArchive: async (commands: string[], cwd: string): Promise<ScriptRunArchiveResult> =>
+    getRendererRpcClient().request<ScriptRunArchiveResult>('scriptOps.runArchive', {
+      commands,
+      cwd
     }),
   killPid: async (pid: number): Promise<ScriptKillPidResult> =>
     getRendererRpcClient().request<ScriptKillPidResult>('scriptOps.killPid', { pid }),
