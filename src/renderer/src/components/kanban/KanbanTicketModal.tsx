@@ -3261,6 +3261,26 @@ function ReviewModeContent({
               {lifecycle.isMergingPR ? 'Merging...' : 'Merge PR'}
             </Button>
           )}
+        {ticket.worktree_id &&
+          lifecycle.isGitHub &&
+          lifecycle.hasAttachedPR &&
+          lifecycle.prLiveState?.state !== 'MERGED' &&
+          lifecycle.prLiveState?.state !== 'CLOSED' && (
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => lifecycle.rebasePR()}
+              disabled={lifecycle.isRebasingPR}
+            >
+              {lifecycle.isRebasingPR ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <GitBranch className="h-3.5 w-3.5" />
+              )}
+              {lifecycle.isRebasingPR ? 'Rebasing...' : 'Rebase PR'}
+            </Button>
+          )}
         {ticket.worktree_id && lifecycle.prMergeConflict && (
           <Button
             type="button"
