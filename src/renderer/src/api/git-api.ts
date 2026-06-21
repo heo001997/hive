@@ -21,9 +21,16 @@ type GitBranchInfoResult = {
   error?: string
 }
 
+type GitLocalBasePullResult = {
+  baseBranch: string
+  pulled: boolean
+  warning?: string
+}
+
 type GitOperationResult = {
   success: boolean
   error?: string
+  localBasePull?: GitLocalBasePullResult
 }
 
 type GitCommitResult = {

@@ -31,9 +31,16 @@ export interface GitFileStatusResult {
   readonly error?: string
 }
 
+export interface GitLocalBasePullResult {
+  readonly baseBranch: string
+  readonly pulled: boolean
+  readonly warning?: string
+}
+
 export interface GitOperationResult {
   readonly success: boolean
   readonly error?: string
+  readonly localBasePull?: GitLocalBasePullResult
 }
 
 export interface GitBranchWithStatus {
@@ -563,6 +570,55 @@ const parseWorktreeForBranch = (porcelainOutput: string, branchName: string): st
     if (branch === branchName && worktreePath) return worktreePath
   }
   return null
+}
+
+const LOCAL_BASE_PULL_STASH_MESSAGE = 'hive-pre-pull'
+
+// After a PR is merged on the remote, sync the locally checked-out base branch by
+// fast-forwarding it to the remote. Stash any dirty working tree first, pull, then
+// restore the stash. The pull is --ff-only so the sync can never itself introduce a
+// divergent merge commit. Never throws: a merge that already succeeded must not be
+// reported as failed because the local convenience pull hit a snag (no upstream,
+// nothing to fast-forward to, network error, stash-pop conflict).
+const pullLocalBaseBranch = async (
+  baseBranchPath: string,
+  baseBranch: string,
+  runCommand: CommandRunner
+): Promise<GitLocalBasePullResult> => {
+  let stashed = false
+  try {
+    const status = await runCommand('git', ['status', '--porcelain'], { cwd: baseBranchPath })
+    const isDirty = status.stdout.trim().length > 0
+
+    if (isDirty) {
+      await runCommand(
+        'git',
+        ['stash', 'push', '-u', '-m', LOCAL_BASE_PULL_STASH_MESSAGE],
+        { cwd: baseBranchPath }
+      )
+      stashed = true
+    }
+
+    await runCommand('git', ['pull', '--ff-only'], { cwd: baseBranchPath })
+
+    if (stashed) {
+      await runCommand('git', ['stash', 'pop'], { cwd: baseBranchPath })
+    }
+
+    return { baseBranch, pulled: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    // If we stashed but never reached a clean pop, the stash is still on the stack
+    // (git keeps it on a pop conflict too) — tell the user how to recover it.
+    const stashNote = stashed
+      ? ` Local changes are saved in stash "${LOCAL_BASE_PULL_STASH_MESSAGE}" — run \`git stash pop\` in ${baseBranchPath} to restore them.`
+      : ''
+    return {
+      baseBranch,
+      pulled: false,
+      warning: `Could not auto-pull ${baseBranch} locally: ${message}.${stashNote}`
+    }
+  }
 }
 
 const invalidBranch = (branch: string): boolean => !branch || branch.startsWith('-')
@@ -1733,16 +1789,22 @@ export const makeLiveGitOpsRpcService = (
               targetBranch
             )
 
+            // `gh pr merge` above already merged the PR on the remote. Just
+            // fast-forward the locally checked-out base branch to match — do NOT
+            // replay the merge locally. A local `git merge` would create a second,
+            // divergent merge commit for the same branch, leaving the base with
+            // multiple merge bases against the remote and producing phantom
+            // "already-merged" diffs on every future branch cut from it.
+            let localBasePull: GitLocalBasePullResult | undefined
             if (targetWorktreePath) {
-              const currentBranch = await runCommand('git', ['branch', '--show-current'], {
-                cwd: worktreePath
-              })
-              await runCommand('git', ['merge', currentBranch.stdout.trim()], {
-                cwd: targetWorktreePath
-              })
+              localBasePull = await pullLocalBaseBranch(
+                targetWorktreePath,
+                targetBranch,
+                runCommand
+              )
             }
 
-            return { success: true }
+            return { success: true, localBasePull }
           } catch (error) {
             return {
               success: false,

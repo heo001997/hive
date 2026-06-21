@@ -96,6 +96,13 @@ function PRNotificationCard({
     try {
       const result = await gitApi.prMerge(worktreePath, prNumber)
       if (result.success) {
+        const pull = result.localBasePull
+        if (pull?.pulled) {
+          toast.success(`Pulled latest ${pull.baseBranch} locally`)
+        }
+        if (pull?.warning) {
+          toast.warning(pull.warning)
+        }
         setMergePhase('merged')
       } else {
         toast.error(`Merge failed: ${result.error}`)
