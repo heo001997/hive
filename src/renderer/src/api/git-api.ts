@@ -31,6 +31,7 @@ type GitOperationResult = {
   success: boolean
   error?: string
   localBasePull?: GitLocalBasePullResult
+  conflicted?: boolean
 }
 
 type GitCommitResult = {
