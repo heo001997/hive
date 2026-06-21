@@ -29,8 +29,7 @@ import {
   ChevronDown,
   Hammer,
   Map as MapIcon,
-  FolderInput,
-  Code
+  FolderInput
 } from 'lucide-react'
 import { CheckeredFlagIcon } from './CheckeredFlagIcon'
 import { UpdateStatusModal } from './UpdateStatusModal'
@@ -42,7 +41,6 @@ import { cn } from '@/lib/utils'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { opencodeApi } from '@/api/opencode-api'
 import { systemApi } from '@/api/system-api'
-import { worktreeApi } from '@/api/worktree-api'
 import { ProviderIcon, getProviderLabel } from '@/components/ui/provider-icon'
 import { toast } from '@/lib/toast'
 import {
@@ -783,25 +781,6 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
     useFileViewerStore.getState().openContextEditor(ticket.worktree_id)
   }, [ticket.worktree_id])
 
-  const handleOpenInEditor = useCallback(async (): Promise<void> => {
-    if (!ticket.worktree_id) return
-    const worktrees = Array.from(useWorktreeStore.getState().worktreesByProject.values()).flat()
-    const worktree = worktrees.find((w) => w.id === ticket.worktree_id)
-    if (!worktree) {
-      toast.error('Worktree not found')
-      return
-    }
-    const result = await worktreeApi.openInEditor(worktree.path)
-    if (result.success) {
-      toast.success('Opened in Editor')
-    } else {
-      toast.error(result.error || 'Failed to open in editor', {
-        retry: handleOpenInEditor,
-        description: 'Make sure VS Code is installed'
-      })
-    }
-  }, [ticket.worktree_id])
-
   const handleResumeGoal = useCallback(async () => {
     if (!ticket.current_session_id) return
     if (!ticket.worktree_id) {
@@ -1398,17 +1377,6 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
             <ContextMenuItem onClick={() => handleSaveNote(null)} className="gap-2">
               <X className="h-3.5 w-3.5" />
               Remove note
-            </ContextMenuItem>
-          )}
-
-          {ticket.worktree_id && (
-            <ContextMenuItem
-              data-testid="ctx-open-in-editor"
-              onClick={handleOpenInEditor}
-              className="gap-2"
-            >
-              <Code className="h-3.5 w-3.5" />
-              Open in Editor
             </ContextMenuItem>
           )}
 
