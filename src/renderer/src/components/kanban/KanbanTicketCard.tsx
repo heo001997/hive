@@ -37,6 +37,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip
 import { Button } from '@/components/ui/button'
 import { NoteEditorModal } from './NoteEditorModal'
 import { MoveToProjectModal } from './MoveToProjectModal'
+import { TicketScriptsSubmenu } from './TicketScriptsSubmenu'
 import { cn } from '@/lib/utils'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { opencodeApi } from '@/api/opencode-api'
@@ -1342,6 +1343,7 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                 {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
                 {isPinned ? 'Unpin worktree' : 'Pin worktree'}
               </ContextMenuItem>
+              <TicketScriptsSubmenu ticket={ticket} />
             </>
           )}
 
