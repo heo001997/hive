@@ -406,11 +406,13 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
       }
 
       const branch = useGitStore.getState().branchInfoByWorktree.get(worktree.path)
-      const baseBranch =
-        conflict?.baseBranch?.trim() ||
-        branch?.tracking?.replace(/^origin\//, '') ||
-        'main'
       const featureBranch = branch?.name || 'this branch'
+      // The base comes from the PR (server-supplied). Never fall back to the
+      // branch's own upstream — that's `origin/<featureBranch>`, never the merge
+      // base. Default to `main`, and guard against a stale server result that
+      // omitted baseBranch: a branch can't be merged into itself.
+      let baseBranch = conflict?.baseBranch?.trim() || 'main'
+      if (baseBranch === featureBranch) baseBranch = 'main'
 
       const template = useSettingsStore.getState().autoResolveConflictPrompt
       const prompt = buildAutoResolveConflictPrompt(template, {
