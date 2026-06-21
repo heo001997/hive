@@ -1019,7 +1019,7 @@ export function KanbanColumn({
         <motion.div
           layoutScroll
           data-testid={`kanban-drop-area-${column}`}
-          className="flex flex-1 flex-col gap-2 overflow-y-auto px-1 pb-2 rounded-md min-h-[60px]"
+          className="mt-2 flex flex-1 flex-col gap-2 overflow-y-auto px-1 pb-2 rounded-md min-h-[60px]"
         >
           {tickets.length === 0 &&
           invalidPlaceholders.length === 0 &&
