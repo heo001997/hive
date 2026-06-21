@@ -16,10 +16,12 @@ export function canonicalizeTicketTitle(title: string): string {
     .toLowerCase()
     .replace(/[\s_]+/g, '-') // spaces and underscores → dashes
     .replace(/[^a-z0-9\-.]/g, '') // remove chars unsafe for worktree folder names
+    .replace(/\.{2,}/g, '.') // collapse consecutive dots (git refs forbid '..')
     .replace(/-{2,}/g, '-') // collapse consecutive dashes
-    .replace(/^-+|-+$/g, '') // strip leading/trailing dashes
+    .replace(/^[-.]+|[-.]+$/g, '') // strip leading/trailing dashes and dots (git refs forbid trailing '.')
     .slice(0, 32) // keep ticket-named worktrees under Windows path limits
-    .replace(/-+$/, '') // strip trailing dashes after truncation
+    .replace(/\.lock$/, '') // git refs may not end with '.lock'
+    .replace(/[-.]+$/, '') // strip trailing dashes/dots left after truncation / .lock removal
 }
 
 function normalizePlanTitle(title: string): string {
