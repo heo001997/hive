@@ -10069,10 +10069,12 @@ describe('rpc router', () => {
             body: '## Summary\n- Added RPC\n## Testing\n- Vitest'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -10236,10 +10238,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -10407,10 +10411,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -10574,10 +10580,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -10745,10 +10753,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -10912,10 +10922,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -11083,10 +11095,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -11250,10 +11264,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -11421,10 +11437,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -11588,10 +11606,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -11759,10 +11779,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -11926,10 +11948,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -12097,10 +12121,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -12264,10 +12290,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -12435,10 +12463,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -12602,10 +12632,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -12773,10 +12805,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -12940,10 +12974,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -13111,10 +13147,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -13278,10 +13316,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -13449,10 +13489,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -13616,10 +13658,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -13789,10 +13833,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -13956,10 +14002,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -14127,10 +14175,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -14294,10 +14344,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -14465,10 +14517,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -14632,10 +14686,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -14959,10 +15015,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -15126,10 +15184,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -15297,10 +15357,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -15464,10 +15526,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -15635,10 +15699,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -15802,10 +15868,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -15973,10 +16041,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -16140,10 +16210,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -16311,10 +16383,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -16478,10 +16552,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -16649,10 +16725,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -16816,10 +16894,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -16986,10 +17066,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -17159,10 +17241,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -17461,10 +17545,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -17628,10 +17714,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -17794,10 +17882,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -17961,10 +18051,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -18127,10 +18219,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -18294,10 +18388,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -18632,10 +18728,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -18803,10 +18901,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -18973,10 +19073,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -19143,10 +19245,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -19715,10 +19819,12 @@ describe('rpc router', () => {
             calls.push([worktreePath, prNumber])
             return { success: true }
           }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -19888,10 +19994,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -20055,6 +20163,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: (worktreePath, branch) =>
           Effect.sync(() => {
             calls.push([worktreePath, branch])
@@ -20063,6 +20172,7 @@ describe('rpc router', () => {
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -20226,10 +20336,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -20393,6 +20505,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: (worktreePath, branchName) =>
           Effect.sync(() => {
@@ -20401,6 +20514,7 @@ describe('rpc router', () => {
           }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -20564,10 +20678,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -20731,6 +20847,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: (projectPath) =>
@@ -20742,6 +20859,7 @@ describe('rpc router', () => {
             }
           }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -20908,10 +21026,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -21075,6 +21195,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -21083,6 +21204,7 @@ describe('rpc router', () => {
             calls.push([projectPath, prNumber])
             return { success: true, state: 'OPEN', title: 'Add RPC' }
           }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -21246,10 +21368,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }
@@ -21268,6 +21392,62 @@ describe('rpc router', () => {
       ok: false,
       error: { code: 'VALIDATION_FAILED' }
     })
+  })
+
+  it('handles gitOps.findPullRequestForBranch through the git ops RPC domain', async () => {
+    const calls: string[] = []
+    const findPullRequestForBranch = (worktreePath: string) =>
+      Effect.sync(() => {
+        calls.push(worktreePath)
+        return { found: true, number: 26, state: 'OPEN', baseRefName: 'main' }
+      })
+    const router = makeRpcRouter({
+      eventBus: makeEventBus(),
+      gitOps: { findPullRequestForBranch } as unknown as GitOpsRpcService
+    })
+
+    const response = await Effect.runPromise(
+      router.handle({
+        id: 'git-ops-find-pr-1',
+        method: 'gitOps.findPullRequestForBranch',
+        params: { worktreePath: '/tmp/hive-feature' }
+      })
+    )
+
+    expect(response).toEqual({
+      id: 'git-ops-find-pr-1',
+      ok: true,
+      value: { found: true, number: 26, state: 'OPEN', baseRefName: 'main' }
+    })
+    expect(calls).toEqual(['/tmp/hive-feature'])
+  })
+
+  it('validates gitOps.findPullRequestForBranch params', async () => {
+    let called = false
+    const findPullRequestForBranch = () =>
+      Effect.sync(() => {
+        called = true
+        return { found: false }
+      })
+    const router = makeRpcRouter({
+      eventBus: makeEventBus(),
+      gitOps: { findPullRequestForBranch } as unknown as GitOpsRpcService
+    })
+
+    const response = await Effect.runPromise(
+      router.handle({
+        id: 'git-ops-find-pr-invalid',
+        method: 'gitOps.findPullRequestForBranch',
+        params: { worktreePath: '' }
+      })
+    )
+
+    expect(response).toMatchObject({
+      id: 'git-ops-find-pr-invalid',
+      ok: false,
+      error: { code: 'VALIDATION_FAILED' }
+    })
+    expect(called).toBe(false)
   })
 
   it('handles gitOps.getPRReviewComments through the git ops RPC domain', async () => {
@@ -21429,10 +21609,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: (projectPath, prNumber) =>
           Effect.sync(() => {
             calls.push([projectPath, prNumber])
@@ -21599,10 +21781,12 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
         getPRState: () => Effect.succeed({ success: true, state: 'OPEN', title: 'Add RPC' }),
+        findPullRequestForBranch: () => Effect.succeed({ found: false }),
         getPRReviewComments: () =>
           Effect.succeed({ success: true, comments: [], baseBranch: 'main' })
       }

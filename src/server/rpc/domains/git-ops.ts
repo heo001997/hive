@@ -31,9 +31,20 @@ export interface GitFileStatusResult {
   readonly error?: string
 }
 
+export interface GitLocalBasePullResult {
+  readonly baseBranch: string
+  readonly pulled: boolean
+  readonly warning?: string
+}
+
 export interface GitOperationResult {
   readonly success: boolean
   readonly error?: string
+  readonly localBasePull?: GitLocalBasePullResult
+  // Set by prMerge when the merge failed specifically because the PR branch
+  // conflicts with its base — lets the UI show a recoverable, actionable message
+  // instead of treating it like an unexpected failure.
+  readonly conflicted?: boolean
 }
 
 export interface GitBranchWithStatus {
@@ -209,6 +220,18 @@ export interface GitPullRequestStateResult {
   readonly success: boolean
   readonly state?: string
   readonly title?: string
+  readonly error?: string
+}
+
+// Result of resolving the PR (if any) for the branch checked out in a worktree,
+// independent of whether the user has manually "attached" it in the UI. `found`
+// is false for the common no-PR / gh-unavailable cases (never an error to the
+// caller — it just means "fall back to a local merge").
+export interface GitFindPullRequestResult {
+  readonly found: boolean
+  readonly number?: number
+  readonly state?: string
+  readonly baseRefName?: string
   readonly error?: string
 }
 
@@ -398,6 +421,10 @@ export interface GitOpsRpcService {
     worktreePath: string,
     prNumber: number
   ) => Effect.Effect<GitOperationResult, unknown, never>
+  readonly syncLocalBaseToRemote: (
+    worktreePath: string,
+    baseBranch: string
+  ) => Effect.Effect<GitLocalBasePullResult, unknown, never>
   readonly isBranchMerged: (
     worktreePath: string,
     branch: string
@@ -413,6 +440,9 @@ export interface GitOpsRpcService {
     projectPath: string,
     prNumber: number
   ) => Effect.Effect<GitPullRequestStateResult, unknown, never>
+  readonly findPullRequestForBranch: (
+    worktreePath: string
+  ) => Effect.Effect<GitFindPullRequestResult, unknown, never>
   readonly getPRReviewComments: (
     projectPath: string,
     prNumber: number
@@ -479,6 +509,9 @@ const remoteUrlParamsSchema = z
   .strict()
 const prMergeParamsSchema = z
   .object({ worktreePath: z.string().min(1), prNumber: z.number() })
+  .strict()
+const syncLocalBaseToRemoteParamsSchema = z
+  .object({ worktreePath: z.string().min(1), baseBranch: z.string().min(1) })
   .strict()
 const createPullRequestParamsSchema = z
   .object({
@@ -563,6 +596,179 @@ const parseWorktreeForBranch = (porcelainOutput: string, branchName: string): st
     if (branch === branchName && worktreePath) return worktreePath
   }
   return null
+}
+
+const LOCAL_BASE_PULL_STASH_MESSAGE = 'hive-pre-pull'
+
+// After a PR is merged on the remote, sync the locally checked-out base branch by
+// fast-forwarding it to the remote. Stash any dirty working tree first, then
+// `git fetch origin <base>` + `git merge --ff-only origin/<base>`, then restore the
+// stash. Targeting `origin/<base>` explicitly (rather than a bare `git pull`, which
+// depends on branch tracking config) makes the sync deterministic, and --ff-only means
+// it can never itself introduce a divergent merge commit. Never throws: a merge that
+// already succeeded must not be reported as failed because the local convenience sync
+// hit a snag (no upstream, nothing to fast-forward to, network error, stash-pop conflict).
+const pullLocalBaseBranch = async (
+  baseBranchPath: string,
+  baseBranch: string,
+  runCommand: CommandRunner
+): Promise<GitLocalBasePullResult> => {
+  let stashed = false
+  try {
+    const status = await runCommand('git', ['status', '--porcelain'], { cwd: baseBranchPath })
+    const isDirty = status.stdout.trim().length > 0
+
+    if (isDirty) {
+      await runCommand(
+        'git',
+        ['stash', 'push', '-u', '-m', LOCAL_BASE_PULL_STASH_MESSAGE],
+        { cwd: baseBranchPath }
+      )
+      stashed = true
+    }
+
+    await runCommand('git', ['fetch', 'origin', baseBranch], { cwd: baseBranchPath })
+    await runCommand('git', ['merge', '--ff-only', `origin/${baseBranch}`], {
+      cwd: baseBranchPath
+    })
+
+    if (stashed) {
+      await runCommand('git', ['stash', 'pop'], { cwd: baseBranchPath })
+    }
+
+    return { baseBranch, pulled: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    // If we stashed but never reached a clean pop, the stash is still on the stack
+    // (git keeps it on a pop conflict too) — tell the user how to recover it.
+    const stashNote = stashed
+      ? ` Local changes are saved in stash "${LOCAL_BASE_PULL_STASH_MESSAGE}" — run \`git stash pop\` in ${baseBranchPath} to restore them.`
+      : ''
+    return {
+      baseBranch,
+      pulled: false,
+      warning: `Could not auto-pull ${baseBranch} locally: ${message}.${stashNote}`
+    }
+  }
+}
+
+// When the base branch isn't checked out in any worktree there is no working tree to
+// fast-forward — but the local `<base>` ref still backs every worktree's displayed diff
+// (branchDiffShortStat computes `${baseBranch}...HEAD`). Update that ref directly with a
+// `<base>:<base>` fetch refspec (which also refreshes `origin/<base>`) so the shared
+// baseline can't go stale. The refspec only advances the ref on a fast-forward, so it
+// can't rewrite local history. Never throws, for the same reason as pullLocalBaseBranch.
+const fetchLocalBaseRef = async (
+  worktreePath: string,
+  baseBranch: string,
+  runCommand: CommandRunner
+): Promise<GitLocalBasePullResult> => {
+  try {
+    await runCommand('git', ['fetch', 'origin', `${baseBranch}:${baseBranch}`], {
+      cwd: worktreePath
+    })
+    return { baseBranch, pulled: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      baseBranch,
+      pulled: false,
+      warning: `Could not fast-forward local ${baseBranch} to origin/${baseBranch}: ${message}.`
+    }
+  }
+}
+
+// Phrases GitHub/gh emit when a PR cannot be merged because its branch conflicts
+// with the base. Matched against the raw error so a merge that fails for conflict
+// reasons (despite passing the pre-flight check) still yields an actionable message.
+const PR_MERGE_CONFLICT_PHRASES = [
+  'not mergeable',
+  'merge commit cannot be cleanly created',
+  'cannot be cleanly created',
+  'resolve the merge conflicts'
+]
+
+const isPrMergeConflictError = (message: string): boolean => {
+  const lower = message.toLowerCase()
+  return PR_MERGE_CONFLICT_PHRASES.some((phrase) => lower.includes(phrase))
+}
+
+// A clear, actionable message for the common case: the PR branch has diverged from
+// its base and has real conflicts, so GitHub can't create the merge commit. Replaces
+// gh's raw multi-line stderr dump in the UI.
+const prMergeConflictMessage = (prNumber: number, baseBranch?: string): string => {
+  const base = baseBranch && baseBranch.length > 0 ? baseBranch : 'its base branch'
+  const ref = baseBranch && baseBranch.length > 0 ? baseBranch : '<base>'
+  return (
+    `PR #${prNumber} has conflicts with ${base} and can't be merged automatically. ` +
+    `In the feature worktree run \`git fetch origin ${ref} && git merge origin/${ref}\`, ` +
+    `resolve the conflicts, push, then merge again.`
+  )
+}
+
+// Ask GitHub whether the PR can be merged before attempting the merge. GitHub computes
+// mergeability asynchronously: 'CONFLICTING' is a hard no, 'MERGEABLE' is a yes, and
+// 'UNKNOWN' means it's still computing — in which case we proceed and let the merge
+// attempt (and its error mapping) decide. Never throws: any failure (gh missing, no
+// network, non-JSON output) falls through to the merge attempt.
+const checkPrMergeability = async (
+  runCommand: CommandRunner,
+  worktreePath: string,
+  prNumber: number
+): Promise<{ conflicted: boolean; baseBranch?: string; state?: string }> => {
+  try {
+    const { stdout } = await runCommand(
+      'gh',
+      ['pr', 'view', String(prNumber), '--json', 'mergeable,baseRefName,state'],
+      { cwd: worktreePath }
+    )
+    const parsed = JSON.parse(stdout) as {
+      mergeable?: string
+      baseRefName?: string
+      state?: string
+    }
+    return {
+      conflicted: parsed.mergeable === 'CONFLICTING',
+      baseBranch: parsed.baseRefName,
+      state: parsed.state
+    }
+  } catch {
+    return { conflicted: false }
+  }
+}
+
+// Resolve the PR (if any) for the branch checked out in `worktreePath`, without
+// requiring the user to have manually attached it in the UI. `gh pr view` with no
+// number resolves the PR for the current branch. Returns found:false for every
+// non-fatal case (no PR, gh missing, not authed, no network) so callers can fall
+// back to a local merge. Never throws.
+const findPullRequestForBranch = async (
+  worktreePath: string,
+  runCommand: CommandRunner
+): Promise<GitFindPullRequestResult> => {
+  try {
+    const { stdout } = await runCommand(
+      'gh',
+      ['pr', 'view', '--json', 'number,state,baseRefName'],
+      { cwd: worktreePath }
+    )
+    const data = JSON.parse(stdout) as {
+      number?: number
+      state?: string
+      baseRefName?: string
+    }
+    if (typeof data.number !== 'number') {
+      return { found: false }
+    }
+    return {
+      found: true,
+      number: data.number,
+      state: data.state,
+      baseRefName: data.baseRefName
+    }
+  } catch (error) {
+    return { found: false, error: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 const invalidBranch = (branch: string): boolean => !branch || branch.startsWith('-')
@@ -1710,16 +1916,42 @@ export const makeLiveGitOpsRpcService = (
       Effect.tryPromise({
         try: async (): Promise<GitOperationResult> => {
           try {
-            await runCommand('gh', ['pr', 'merge', String(prNumber), '--merge'], {
-              cwd: worktreePath
-            })
+            // Pre-flight: GitHub refuses to create the merge commit when the PR
+            // branch conflicts with its base, and `gh pr merge` then exits with a
+            // raw multi-line stderr dump. Detect that up front and return an
+            // actionable message instead of attempting a doomed merge.
+            const mergeability = await checkPrMergeability(runCommand, worktreePath, prNumber)
+            const alreadyMerged = mergeability.state === 'MERGED'
 
-            const prInfoResult = await runCommand(
-              'gh',
-              ['pr', 'view', String(prNumber), '--json', 'baseRefName', '-q', '.baseRefName'],
-              { cwd: worktreePath }
-            )
-            const targetBranch = prInfoResult.stdout.trim()
+            // A conflict only blocks an actual merge attempt. If GitHub already merged
+            // the PR (outside Hive, or a prior run merged remotely but died before the
+            // local sync), the mergeable flag is stale — skip the conflict guard and go
+            // straight to mirroring the remote locally.
+            if (!alreadyMerged && mergeability.conflicted) {
+              return {
+                success: false,
+                conflicted: true,
+                error: prMergeConflictMessage(prNumber, mergeability.baseBranch)
+              }
+            }
+
+            if (!alreadyMerged) {
+              await runCommand('gh', ['pr', 'merge', String(prNumber), '--merge'], {
+                cwd: worktreePath
+              })
+            }
+
+            // The base branch is the PR's base. Prefer the value already fetched in the
+            // pre-flight; only re-query if it was missing (e.g. the pre-flight failed).
+            let targetBranch = mergeability.baseBranch ?? ''
+            if (!targetBranch) {
+              const prInfoResult = await runCommand(
+                'gh',
+                ['pr', 'view', String(prNumber), '--json', 'baseRefName', '-q', '.baseRefName'],
+                { cwd: worktreePath }
+              )
+              targetBranch = prInfoResult.stdout.trim()
+            }
 
             const worktreeListResult = await runCommand(
               'git',
@@ -1733,23 +1965,51 @@ export const makeLiveGitOpsRpcService = (
               targetBranch
             )
 
+            // `gh pr merge` above already merged the PR on the remote. Just
+            // fast-forward the locally checked-out base branch to match — do NOT
+            // replay the merge locally. A local `git merge` would create a second,
+            // divergent merge commit for the same branch, leaving the base with
+            // multiple merge bases against the remote and producing phantom
+            // "already-merged" diffs on every future branch cut from it.
+            let localBasePull: GitLocalBasePullResult | undefined
             if (targetWorktreePath) {
-              const currentBranch = await runCommand('git', ['branch', '--show-current'], {
-                cwd: worktreePath
-              })
-              await runCommand('git', ['merge', currentBranch.stdout.trim()], {
-                cwd: targetWorktreePath
-              })
+              localBasePull = await pullLocalBaseBranch(
+                targetWorktreePath,
+                targetBranch,
+                runCommand
+              )
+            } else {
+              // The base branch isn't checked out in any worktree, so there's no working
+              // tree to fast-forward — but the local `<base>` ref still backs every
+              // worktree's displayed diff. Advance that ref (and refresh `origin/<base>`)
+              // directly so the shared diff baseline doesn't lag the just-merged remote.
+              localBasePull = await fetchLocalBaseRef(worktreePath, targetBranch, runCommand)
             }
 
-            return { success: true }
+            return { success: true, localBasePull }
           } catch (error) {
-            return {
-              success: false,
-              error: error instanceof Error ? error.message : String(error)
+            const message = error instanceof Error ? error.message : String(error)
+            // The merge itself failed for conflict reasons (e.g. mergeability was
+            // still 'UNKNOWN' at pre-flight). Surface the same actionable message.
+            if (isPrMergeConflictError(message)) {
+              return {
+                success: false,
+                conflicted: true,
+                error: prMergeConflictMessage(prNumber)
+              }
             }
+            return { success: false, error: message }
           }
         },
+        catch: (cause) => cause
+      }),
+    syncLocalBaseToRemote: (worktreePath, baseBranch) =>
+      Effect.tryPromise({
+        // Fast-forward the locally checked-out base branch to origin/<base> using the
+        // same stash → fetch → merge --ff-only → stash-pop dance as the post-PR-merge
+        // sync. pullLocalBaseBranch never throws, so this always resolves to a result.
+        try: (): Promise<GitLocalBasePullResult> =>
+          pullLocalBaseBranch(worktreePath, baseBranch, runCommand),
         catch: (cause) => cause
       }),
     isBranchMerged: (worktreePath, branch) =>
@@ -1862,6 +2122,12 @@ export const makeLiveGitOpsRpcService = (
             }
           }
         },
+        catch: (cause) => cause
+      }),
+    findPullRequestForBranch: (worktreePath) =>
+      Effect.tryPromise({
+        try: (): Promise<GitFindPullRequestResult> =>
+          findPullRequestForBranch(worktreePath, runCommand),
         catch: (cause) => cause
       }),
     getPRReviewComments: (projectPath, prNumber) =>
@@ -2440,6 +2706,24 @@ export const makeGitOpsRpcHandlers = (
         })
     ],
     [
+      'gitOps.syncLocalBaseToRemote',
+      (params, context) =>
+        Effect.gen(function* () {
+          const { worktreePath, baseBranch } = yield* Effect.try({
+            try: () => syncLocalBaseToRemoteParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          const result = yield* service.syncLocalBaseToRemote(worktreePath, baseBranch)
+          // The base worktree's branch (and possibly its working tree, via the stash
+          // dance) just changed — refresh whatever the UI is showing for it.
+          yield* context.eventBus.publish({
+            channel: GIT_STATUS_CHANGED_CHANNEL,
+            payload: { worktreePath }
+          })
+          return result
+        })
+    ],
+    [
       'gitOps.isBranchMerged',
       (params) =>
         Effect.gen(function* () {
@@ -2481,6 +2765,17 @@ export const makeGitOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.getPRState(projectPath, prNumber)
+        })
+    ],
+    [
+      'gitOps.findPullRequestForBranch',
+      (params) =>
+        Effect.gen(function* () {
+          const { worktreePath } = yield* Effect.try({
+            try: () => worktreePathParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.findPullRequestForBranch(worktreePath)
         })
     ],
     [

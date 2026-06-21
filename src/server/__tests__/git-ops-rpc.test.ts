@@ -1235,6 +1235,12 @@ describe('git ops RPC domain', () => {
       async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
         calls.push({ file, args, cwd: options.cwd })
         if (file === 'gh' && args[0] === 'pr' && args[1] === 'view') {
+          if (args.includes('mergeable,baseRefName,state')) {
+            return {
+              stdout: '{"mergeable":"MERGEABLE","baseRefName":"main","state":"OPEN"}',
+              stderr: ''
+            }
+          }
           return { stdout: 'main\n', stderr: '' }
         }
         if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
@@ -1243,9 +1249,6 @@ describe('git ops RPC domain', () => {
             stderr: ''
           }
         }
-        if (file === 'git' && args.join(' ') === 'branch --show-current') {
-          return { stdout: 'feature\n', stderr: '' }
-        }
         return { stdout: '', stderr: '' }
       }
     )
@@ -1253,16 +1256,21 @@ describe('git ops RPC domain', () => {
     const service = makeLiveGitOpsRpcService({ runCommand })
     const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
 
-    expect(result).toEqual({ success: true })
+    expect(result).toEqual({
+      success: true,
+      localBasePull: { baseBranch: 'main', pulled: true }
+    })
+    // The base branch is read from the pre-flight `gh pr view`, so there is no
+    // second `gh pr view ... baseRefName` re-query.
     expect(calls).toEqual([
       {
         file: 'gh',
-        args: ['pr', 'merge', '123', '--merge'],
+        args: ['pr', 'view', '123', '--json', 'mergeable,baseRefName,state'],
         cwd: '/tmp/hive-feature'
       },
       {
         file: 'gh',
-        args: ['pr', 'view', '123', '--json', 'baseRefName', '-q', '.baseRefName'],
+        args: ['pr', 'merge', '123', '--merge'],
         cwd: '/tmp/hive-feature'
       },
       {
@@ -1272,15 +1280,305 @@ describe('git ops RPC domain', () => {
       },
       {
         file: 'git',
-        args: ['branch', '--show-current'],
-        cwd: '/tmp/hive-feature'
+        args: ['status', '--porcelain'],
+        cwd: '/tmp/hive-main'
       },
       {
         file: 'git',
-        args: ['merge', 'feature'],
+        args: ['fetch', 'origin', 'main'],
+        cwd: '/tmp/hive-main'
+      },
+      {
+        file: 'git',
+        args: ['merge', '--ff-only', 'origin/main'],
         cwd: '/tmp/hive-main'
       }
     ])
+  })
+
+  it('returns an actionable conflict error without attempting the merge when the PR conflicts', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string> }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>) => {
+        calls.push({ file, args })
+        if (file === 'gh' && args[1] === 'view' && args.includes('mergeable,baseRefName,state')) {
+          return {
+            stdout: '{"mergeable":"CONFLICTING","baseRefName":"main","state":"OPEN"}',
+            stderr: ''
+          }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 24))
+
+    expect(result.success).toBe(false)
+    expect(result.conflicted).toBe(true)
+    expect(result.error).toContain('PR #24 has conflicts with main')
+    expect(result.error).toContain('git fetch origin main && git merge origin/main')
+    // The doomed `gh pr merge` is never attempted.
+    expect(calls.some((c) => c.file === 'gh' && c.args[1] === 'merge')).toBe(false)
+  })
+
+  it('maps a conflict failure from gh pr merge to an actionable error', async () => {
+    const runCommand = vi.fn(async (file: string, args: ReadonlyArray<string>) => {
+      // Mergeability is still being computed by GitHub at pre-flight time.
+      if (file === 'gh' && args[1] === 'view' && args.includes('mergeable,baseRefName,state')) {
+        return {
+          stdout: '{"mergeable":"UNKNOWN","baseRefName":"main","state":"OPEN"}',
+          stderr: ''
+        }
+      }
+      if (file === 'gh' && args[1] === 'merge') {
+        throw new Error(
+          'Command failed: gh pr merge 24 --merge\nPull request heo001997/hive#24 is not mergeable: the merge commit cannot be cleanly created.'
+        )
+      }
+      return { stdout: '', stderr: '' }
+    })
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 24))
+
+    expect(result.success).toBe(false)
+    expect(result.conflicted).toBe(true)
+    expect(result.error).toContain('PR #24 has conflicts')
+  })
+
+  it('stashes a dirty base branch around the post-merge pull', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        calls.push({ file, args, cwd: options.cwd })
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-main', 'HEAD abc123', 'branch refs/heads/main'].join('\n'),
+            stderr: ''
+          }
+        }
+        if (file === 'git' && args.join(' ') === 'status --porcelain') {
+          return { stdout: ' M tracked.txt\n', stderr: '' }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result).toEqual({
+      success: true,
+      localBasePull: { baseBranch: 'main', pulled: true }
+    })
+    const baseCalls = calls.filter((c) => c.cwd === '/tmp/hive-main').map((c) => c.args.join(' '))
+    expect(baseCalls).toEqual([
+      'status --porcelain',
+      'stash push -u -m hive-pre-pull',
+      'fetch origin main',
+      'merge --ff-only origin/main',
+      'stash pop'
+    ])
+  })
+
+  it('reports a warning when the post-merge pull fails but keeps the merge successful', async () => {
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-main', 'HEAD abc123', 'branch refs/heads/main'].join('\n'),
+            stderr: ''
+          }
+        }
+        if (file === 'git' && args[0] === 'merge' && options.cwd === '/tmp/hive-main') {
+          throw new Error('Not possible to fast-forward, aborting.')
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result.success).toBe(true)
+    expect(result.localBasePull?.pulled).toBe(false)
+    expect(result.localBasePull?.warning).toContain('Could not auto-pull main locally')
+    expect(result.localBasePull?.warning).not.toContain('hive-pre-pull')
+  })
+
+  it('leaves the stash intact and warns when stash pop conflicts after the pull', async () => {
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-main', 'HEAD abc123', 'branch refs/heads/main'].join('\n'),
+            stderr: ''
+          }
+        }
+        if (file === 'git' && args.join(' ') === 'status --porcelain') {
+          return { stdout: ' M tracked.txt\n', stderr: '' }
+        }
+        if (file === 'git' && args.join(' ') === 'stash pop' && options.cwd === '/tmp/hive-main') {
+          throw new Error('CONFLICT (content): Merge conflict in tracked.txt')
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result.success).toBe(true)
+    expect(result.localBasePull?.pulled).toBe(false)
+    expect(result.localBasePull?.warning).toContain('hive-pre-pull')
+    expect(result.localBasePull?.warning).toContain('git stash pop')
+  })
+
+  it('fast-forwards the local base ref when the base branch is not checked out in a worktree', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        calls.push({ file, args, cwd: options.cwd })
+        if (file === 'gh' && args[1] === 'view') return { stdout: 'main\n', stderr: '' }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-feature', 'HEAD abc123', 'branch refs/heads/feature'].join(
+              '\n'
+            ),
+            stderr: ''
+          }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    // No working tree to fast-forward, so the local <base> ref is advanced directly with a
+    // `<base>:<base>` fetch refspec (run from the feature worktree) instead.
+    expect(result).toEqual({
+      success: true,
+      localBasePull: { baseBranch: 'main', pulled: true }
+    })
+    expect(
+      calls.some(
+        (c) =>
+          c.file === 'git' &&
+          c.args.join(' ') === 'fetch origin main:main' &&
+          c.cwd === '/tmp/hive-feature'
+      )
+    ).toBe(true)
+    // The local merge is never replayed.
+    expect(calls.some((c) => c.args[0] === 'merge')).toBe(false)
+    expect(calls.some((c) => c.args.join(' ') === 'pull --ff-only')).toBe(false)
+  })
+
+  it('syncs a checked-out base branch to origin via syncLocalBaseToRemote', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        calls.push({ file, args, cwd: options.cwd })
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(
+      service.syncLocalBaseToRemote('/tmp/hive-main', 'main')
+    )
+
+    expect(result).toEqual({ baseBranch: 'main', pulled: true })
+    const baseCalls = calls.map((c) => c.args.join(' '))
+    expect(baseCalls).toEqual(['status --porcelain', 'fetch origin main', 'merge --ff-only origin/main'])
+    expect(calls.every((c) => c.cwd === '/tmp/hive-main')).toBe(true)
+  })
+
+  it('skips gh pr merge when the PR is already merged and still mirrors the local base', async () => {
+    const calls: Array<{ file: string; args: ReadonlyArray<string>; cwd: string }> = []
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        calls.push({ file, args, cwd: options.cwd })
+        if (file === 'gh' && args[1] === 'view' && args.includes('mergeable,baseRefName,state')) {
+          // PR was already merged on GitHub (outside Hive, or a prior run merged
+          // remotely but died before syncing). mergeable is stale/irrelevant here.
+          return {
+            stdout: '{"mergeable":"UNKNOWN","baseRefName":"main","state":"MERGED"}',
+            stderr: ''
+          }
+        }
+        if (file === 'git' && args.join(' ') === 'worktree list --porcelain') {
+          return {
+            stdout: ['worktree /tmp/hive-main', 'HEAD abc123', 'branch refs/heads/main'].join('\n'),
+            stderr: ''
+          }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 123))
+
+    expect(result).toEqual({
+      success: true,
+      localBasePull: { baseBranch: 'main', pulled: true }
+    })
+    // The remote already has the merge commit — never run `gh pr merge` again...
+    expect(calls.some((c) => c.file === 'gh' && c.args[1] === 'merge')).toBe(false)
+    // ...but still fast-forward the local base onto origin so no manual pull is needed.
+    const baseCalls = calls.filter((c) => c.cwd === '/tmp/hive-main').map((c) => c.args.join(' '))
+    expect(baseCalls).toEqual([
+      'status --porcelain',
+      'fetch origin main',
+      'merge --ff-only origin/main'
+    ])
+  })
+
+  it('resolves the PR for the current branch via findPullRequestForBranch', async () => {
+    const runCommand = vi.fn(
+      async (file: string, args: ReadonlyArray<string>, options: { cwd: string }) => {
+        if (
+          file === 'gh' &&
+          args[1] === 'view' &&
+          args.includes('number,state,baseRefName') &&
+          options.cwd === '/tmp/hive-feature'
+        ) {
+          return {
+            stdout: '{"number":26,"state":"OPEN","baseRefName":"main"}',
+            stderr: ''
+          }
+        }
+        return { stdout: '', stderr: '' }
+      }
+    )
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.findPullRequestForBranch('/tmp/hive-feature'))
+
+    expect(result).toEqual({
+      found: true,
+      number: 26,
+      state: 'OPEN',
+      baseRefName: 'main'
+    })
+  })
+
+  it('returns found:false from findPullRequestForBranch when the branch has no PR', async () => {
+    const runCommand = vi.fn(async () => {
+      // `gh pr view` exits non-zero when there is no PR for the current branch.
+      throw new Error('no pull requests found for branch "feature"')
+    })
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.findPullRequestForBranch('/tmp/hive-feature'))
+
+    expect(result.found).toBe(false)
+    expect(result.number).toBeUndefined()
   })
 
   it('checks whether a branch is merged into HEAD', async () => {

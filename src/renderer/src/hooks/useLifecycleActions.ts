@@ -336,9 +336,20 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     try {
       const result = await gitApi.prMerge(worktree.path, pr.number)
       if (result.success) {
-        toast.success('PR merged successfully')
+        const pull = result.localBasePull
+        toast.success(
+          pull?.pulled
+            ? `PR merged successfully · Pulled latest ${pull.baseBranch} locally`
+            : 'PR merged successfully'
+        )
+        if (pull?.warning) {
+          toast.warning(pull.warning)
+        }
         setPrLiveState((prev) => ({ state: 'MERGED', title: prev?.title }))
         return true
+      } else if (result.conflicted) {
+        toast.error(result.error ?? 'PR has conflicts with its base branch')
+        return false
       } else {
         toast.error(`Merge failed: ${result.error}`)
         return false

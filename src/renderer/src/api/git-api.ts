@@ -21,9 +21,17 @@ type GitBranchInfoResult = {
   error?: string
 }
 
+type GitLocalBasePullResult = {
+  baseBranch: string
+  pulled: boolean
+  warning?: string
+}
+
 type GitOperationResult = {
   success: boolean
   error?: string
+  localBasePull?: GitLocalBasePullResult
+  conflicted?: boolean
 }
 
 type GitCommitResult = {
@@ -50,6 +58,14 @@ type GitPRStateResult = {
   success: boolean
   state?: string
   title?: string
+  error?: string
+}
+
+type GitFindPullRequestResult = {
+  found: boolean
+  number?: number
+  state?: string
+  baseRefName?: string
   error?: string
 }
 
@@ -446,6 +462,23 @@ export const gitApi = {
     getRendererRpcClient().request<GitOperationResult>('gitOps.prMerge', {
       worktreePath,
       prNumber
+    }),
+  findPullRequestForBranch: async (
+    worktreePath: string
+  ): Promise<GitFindPullRequestResult> =>
+    getRendererRpcClient().request<GitFindPullRequestResult>(
+      'gitOps.findPullRequestForBranch',
+      {
+        worktreePath
+      }
+    ),
+  syncLocalBaseToRemote: async (
+    worktreePath: string,
+    baseBranch: string
+  ): Promise<GitLocalBasePullResult> =>
+    getRendererRpcClient().request<GitLocalBasePullResult>('gitOps.syncLocalBaseToRemote', {
+      worktreePath,
+      baseBranch
     }),
   listBranchesWithStatus: async (projectPath: string): Promise<GitListBranchesWithStatusResult> =>
     getRendererRpcClient().request<GitListBranchesWithStatusResult>(
