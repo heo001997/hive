@@ -53,11 +53,26 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
   const pinnedProjectIds = usePinnedStore((state) => state.pinnedProjectIds)
   const boardChatStatus = useBoardChatStore((state) => {
     if (!projectId) return 'idle'
-    const key = `project:${projectId}`
-    if (state.activeScopeKey === key) return state.status
-    return state.snapshots[key]?.status ?? 'idle'
+    // Aggregate across all board-assistant chats for this project — surface the
+    // most attention-worthy status as a single badge on the launcher. Returns a
+    // primitive so the selector can't trigger an identity-based re-render loop.
+    const priority: Record<string, number> = {
+      error: 4,
+      awaiting_confirmation: 3,
+      thinking: 2,
+      starting: 1,
+      idle: 0
+    }
+    let best = 'idle' as ReturnType<typeof useBoardChatStore.getState>['status']
+    for (const snapshot of Object.values(state.snapshots)) {
+      if (snapshot.scope?.kind !== 'project' || snapshot.scope.projectId !== projectId) continue
+      if ((priority[snapshot.status] ?? 0) > (priority[best] ?? 0)) {
+        best = snapshot.status
+      }
+    }
+    return best
   })
-  const boardAssistantByProject = useSessionStore((state) => state.boardAssistantByProject)
+  const boardAssistantsByProject = useSessionStore((state) => state.boardAssistantsByProject)
   const createBoardAssistantSession = useSessionStore((s) => s.createBoardAssistantSession)
   const focusBoardAssistantSession = useSessionStore((s) => s.focusBoardAssistantSession)
 
@@ -524,9 +539,10 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
             }
             onClick={() => {
               if (!projectId) return
-              const existing = boardAssistantByProject.get(projectId)
-              if (existing) {
-                focusBoardAssistantSession(projectId)
+              // Focus the most recent existing chat for this project, else start one.
+              const existing = boardAssistantsByProject.get(projectId) ?? []
+              if (existing.length > 0) {
+                focusBoardAssistantSession(existing[existing.length - 1].id)
               } else {
                 void createBoardAssistantSession(projectId)
               }

@@ -62,7 +62,7 @@ function seedSession(agentSdk: AgentSdk = 'claude-code'): void {
       ]
     ]),
     sessionsByConnection: new Map(),
-    boardAssistantByProject: new Map()
+    boardAssistantsByProject: new Map()
   })
 }
 

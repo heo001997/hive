@@ -229,6 +229,10 @@ export const dbApi = {
       getRendererRpcClient().request<TResult | null>('db.session.getActiveBoardAssistant', {
         projectId
       }),
+    getActiveBoardAssistants: async <TResult>(projectId: string): Promise<TResult[]> =>
+      getRendererRpcClient().request<TResult[]>('db.session.getActiveBoardAssistants', {
+        projectId
+      }),
     getPinnedSessions: async <TResult>(worktreeId: string): Promise<TResult[]> =>
       getRendererRpcClient().request<TResult[]>('db.session.getPinnedSessions', { worktreeId }),
     setPinnedToBoard: async <TResult>(

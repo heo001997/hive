@@ -15,7 +15,7 @@ function seedSession(agentSdk: string): void {
   useSessionStore.setState({
     sessionsByWorktree: new Map([['wt1', [{ id: 's1', agent_sdk: agentSdk }]]]),
     sessionsByConnection: new Map(),
-    boardAssistantByProject: new Map(),
+    boardAssistantsByProject: new Map(),
     orphanedSessions: new Map()
   } as never)
 }
