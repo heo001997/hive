@@ -1,8 +1,28 @@
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
-import { afterEach, describe, expect, test, vi } from 'vitest'
+import { join, resolve } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+
+// The module probes git at import time to auto-isolate a linked worktree. Mock
+// spawnSync so the result is deterministic regardless of where the test runs
+// (the test suite itself may execute inside a linked worktree). Shapes:
+//   main checkout  -> git-dir === common-dir -> not isolated -> shared ~/.hive-dev
+//   linked worktree-> git-dir !== common-dir -> auto-isolate to <root>/.hive-data
+const { gitProbe } = vi.hoisted(() => ({ gitProbe: vi.fn() }))
+vi.mock('node:child_process', () => ({ default: { spawnSync: gitProbe }, spawnSync: gitProbe }))
+
+const mainCheckoutProbe = () => ({ status: 0, stdout: '/repo\n.git\n.git\n' })
+const linkedWorktreeProbe = (root: string) => ({
+  status: 0,
+  stdout: `${root}\n/main/.git/worktrees/wt\n/main/.git\n`
+})
 
 describe('dev data setup', () => {
+  beforeEach(() => {
+    // Default every test to a plain main checkout (not isolated).
+    gitProbe.mockReset()
+    gitProbe.mockReturnValue(mainCheckoutProbe())
+  })
+
   afterEach(() => {
     vi.unstubAllEnvs()
     vi.resetModules()
@@ -13,6 +33,29 @@ describe('dev data setup', () => {
 
     expect(DEV_DATA_DIR).toBe(resolve(homedir(), '.hive-dev'))
     expect(DEV_WORKTREES_DIR).toBe(resolve(homedir(), '.hive-dev-worktrees'))
+  })
+
+  test('auto-isolates a linked git worktree to <root>/.hive-data (no env needed)', async () => {
+    gitProbe.mockReturnValue(linkedWorktreeProbe('/wt/auto'))
+    vi.resetModules() // re-evaluate so the probe result is read at load
+    const mod = await import('../scripts/dev-data-setup.mjs')
+
+    expect(mod.DEV_DATA_DIR).toBe(join('/wt/auto', '.hive-data'))
+    expect(mod.DEV_WORKTREES_DIR).toBe(resolve('/wt/auto/.hive-data-worktrees'))
+    expect(mod.IS_ISOLATED_WORKTREE).toBe(true)
+    // Still seeds from the shared dev sandbox, never production.
+    expect(mod.SHARED_DEV_DATA_DIR).toBe(resolve(homedir(), '.hive-dev'))
+  })
+
+  test('explicit HIVE_DEV_DATA_DIR wins over worktree auto-detection', async () => {
+    gitProbe.mockReturnValue(linkedWorktreeProbe('/wt/auto'))
+    vi.stubEnv('HIVE_DEV_DATA_DIR', '/explicit/.hive-data')
+    vi.resetModules()
+    const { DEV_DATA_DIR } = await import('../scripts/dev-data-setup.mjs')
+
+    expect(DEV_DATA_DIR).toBe('/explicit/.hive-data')
+    // The override short-circuits detection — git is never probed.
+    expect(gitProbe).not.toHaveBeenCalled()
   })
 
   test('HIVE_DEV_DATA_DIR relocates both dev dirs as siblings (per-worktree isolation)', async () => {

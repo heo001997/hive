@@ -8,7 +8,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { EventEmitter } from 'node:events'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { afterEach, describe, expect, test, vi } from 'vitest'
@@ -35,6 +35,10 @@ describe('dev desktop script', () => {
 
   test('pins HIVE_DATA_DIR and HIVE_WORKTREES_DIR to the fixed dev dirs', async () => {
     const { createDevDesktopEnv } = await import('../scripts/dev-desktop.mjs')
+    // Compare against the module's own resolved dev dirs rather than a hardcoded
+    // ~/.hive-dev: those auto-relocate into a linked git worktree, so a hardcoded
+    // expectation would be location-dependent (pass in main, fail in a worktree).
+    const { DEV_DATA_DIR, DEV_WORKTREES_DIR } = await import('../scripts/dev-data-setup.mjs')
 
     const env = createDevDesktopEnv({
       cwd: '/repo/hive',
@@ -46,22 +50,26 @@ describe('dev desktop script', () => {
       }
     })
 
-    expect(env.HIVE_DATA_DIR).toBe(resolve(homedir(), '.hive-dev'))
-    expect(env.HIVE_WORKTREES_DIR).toBe(resolve(homedir(), '.hive-dev-worktrees'))
+    expect(env.HIVE_DATA_DIR).toBe(DEV_DATA_DIR)
+    expect(env.HIVE_WORKTREES_DIR).toBe(DEV_WORKTREES_DIR)
   })
 
-  test('preserves an explicit HIVE_SERVER_ENTRY_PATH', async () => {
+  test('ignores an inherited HIVE_SERVER_ENTRY_PATH (always pins the fresh dev bundle)', async () => {
     const { createDevDesktopEnv } = await import('../scripts/dev-desktop.mjs')
 
     const env = createDevDesktopEnv({
       cwd: '/repo/hive',
       env: {
         PATH: '/bin',
+        // A leaked entry path (e.g. from another worktree/main clone) must NOT
+        // win: the launcher rebuilds <cwd>/.dev-server/server.js every run, so it
+        // always pins that — loading a stale bundle causes schema drift and
+        // "RPC parameters failed validation".
         HIVE_SERVER_ENTRY_PATH: '/custom/server.js'
       }
     })
 
-    expect(env.HIVE_SERVER_ENTRY_PATH).toBe('/custom/server.js')
+    expect(env.HIVE_SERVER_ENTRY_PATH).toBe(resolve('/repo/hive/.dev-server/server.js'))
   })
 
   test('does not pass ELECTRON_RUN_AS_NODE into electron-vite dev', async () => {
@@ -275,7 +283,7 @@ process.exit(1)
     const child = spawn(process.execPath, [launcherPath], {
       cwd,
       env: {
-        ...process.env,
+        ...envWithoutHive(),
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         FAKE_CHILD_READY: readyFile,
         FAKE_CHILD_TERM: termFile
@@ -346,7 +354,7 @@ process.exit(1)
     const child = spawn(process.execPath, [launcherPath], {
       cwd,
       env: {
-        ...process.env,
+        ...envWithoutHive(),
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         FAKE_SERVER_READY: serverReadyFile,
         FAKE_SERVER_TERM: serverTermFile,
@@ -374,6 +382,19 @@ process.exit(1)
     expect(existsSync(serverTermFile)).toBe(true)
   }, 5_000)
 })
+
+// Strip ambient HIVE_* vars before spawning the real launcher. A developer's
+// shell polluted by a prior `pnpm dev` (leaked HIVE_SERVER_MODE,
+// HIVE_SERVER_ENTRY_PATH, HIVE_DATA_DIR, …) would otherwise leak into the child
+// and skew assertions — the launcher must derive everything from the cwd plus
+// the env we pass explicitly. CI is clean, but local shells often aren't.
+const envWithoutHive = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env }
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('HIVE_')) delete env[key]
+  }
+  return env
+}
 
 const mkTempDir = (): string => {
   const dir = realpathSync(mkdtempSync(resolve(tmpdir(), 'hive-dev-desktop-script-')))

@@ -10,8 +10,6 @@ const DEV_SERVER_DIR = '.dev-server'
 const SERVER_ENTRY = 'server.js'
 const SERVER_CHUNKS = 'server-chunks'
 
-const nonEmpty = (value) => (value && value.length > 0 ? value : undefined)
-
 // Isolate dev data from the installed/official ("daily") app. Without this,
 // `pnpm dev` and /Applications/Hive.app both open ~/.hive/hive.db (and share
 // logs, icons, attachments, worktrees) — running both at once races the same
@@ -31,13 +29,19 @@ export const createDevDesktopEnv = ({ cwd = process.cwd(), env = process.env } =
   // server child re-derives its own HIVE_SERVER_DB_PATH from the dev base dir.
   delete childEnv.HIVE_SERVER_DB_PATH
   delete childEnv.HIVE_SERVER_BASE_DIR
+  // Strip an inherited server-entry override too. A parent shell that exported
+  // HIVE_SERVER_ENTRY_PATH (e.g. leaked from another worktree/main clone) would
+  // make this dev app load THAT checkout's stale server bundle against this
+  // checkout's renderer — schema drift -> "RPC parameters failed validation".
+  // copyDevServerBundle() rebuilds <cwd>/.dev-server/server.js every launch, so
+  // we always pin to the freshly-built bundle of the checkout being run.
+  delete childEnv.HIVE_SERVER_ENTRY_PATH
 
   return {
     ...childEnv,
     HIVE_DATA_DIR: DEV_DATA_DIR,
     HIVE_WORKTREES_DIR: DEV_WORKTREES_DIR,
-    HIVE_SERVER_ENTRY_PATH:
-      nonEmpty(env.HIVE_SERVER_ENTRY_PATH) ?? resolve(cwd, DEV_SERVER_DIR, SERVER_ENTRY)
+    HIVE_SERVER_ENTRY_PATH: resolve(cwd, DEV_SERVER_DIR, SERVER_ENTRY)
   }
 }
 
@@ -51,6 +55,7 @@ export const createDevHeadlessEnv = ({ env = process.env } = {}) => {
   // resolveDatabasePath() honors them ahead of the HIVE_DATA_DIR fallback.
   delete childEnv.HIVE_SERVER_DB_PATH
   delete childEnv.HIVE_SERVER_BASE_DIR
+  delete childEnv.HIVE_SERVER_ENTRY_PATH
 
   return {
     ...childEnv,
