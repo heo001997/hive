@@ -61,6 +61,14 @@ type GitPRStateResult = {
   error?: string
 }
 
+type GitFindPullRequestResult = {
+  found: boolean
+  number?: number
+  state?: string
+  baseRefName?: string
+  error?: string
+}
+
 type GitPullRequestSummary = {
   number: number
   title: string
@@ -455,6 +463,15 @@ export const gitApi = {
       worktreePath,
       prNumber
     }),
+  findPullRequestForBranch: async (
+    worktreePath: string
+  ): Promise<GitFindPullRequestResult> =>
+    getRendererRpcClient().request<GitFindPullRequestResult>(
+      'gitOps.findPullRequestForBranch',
+      {
+        worktreePath
+      }
+    ),
   syncLocalBaseToRemote: async (
     worktreePath: string,
     baseBranch: string
