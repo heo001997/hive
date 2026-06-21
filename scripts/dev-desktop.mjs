@@ -10,8 +10,6 @@ const DEV_SERVER_DIR = '.dev-server'
 const SERVER_ENTRY = 'server.js'
 const SERVER_CHUNKS = 'server-chunks'
 
-const nonEmpty = (value) => (value && value.length > 0 ? value : undefined)
-
 // Isolate dev data from the installed/official ("daily") app. Without this,
 // `pnpm dev` and /Applications/Hive.app both open ~/.hive/hive.db (and share
 // logs, icons, attachments, worktrees) — running both at once races the same
@@ -31,13 +29,22 @@ export const createDevDesktopEnv = ({ cwd = process.cwd(), env = process.env } =
   // server child re-derives its own HIVE_SERVER_DB_PATH from the dev base dir.
   delete childEnv.HIVE_SERVER_DB_PATH
   delete childEnv.HIVE_SERVER_BASE_DIR
+  // Strip inherited server-bundle overrides for the SAME isolation reason.
+  // backend-config.ts honors HIVE_SERVER_ENTRY_PATH / HIVE_SERVER_STATIC_DIR
+  // verbatim, so when one dev instance spawns another — the shared ~/.hive-dev
+  // app launching a Claude sub-agent, or a second worktree's `pnpm dev` — these
+  // leak in and make THIS worktree load the OTHER clone's (often stale) server
+  // bundle, e.g. one missing a just-added RPC handler. A worktree's dev bundle
+  // is always <cwd>/.dev-server/server.js, so ignore any inherited value and
+  // re-derive the entry path from this worktree's cwd below.
+  delete childEnv.HIVE_SERVER_ENTRY_PATH
+  delete childEnv.HIVE_SERVER_STATIC_DIR
 
   return {
     ...childEnv,
     HIVE_DATA_DIR: DEV_DATA_DIR,
     HIVE_WORKTREES_DIR: DEV_WORKTREES_DIR,
-    HIVE_SERVER_ENTRY_PATH:
-      nonEmpty(env.HIVE_SERVER_ENTRY_PATH) ?? resolve(cwd, DEV_SERVER_DIR, SERVER_ENTRY)
+    HIVE_SERVER_ENTRY_PATH: resolve(cwd, DEV_SERVER_DIR, SERVER_ENTRY)
   }
 }
 

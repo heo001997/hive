@@ -39,6 +39,7 @@ interface LifecycleActions {
   prLiveState: { state?: string; title?: string } | null
   isGitHub: boolean
   isMergingPR: boolean
+  isRebasingPR: boolean
   isArchiving: boolean
   branchInfo: { name?: string; tracking?: string | null } | null
   remoteBranches: { name: string }[]
@@ -52,6 +53,7 @@ interface LifecycleActions {
   // Actions
   createCodeReview: (targetBranch?: string) => Promise<string | null>
   mergePR: () => Promise<boolean>
+  rebasePR: () => Promise<boolean>
   // Inject the auto-resolve prompt into the ticket's Claude CLI terminal and run it.
   autoResolvePrMergeConflict: (sessionId?: string) => Promise<boolean>
   archiveWorktree: () => Promise<boolean>
@@ -156,6 +158,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
 
   // --- Local state ---
   const [isMergingPR, setIsMergingPR] = useState(false)
+  const [isRebasingPR, setIsRebasingPR] = useState(false)
   const [isArchiving, setIsArchiving] = useState(false)
   const [prLiveState, setPrLiveState] = useState<{ state?: string; title?: string } | null>(null)
   const [remoteBranches, setRemoteBranches] = useState<{ name: string }[]>([])
@@ -388,6 +391,29 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     }
   }, [worktreeId, worktree?.path])
 
+  const rebasePR = useCallback(async (): Promise<boolean> => {
+    if (!worktreeId || !worktree?.path) return false
+    const pr = useGitStore.getState().attachedPR.get(worktreeId)
+    if (!pr?.number) return false
+
+    setIsRebasingPR(true)
+    try {
+      const result = await gitApi.rebasePR(worktree.path, pr.number)
+      if (result.success) {
+        toast.success('Rebased and force-pushed')
+        return true
+      } else {
+        toast.error(result.error || 'Rebase failed')
+        return false
+      }
+    } catch {
+      toast.error('Failed to rebase PR')
+      return false
+    } finally {
+      setIsRebasingPR(false)
+    }
+  }, [worktreeId, worktree?.path])
+
   const autoResolvePrMergeConflict = useCallback(
     async (sessionIdOverride?: string): Promise<boolean> => {
       if (!worktreeId || !worktree?.path) return false
@@ -574,6 +600,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
       prLiveState: null,
       isGitHub: false,
       isMergingPR: false,
+      isRebasingPR: false,
       isArchiving: false,
       branchInfo: null,
       remoteBranches: [],
@@ -584,6 +611,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
       prMergeConflict: null,
       createCodeReview: noopString,
       mergePR: noopBool,
+      rebasePR: noopBool,
       autoResolvePrMergeConflict: noopBool,
       archiveWorktree: noopBool,
       attachPR: noopVoid,
@@ -604,6 +632,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     prLiveState,
     isGitHub,
     isMergingPR,
+    isRebasingPR,
     isArchiving,
     branchInfo,
     remoteBranches,
@@ -616,6 +645,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     // Actions
     createCodeReview,
     mergePR,
+    rebasePR,
     autoResolvePrMergeConflict,
     archiveWorktree: archiveWorktreeAction,
     attachPR: attachPRAction,

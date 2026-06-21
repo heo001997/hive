@@ -464,6 +464,11 @@ export const gitApi = {
       worktreePath,
       prNumber
     }),
+  rebasePR: async (worktreePath: string, prNumber: number): Promise<GitOperationResult> =>
+    getRendererRpcClient().request<GitOperationResult>('gitOps.rebasePR', {
+      worktreePath,
+      prNumber
+    }),
   findPullRequestForBranch: async (
     worktreePath: string
   ): Promise<GitFindPullRequestResult> =>
