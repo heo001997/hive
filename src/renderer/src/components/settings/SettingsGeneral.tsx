@@ -6,6 +6,8 @@ import { RotateCcw, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT } from '@/lib/autoResolveConflictPrompt'
 import { useShortcutStore } from '@/stores/useShortcutStore'
 import { useAccountStore, useUsageStore } from '@/stores'
 import { toast } from '@/lib/toast'
@@ -126,6 +128,7 @@ export function SettingsGeneral(): React.JSX.Element {
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
+    autoResolveConflictPrompt,
     protectedBranches,
     tipsEnabled,
     breedType,
@@ -146,6 +149,11 @@ export function SettingsGeneral(): React.JSX.Element {
   useEffect(() => {
     setProtectedBranchesDraft(protectedBranches)
   }, [protectedBranches])
+
+  const [autoResolvePromptDraft, setAutoResolvePromptDraft] = useState(autoResolveConflictPrompt)
+  useEffect(() => {
+    setAutoResolvePromptDraft(autoResolveConflictPrompt)
+  }, [autoResolveConflictPrompt])
 
   const handleResetAll = (): void => {
     resetToDefaults()
@@ -479,6 +487,44 @@ export function SettingsGeneral(): React.JSX.Element {
             Always Ask
           </button>
         </div>
+      </div>
+
+      {/* Auto-resolve conflict prompt */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium">Auto-resolve conflict prompt</label>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => {
+              setAutoResolvePromptDraft(DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT)
+              updateSetting('autoResolveConflictPrompt', DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT)
+            }}
+            data-testid="auto-resolve-prompt-reset"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Reset to default
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Sent to the ticket&apos;s Claude Code terminal when you click “Auto Resolve Conflict &amp;
+          Merge” after a PR merge conflict. Placeholders{' '}
+          <code className="rounded bg-muted px-1 py-0.5">{'{prNumber}'}</code>,{' '}
+          <code className="rounded bg-muted px-1 py-0.5">{'{baseBranch}'}</code> and{' '}
+          <code className="rounded bg-muted px-1 py-0.5">{'{featureBranch}'}</code> are filled in
+          automatically.
+        </p>
+        <Textarea
+          value={autoResolvePromptDraft}
+          onChange={(e) => setAutoResolvePromptDraft(e.target.value)}
+          onBlur={() => updateSetting('autoResolveConflictPrompt', autoResolvePromptDraft)}
+          placeholder="Prompt for auto-resolving merge conflicts…"
+          rows={10}
+          className="font-mono text-xs resize-y"
+          data-testid="auto-resolve-prompt-input"
+        />
       </div>
 
       {/* Protected branches */}

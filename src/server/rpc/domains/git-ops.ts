@@ -45,6 +45,9 @@ export interface GitOperationResult {
   // conflicts with its base — lets the UI show a recoverable, actionable message
   // instead of treating it like an unexpected failure.
   readonly conflicted?: boolean
+  // The PR's base branch, surfaced alongside a conflict so the UI can build an
+  // accurate auto-resolve prompt without re-querying GitHub.
+  readonly baseBranch?: string
 }
 
 export interface GitBranchWithStatus {
@@ -1931,6 +1934,7 @@ export const makeLiveGitOpsRpcService = (
               return {
                 success: false,
                 conflicted: true,
+                baseBranch: mergeability.baseBranch,
                 error: prMergeConflictMessage(prNumber, mergeability.baseBranch)
               }
             }
