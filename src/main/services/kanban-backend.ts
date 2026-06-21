@@ -161,6 +161,10 @@ export interface KanbanBackend {
     sortOrder: number
   ): Promise<KanbanTicket | null>
   reorder(projectId: string, ticketId: string, sortOrder: number): Promise<void>
+  reorderBatch(
+    projectId: string,
+    updates: { id: string; sortOrder: number }[]
+  ): Promise<void>
   delete(projectId: string, ticketId: string): Promise<boolean>
   archive(projectId: string, ticketId: string): Promise<KanbanTicket | null>
   archiveAllDone(projectId: string): Promise<number>
@@ -253,6 +257,13 @@ class InternalKanbanBackend implements KanbanBackend {
     const existing = await this.get(projectId, ticketId)
     if (!existing) return
     getDatabase().reorderKanbanTicket(ticketId, sortOrder)
+  }
+
+  async reorderBatch(
+    _projectId: string,
+    updates: { id: string; sortOrder: number }[]
+  ): Promise<void> {
+    getDatabase().reorderKanbanTicketsBatch(updates)
   }
 
   async delete(projectId: string, ticketId: string): Promise<boolean> {
@@ -722,6 +733,18 @@ class MarkdownKanbanBackend implements KanbanBackend {
 
   async reorder(projectId: string, ticketId: string, sortOrder: number): Promise<void> {
     await this.update(projectId, ticketId, { sort_order: sortOrder })
+  }
+
+  async reorderBatch(
+    projectId: string,
+    updates: { id: string; sortOrder: number }[]
+  ): Promise<void> {
+    // update() only writes the sort_order frontmatter (no updated_at bump), so
+    // looping it is already the no-bump path. Each touched card file is rewritten
+    // — inherent to a one-shot reorder, same write kind drag already performs.
+    for (const { id, sortOrder } of updates) {
+      await this.update(projectId, id, { sort_order: sortOrder })
+    }
   }
 
   async delete(projectId: string, ticketId: string): Promise<boolean> {

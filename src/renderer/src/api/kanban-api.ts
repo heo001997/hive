@@ -90,6 +90,11 @@ export const kanbanApi = {
       }),
     reorder: async (projectId: string, id: string, sortOrder: number): Promise<void> =>
       getRendererRpcClient().request<void>('kanban.ticket.reorder', { projectId, id, sortOrder }),
+    reorderBatch: async (
+      projectId: string,
+      updates: { id: string; sortOrder: number }[]
+    ): Promise<void> =>
+      getRendererRpcClient().request<void>('kanban.ticket.reorderBatch', { projectId, updates }),
     addTokens: async <TResult>(projectId: string, id: string, tokens: number): Promise<TResult> =>
       getRendererRpcClient().request<TResult>('kanban.ticket.addTokens', {
         projectId,
