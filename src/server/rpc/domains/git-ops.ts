@@ -409,6 +409,10 @@ export interface GitOpsRpcService {
     worktreePath: string,
     prNumber: number
   ) => Effect.Effect<GitOperationResult, unknown, never>
+  readonly syncLocalBaseToRemote: (
+    worktreePath: string,
+    baseBranch: string
+  ) => Effect.Effect<GitLocalBasePullResult, unknown, never>
   readonly isBranchMerged: (
     worktreePath: string,
     branch: string
@@ -490,6 +494,9 @@ const remoteUrlParamsSchema = z
   .strict()
 const prMergeParamsSchema = z
   .object({ worktreePath: z.string().min(1), prNumber: z.number() })
+  .strict()
+const syncLocalBaseToRemoteParamsSchema = z
+  .object({ worktreePath: z.string().min(1), baseBranch: z.string().min(1) })
   .strict()
 const createPullRequestParamsSchema = z
   .object({
@@ -579,11 +586,13 @@ const parseWorktreeForBranch = (porcelainOutput: string, branchName: string): st
 const LOCAL_BASE_PULL_STASH_MESSAGE = 'hive-pre-pull'
 
 // After a PR is merged on the remote, sync the locally checked-out base branch by
-// fast-forwarding it to the remote. Stash any dirty working tree first, pull, then
-// restore the stash. The pull is --ff-only so the sync can never itself introduce a
-// divergent merge commit. Never throws: a merge that already succeeded must not be
-// reported as failed because the local convenience pull hit a snag (no upstream,
-// nothing to fast-forward to, network error, stash-pop conflict).
+// fast-forwarding it to the remote. Stash any dirty working tree first, then
+// `git fetch origin <base>` + `git merge --ff-only origin/<base>`, then restore the
+// stash. Targeting `origin/<base>` explicitly (rather than a bare `git pull`, which
+// depends on branch tracking config) makes the sync deterministic, and --ff-only means
+// it can never itself introduce a divergent merge commit. Never throws: a merge that
+// already succeeded must not be reported as failed because the local convenience sync
+// hit a snag (no upstream, nothing to fast-forward to, network error, stash-pop conflict).
 const pullLocalBaseBranch = async (
   baseBranchPath: string,
   baseBranch: string,
@@ -603,7 +612,10 @@ const pullLocalBaseBranch = async (
       stashed = true
     }
 
-    await runCommand('git', ['pull', '--ff-only'], { cwd: baseBranchPath })
+    await runCommand('git', ['fetch', 'origin', baseBranch], { cwd: baseBranchPath })
+    await runCommand('git', ['merge', '--ff-only', `origin/${baseBranch}`], {
+      cwd: baseBranchPath
+    })
 
     if (stashed) {
       await runCommand('git', ['stash', 'pop'], { cwd: baseBranchPath })
@@ -621,6 +633,32 @@ const pullLocalBaseBranch = async (
       baseBranch,
       pulled: false,
       warning: `Could not auto-pull ${baseBranch} locally: ${message}.${stashNote}`
+    }
+  }
+}
+
+// When the base branch isn't checked out in any worktree there is no working tree to
+// fast-forward — but the local `<base>` ref still backs every worktree's displayed diff
+// (branchDiffShortStat computes `${baseBranch}...HEAD`). Update that ref directly with a
+// `<base>:<base>` fetch refspec (which also refreshes `origin/<base>`) so the shared
+// baseline can't go stale. The refspec only advances the ref on a fast-forward, so it
+// can't rewrite local history. Never throws, for the same reason as pullLocalBaseBranch.
+const fetchLocalBaseRef = async (
+  worktreePath: string,
+  baseBranch: string,
+  runCommand: CommandRunner
+): Promise<GitLocalBasePullResult> => {
+  try {
+    await runCommand('git', ['fetch', 'origin', `${baseBranch}:${baseBranch}`], {
+      cwd: worktreePath
+    })
+    return { baseBranch, pulled: true }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return {
+      baseBranch,
+      pulled: false,
+      warning: `Could not fast-forward local ${baseBranch} to origin/${baseBranch}: ${message}.`
     }
   }
 }
@@ -1873,6 +1911,12 @@ export const makeLiveGitOpsRpcService = (
                 targetBranch,
                 runCommand
               )
+            } else {
+              // The base branch isn't checked out in any worktree, so there's no working
+              // tree to fast-forward — but the local `<base>` ref still backs every
+              // worktree's displayed diff. Advance that ref (and refresh `origin/<base>`)
+              // directly so the shared diff baseline doesn't lag the just-merged remote.
+              localBasePull = await fetchLocalBaseRef(worktreePath, targetBranch, runCommand)
             }
 
             return { success: true, localBasePull }
@@ -1890,6 +1934,15 @@ export const makeLiveGitOpsRpcService = (
             return { success: false, error: message }
           }
         },
+        catch: (cause) => cause
+      }),
+    syncLocalBaseToRemote: (worktreePath, baseBranch) =>
+      Effect.tryPromise({
+        // Fast-forward the locally checked-out base branch to origin/<base> using the
+        // same stash → fetch → merge --ff-only → stash-pop dance as the post-PR-merge
+        // sync. pullLocalBaseBranch never throws, so this always resolves to a result.
+        try: (): Promise<GitLocalBasePullResult> =>
+          pullLocalBaseBranch(worktreePath, baseBranch, runCommand),
         catch: (cause) => cause
       }),
     isBranchMerged: (worktreePath, branch) =>
@@ -2576,6 +2629,24 @@ export const makeGitOpsRpcHandlers = (
               payload: { worktreePath }
             })
           }
+          return result
+        })
+    ],
+    [
+      'gitOps.syncLocalBaseToRemote',
+      (params, context) =>
+        Effect.gen(function* () {
+          const { worktreePath, baseBranch } = yield* Effect.try({
+            try: () => syncLocalBaseToRemoteParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          const result = yield* service.syncLocalBaseToRemote(worktreePath, baseBranch)
+          // The base worktree's branch (and possibly its working tree, via the stash
+          // dance) just changed — refresh whatever the UI is showing for it.
+          yield* context.eventBus.publish({
+            channel: GIT_STATUS_CHANGED_CHANNEL,
+            payload: { worktreePath }
+          })
           return result
         })
     ],

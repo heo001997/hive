@@ -350,13 +350,62 @@ export function MergeOnDoneDialog() {
   const handleMerge = useCallback(async () => {
     if (!resolved || !pendingDoneMove) return
     setMerging(true)
+
+    // Keep merge conflicts on disk so the ticket-level fix flow can act on them.
+    const flagConflicts = () => {
+      useGitStore.getState().setHasConflicts(resolved.baseWorktreePath, true)
+      useWorktreeStatusStore
+        .getState()
+        .setMergeConflictWorktreeForTicket(
+          ticketKey(pendingDoneMove.projectId, pendingDoneMove.ticketId),
+          resolved.baseWorktreeId
+        )
+      void useGitStore.getState().refreshStatuses(resolved.baseWorktreePath)
+    }
+
     try {
-      // Pull latest on base branch first (only if remote exists)
       const remoteResult = await gitApi.getRemoteUrl(resolved.baseWorktreePath)
+      const attachedPR = useGitStore.getState().attachedPR.get(resolved.featureWorktreeId)
+
+      // Remote owns the merge commit: when the base has a remote AND the feature worktree
+      // has an attached PR, let GitHub create the merge commit and fast-forward the local
+      // base onto origin/<base>. A local `git merge` here would build a competing merge
+      // commit and leave local <base> ahead of origin (the divergence this fixes).
+      if (remoteResult.url && attachedPR?.number) {
+        const result = await gitApi.prMerge(resolved.featureWorktreePath, attachedPR.number)
+
+        if (result.success) {
+          if (result.localBasePull?.warning) {
+            toast.warning(result.localBasePull.warning)
+          }
+          toast.success(`PR #${attachedPR.number} merged successfully`)
+          setStep('archive')
+          return
+        }
+
+        // Conflicted/failed — same UX as the local-merge conflict path.
+        if (result.conflicted) {
+          flagConflicts()
+          toast.error(
+            result.error ?? `PR #${attachedPR.number} has conflicts with ${resolved.baseBranch}`
+          )
+        } else {
+          toast.error(`Merge failed: ${result.error}`)
+        }
+        clearPendingDoneMove()
+        return
+      }
+
+      // No remote, or no attached PR → genuinely-local merge (nothing on a remote to
+      // diverge from). If a remote exists, fast-forward the local base to origin/<base>
+      // first (ff-only, never a merge commit) so the convenience sync can't pollute base.
       if (remoteResult.url) {
-        const pullResult = await gitApi.pull(resolved.baseWorktreePath)
-        if (!pullResult.success) {
-          toast.warning(`Pull failed on ${resolved.baseBranch} — continuing with local merge`)
+        const sync = await gitApi.syncLocalBaseToRemote(
+          resolved.baseWorktreePath,
+          resolved.baseBranch
+        )
+        if (!sync.pulled && sync.warning) {
+          toast.warning(sync.warning)
         }
       }
 
@@ -364,16 +413,8 @@ export function MergeOnDoneDialog() {
       const mergeResult = await gitApi.merge(resolved.baseWorktreePath, resolved.featureBranch)
 
       if (!mergeResult.success) {
-        // Conflicts or error — keep conflicts on disk so the ticket-level fix flow can act on them.
         if (mergeResult.conflicts && mergeResult.conflicts.length > 0) {
-          useGitStore.getState().setHasConflicts(resolved.baseWorktreePath, true)
-          useWorktreeStatusStore
-            .getState()
-            .setMergeConflictWorktreeForTicket(
-              ticketKey(pendingDoneMove.projectId, pendingDoneMove.ticketId),
-              resolved.baseWorktreeId
-            )
-          void useGitStore.getState().refreshStatuses(resolved.baseWorktreePath)
+          flagConflicts()
           toast.error(
             `Merge conflicts in ${mergeResult.conflicts.length} file${mergeResult.conflicts.length !== 1 ? 's' : ''} — merge manually`
           )

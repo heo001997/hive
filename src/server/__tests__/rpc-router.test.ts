@@ -10069,6 +10069,7 @@ describe('rpc router', () => {
             body: '## Summary\n- Added RPC\n## Testing\n- Vitest'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -10236,6 +10237,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -10407,6 +10409,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -10574,6 +10577,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -10745,6 +10749,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -10912,6 +10917,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -11083,6 +11089,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -11250,6 +11257,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -11421,6 +11429,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -11588,6 +11597,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -11759,6 +11769,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -11926,6 +11937,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -12097,6 +12109,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -12264,6 +12277,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -12435,6 +12449,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -12602,6 +12617,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -12773,6 +12789,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -12940,6 +12957,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -13111,6 +13129,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -13278,6 +13297,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -13449,6 +13469,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -13616,6 +13637,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -13789,6 +13811,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -13956,6 +13979,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -14127,6 +14151,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -14294,6 +14319,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -14465,6 +14491,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -14632,6 +14659,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -14959,6 +14987,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -15126,6 +15155,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -15297,6 +15327,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -15464,6 +15495,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -15635,6 +15667,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -15802,6 +15835,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -15973,6 +16007,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -16140,6 +16175,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -16311,6 +16347,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -16478,6 +16515,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -16649,6 +16687,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -16816,6 +16855,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -16986,6 +17026,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -17159,6 +17200,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -17461,6 +17503,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -17628,6 +17671,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -17794,6 +17838,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -17961,6 +18006,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -18127,6 +18173,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -18294,6 +18341,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -18632,6 +18680,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -18803,6 +18852,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -18973,6 +19023,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -19143,6 +19194,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -19715,6 +19767,7 @@ describe('rpc router', () => {
             calls.push([worktreePath, prNumber])
             return { success: true }
           }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -19888,6 +19941,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -20055,6 +20109,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: (worktreePath, branch) =>
           Effect.sync(() => {
             calls.push([worktreePath, branch])
@@ -20226,6 +20281,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -20393,6 +20449,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: (worktreePath, branchName) =>
           Effect.sync(() => {
@@ -20564,6 +20621,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -20731,6 +20789,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: (projectPath) =>
@@ -20908,6 +20967,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -21075,6 +21135,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -21246,6 +21307,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -21429,6 +21491,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
@@ -21599,6 +21662,7 @@ describe('rpc router', () => {
             body: 'Generated body'
           }),
         prMerge: () => Effect.succeed({ success: true }),
+        syncLocalBaseToRemote: () => Effect.succeed({ baseBranch: 'main', pulled: true }),
         isBranchMerged: () => Effect.succeed({ success: true, isMerged: true }),
         deleteBranch: () => Effect.succeed({ success: true }),
         listPRs: () => Effect.succeed({ success: true, prs: [] }),
