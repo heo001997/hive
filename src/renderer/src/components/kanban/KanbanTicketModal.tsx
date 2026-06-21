@@ -1294,6 +1294,7 @@ function EditModeContent({
         label: a.label
       })) ?? []
   )
+  const [autoApproveReview, setAutoApproveReview] = useState(ticket.auto_approve_review)
   const [isSaving, setIsSaving] = useState(false)
   const lifecycle = useLifecycleActions(ticket.worktree_id)
   const { pinAndActivate: pinAndActivateSession, lifecycleLoading } =
@@ -1302,7 +1303,8 @@ function EditModeContent({
   const isDirty =
     normalizeDraftText(title) !== normalizeDraftText(ticket.title) ||
     normalizeDraftText(description) !== normalizeDraftText(ticket.description) ||
-    normalizeTicketAttachments(attachments) !== normalizeTicketAttachments(ticket.attachments)
+    normalizeTicketAttachments(attachments) !== normalizeTicketAttachments(ticket.attachments) ||
+    autoApproveReview !== ticket.auto_approve_review
 
   useEffect(() => {
     onDirtyChange(isDirty)
@@ -1363,7 +1365,8 @@ function EditModeContent({
       await updateTicket(ticket.id, ticket.project_id, {
         title: title.trim(),
         description: description.trim() || null,
-        attachments: attachments.map((a) => ({ type: a.type, url: a.url, label: a.label }))
+        attachments: attachments.map((a) => ({ type: a.type, url: a.url, label: a.label })),
+        auto_approve_review: autoApproveReview
       })
       toast.success('Ticket updated')
       onClose()
@@ -1376,6 +1379,7 @@ function EditModeContent({
     title,
     description,
     attachments,
+    autoApproveReview,
     isSaving,
     updateTicket,
     ticket.id,
@@ -1508,6 +1512,36 @@ function EditModeContent({
           onChange={setAttachments}
           testIdPrefix="ticket-edit"
         />
+
+        {/* Auto-approve Review (per-ticket) */}
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <label className="text-sm font-medium text-foreground">Auto-approve Review</label>
+            <p className="text-xs text-muted-foreground">
+              When this build ticket settles in Review, auto-commit it and — if another ticket
+              depends on it — advance it to Done so the next chain ticket auto-starts. Runs after
+              the global wait time (Settings → General).
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoApproveReview}
+            onClick={() => setAutoApproveReview((v) => !v)}
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              autoApproveReview ? 'bg-primary' : 'bg-muted'
+            )}
+            data-testid="ticket-edit-auto-approve-review-toggle"
+          >
+            <span
+              className={cn(
+                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                autoApproveReview ? 'translate-x-4' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
 
         {/* Dependencies section */}
         <div className="space-y-1.5">

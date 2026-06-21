@@ -90,6 +90,12 @@ export interface AppSettings {
   autoPinBaseWorktreeOnBoardPrompt: boolean
   /** Auto-create a kanban ticket on the first message of a manually-created session. */
   automaticallyCreateTicket: boolean
+  /** Kanban: DEFAULT for the per-ticket `auto_approve_review` flag. Seeds new tickets' checkbox; the engine reads each ticket's own flag, not this. */
+  kanbanAutoApproveReview: boolean
+  /** Kanban: global behavior — when an opted-in ticket auto-approves Review, stage & commit the worktree's changes first. */
+  kanbanAutoCommitOnReview: boolean
+  /** Kanban: global behavior — settle delay (seconds) an opted-in ticket must sit idle in Review before auto-approve acts. */
+  kanbanAutoApproveDelaySeconds: number
 
   // Editor
   defaultEditor: EditorOption
@@ -212,6 +218,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanColumnColors: { ...DEFAULT_KANBAN_COLUMN_COLORS },
   autoPinBaseWorktreeOnBoardPrompt: false,
   automaticallyCreateTicket: false,
+  kanbanAutoApproveReview: false,
+  kanbanAutoCommitOnReview: false,
+  kanbanAutoApproveDelaySeconds: 10,
   defaultEditor: 'vscode',
   customEditorCommand: '',
   defaultTerminal: 'terminal',
@@ -444,6 +453,9 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanColumnColors: state.kanbanColumnColors,
     autoPinBaseWorktreeOnBoardPrompt: state.autoPinBaseWorktreeOnBoardPrompt,
     automaticallyCreateTicket: state.automaticallyCreateTicket,
+    kanbanAutoApproveReview: state.kanbanAutoApproveReview,
+    kanbanAutoCommitOnReview: state.kanbanAutoCommitOnReview,
+    kanbanAutoApproveDelaySeconds: state.kanbanAutoApproveDelaySeconds,
     defaultEditor: state.defaultEditor,
     customEditorCommand: state.customEditorCommand,
     defaultTerminal: state.defaultTerminal,
@@ -820,6 +832,9 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanColumnColors: state.kanbanColumnColors,
         autoPinBaseWorktreeOnBoardPrompt: state.autoPinBaseWorktreeOnBoardPrompt,
         automaticallyCreateTicket: state.automaticallyCreateTicket,
+        kanbanAutoApproveReview: state.kanbanAutoApproveReview,
+        kanbanAutoCommitOnReview: state.kanbanAutoCommitOnReview,
+        kanbanAutoApproveDelaySeconds: state.kanbanAutoApproveDelaySeconds,
         defaultEditor: state.defaultEditor,
         customEditorCommand: state.customEditorCommand,
         defaultTerminal: state.defaultTerminal,

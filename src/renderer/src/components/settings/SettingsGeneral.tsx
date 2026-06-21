@@ -125,6 +125,9 @@ export function SettingsGeneral(): React.JSX.Element {
     followUpTriggerColumn,
     autoPinBaseWorktreeOnBoardPrompt,
     automaticallyCreateTicket,
+    kanbanAutoApproveReview,
+    kanbanAutoCommitOnReview,
+    kanbanAutoApproveDelaySeconds,
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
@@ -386,6 +389,101 @@ export function SettingsGeneral(): React.JSX.Element {
             )}
           />
         </button>
+      </div>
+
+      {/* Kanban — Auto approve Review */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <label className="text-sm font-medium">Auto-approve Review by default</label>
+            <p className="text-xs text-muted-foreground">
+              The real switch lives <strong>per ticket</strong> — each ticket has its own
+              &quot;Auto-approve Review&quot; checkbox in its detail view. This setting is just the
+              default: new tickets get that checkbox pre-set to this value. Changing it here only
+              affects future tickets, never existing ones. When a ticket&apos;s checkbox is on and it
+              settles in Review, it auto-commits; if another ticket depends on it (a chain) it
+              advances to Done so the next ticket auto-starts (using its own configured worktree).
+              The last ticket in a chain — or a standalone ticket — stays in Review for you to PR
+              &amp; merge.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={kanbanAutoApproveReview}
+            onClick={() => updateSetting('kanbanAutoApproveReview', !kanbanAutoApproveReview)}
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              kanbanAutoApproveReview ? 'bg-primary' : 'bg-muted'
+            )}
+            data-testid="kanban-auto-approve-review-toggle"
+          >
+            <span
+              className={cn(
+                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                kanbanAutoApproveReview ? 'translate-x-4' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
+
+        {/* Global behavior — applies to ANY ticket whose own checkbox is on,
+            regardless of the default above. */}
+        <div className="ml-2 space-y-3 border-l-2 border-border pl-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Auto approve after</label>
+            <div className="flex items-center gap-3">
+              <Input
+                type="number"
+                min={0}
+                max={600}
+                value={kanbanAutoApproveDelaySeconds}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10)
+                  if (!isNaN(val) && val >= 0 && val <= 600) {
+                    updateSetting('kanbanAutoApproveDelaySeconds', val)
+                  }
+                }}
+                className="w-20 font-mono text-sm"
+                data-testid="kanban-auto-approve-delay"
+              />
+              <span className="text-xs text-muted-foreground">seconds (0-600)</span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Applies to every ticket that has Auto-approve Review on. This is the trigger for
+              everything below — nothing happens until it fires. The ticket must sit idle in Review
+              this long before the series runs (auto-commit, then advance). The timer resets if the
+              session resumes working, so transient completion (multi-turn agents, queued
+              follow-ups, app relaunch) won't fire prematurely.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <label className="text-sm font-medium">Auto commit before advancing</label>
+              <p className="text-xs text-muted-foreground">
+                Runs after the wait above fires: stage and commit the ticket worktree's changes.
+                Each chain step is committed before it advances.
+              </p>
+            </div>
+            <button
+              role="switch"
+              aria-checked={kanbanAutoCommitOnReview}
+              onClick={() => updateSetting('kanbanAutoCommitOnReview', !kanbanAutoCommitOnReview)}
+              className={cn(
+                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                kanbanAutoCommitOnReview ? 'bg-primary' : 'bg-muted'
+              )}
+              data-testid="kanban-auto-commit-on-review-toggle"
+            >
+              <span
+                className={cn(
+                  'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                  kanbanAutoCommitOnReview ? 'translate-x-4' : 'translate-x-0'
+                )}
+              />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Vim mode */}

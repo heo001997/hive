@@ -216,7 +216,8 @@ const kanbanTicketCreateSchema = z
     github_pr_number: z.number().nullable().optional(),
     github_pr_url: z.string().nullable().optional(),
     mark: ticketMarkSchema.nullable().optional(),
-    created_from_session: z.boolean().optional()
+    created_from_session: z.boolean().optional(),
+    auto_approve_review: z.boolean().optional()
   })
   .strict() satisfies z.ZodType<KanbanTicketCreate>
 
@@ -258,7 +259,8 @@ const kanbanTicketUpdateSchema = z
     goal_mode: z.boolean().optional(),
     goal_success_criteria: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
-    archived_at: z.string().nullable().optional()
+    archived_at: z.string().nullable().optional(),
+    auto_approve_review: z.boolean().optional()
   })
   .strict() satisfies z.ZodType<KanbanTicketUpdate>
 const ticketIdProjectParamsSchema = z

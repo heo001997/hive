@@ -505,6 +505,13 @@ export interface KanbanTicket {
   note: string | null
   /** True when auto-created by the "automatically create ticket" setting on a session's first message. */
   created_from_session: boolean
+  /**
+   * Per-ticket Review auto-approve opt-in. When true, this build ticket auto-commits
+   * and (if non-terminal in a chain) advances to Done after the global settle delay.
+   * Seeded at creation from the global `kanbanAutoApproveReview` default. Mapped from
+   * INTEGER 0/1 in DB.
+   */
+  auto_approve_review: boolean
 }
 
 export interface KanbanTicketCreate {
@@ -526,6 +533,7 @@ export interface KanbanTicketCreate {
   github_pr_url?: string | null
   mark?: TicketMark | null
   created_from_session?: boolean
+  auto_approve_review?: boolean
 }
 
 export interface KanbanTicketUpdate {
@@ -546,6 +554,7 @@ export interface KanbanTicketUpdate {
   goal_mode?: boolean
   goal_success_criteria?: string | null
   note?: string | null
+  auto_approve_review?: boolean
 }
 
 export interface BoardAssistantDraft {

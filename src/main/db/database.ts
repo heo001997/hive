@@ -366,7 +366,8 @@ export class DatabaseService {
       goal_mode: row.goal_mode === 1,
       goal_success_criteria: (row.goal_success_criteria as string) ?? null,
       note: (row.note as string) ?? null,
-      created_from_session: row.created_from_session === 1
+      created_from_session: row.created_from_session === 1,
+      auto_approve_review: row.auto_approve_review === 1
     }
   }
 
@@ -2506,10 +2507,11 @@ export class DatabaseService {
     const githubPrUrl = data.github_pr_url ?? null
     const mark = data.mark ?? null
     const createdFromSession = data.created_from_session ? 1 : 0
+    const autoApproveReview = data.auto_approve_review ? 1 : 0
 
     db.prepare(
-      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_from_session, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_from_session, auto_approve_review, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.project_id,
@@ -2529,6 +2531,7 @@ export class DatabaseService {
       githubPrUrl,
       mark,
       createdFromSession,
+      autoApproveReview,
       now,
       now
     )
@@ -2552,6 +2555,7 @@ export class DatabaseService {
       github_pr_url: githubPrUrl,
       mark,
       created_from_session: createdFromSession,
+      auto_approve_review: autoApproveReview,
       total_tokens: 0,
       created_at: now,
       updated_at: now
@@ -2722,6 +2726,10 @@ export class DatabaseService {
     if (data.note !== undefined) {
       updates.push('note = ?')
       values.push(data.note)
+    }
+    if (data.auto_approve_review !== undefined) {
+      updates.push('auto_approve_review = ?')
+      values.push(data.auto_approve_review ? 1 : 0)
     }
 
     if (updates.length === 1) return existing // Only updated_at, nothing meaningful changed
