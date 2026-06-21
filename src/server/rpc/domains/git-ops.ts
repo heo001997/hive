@@ -223,6 +223,18 @@ export interface GitPullRequestStateResult {
   readonly error?: string
 }
 
+// Result of resolving the PR (if any) for the branch checked out in a worktree,
+// independent of whether the user has manually "attached" it in the UI. `found`
+// is false for the common no-PR / gh-unavailable cases (never an error to the
+// caller — it just means "fall back to a local merge").
+export interface GitFindPullRequestResult {
+  readonly found: boolean
+  readonly number?: number
+  readonly state?: string
+  readonly baseRefName?: string
+  readonly error?: string
+}
+
 export interface GitPullRequestReviewCommentsResult {
   readonly success: boolean
   readonly comments?: PRReviewComment[]
@@ -428,6 +440,9 @@ export interface GitOpsRpcService {
     projectPath: string,
     prNumber: number
   ) => Effect.Effect<GitPullRequestStateResult, unknown, never>
+  readonly findPullRequestForBranch: (
+    worktreePath: string
+  ) => Effect.Effect<GitFindPullRequestResult, unknown, never>
   readonly getPRReviewComments: (
     projectPath: string,
     prNumber: number
@@ -700,20 +715,59 @@ const checkPrMergeability = async (
   runCommand: CommandRunner,
   worktreePath: string,
   prNumber: number
-): Promise<{ conflicted: boolean; baseBranch?: string }> => {
+): Promise<{ conflicted: boolean; baseBranch?: string; state?: string }> => {
   try {
     const { stdout } = await runCommand(
       'gh',
-      ['pr', 'view', String(prNumber), '--json', 'mergeable,baseRefName'],
+      ['pr', 'view', String(prNumber), '--json', 'mergeable,baseRefName,state'],
       { cwd: worktreePath }
     )
-    const parsed = JSON.parse(stdout) as { mergeable?: string; baseRefName?: string }
+    const parsed = JSON.parse(stdout) as {
+      mergeable?: string
+      baseRefName?: string
+      state?: string
+    }
     return {
       conflicted: parsed.mergeable === 'CONFLICTING',
-      baseBranch: parsed.baseRefName
+      baseBranch: parsed.baseRefName,
+      state: parsed.state
     }
   } catch {
     return { conflicted: false }
+  }
+}
+
+// Resolve the PR (if any) for the branch checked out in `worktreePath`, without
+// requiring the user to have manually attached it in the UI. `gh pr view` with no
+// number resolves the PR for the current branch. Returns found:false for every
+// non-fatal case (no PR, gh missing, not authed, no network) so callers can fall
+// back to a local merge. Never throws.
+const findPullRequestForBranch = async (
+  worktreePath: string,
+  runCommand: CommandRunner
+): Promise<GitFindPullRequestResult> => {
+  try {
+    const { stdout } = await runCommand(
+      'gh',
+      ['pr', 'view', '--json', 'number,state,baseRefName'],
+      { cwd: worktreePath }
+    )
+    const data = JSON.parse(stdout) as {
+      number?: number
+      state?: string
+      baseRefName?: string
+    }
+    if (typeof data.number !== 'number') {
+      return { found: false }
+    }
+    return {
+      found: true,
+      number: data.number,
+      state: data.state,
+      baseRefName: data.baseRefName
+    }
+  } catch (error) {
+    return { found: false, error: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -1867,7 +1921,13 @@ export const makeLiveGitOpsRpcService = (
             // raw multi-line stderr dump. Detect that up front and return an
             // actionable message instead of attempting a doomed merge.
             const mergeability = await checkPrMergeability(runCommand, worktreePath, prNumber)
-            if (mergeability.conflicted) {
+            const alreadyMerged = mergeability.state === 'MERGED'
+
+            // A conflict only blocks an actual merge attempt. If GitHub already merged
+            // the PR (outside Hive, or a prior run merged remotely but died before the
+            // local sync), the mergeable flag is stale — skip the conflict guard and go
+            // straight to mirroring the remote locally.
+            if (!alreadyMerged && mergeability.conflicted) {
               return {
                 success: false,
                 conflicted: true,
@@ -1875,16 +1935,23 @@ export const makeLiveGitOpsRpcService = (
               }
             }
 
-            await runCommand('gh', ['pr', 'merge', String(prNumber), '--merge'], {
-              cwd: worktreePath
-            })
+            if (!alreadyMerged) {
+              await runCommand('gh', ['pr', 'merge', String(prNumber), '--merge'], {
+                cwd: worktreePath
+              })
+            }
 
-            const prInfoResult = await runCommand(
-              'gh',
-              ['pr', 'view', String(prNumber), '--json', 'baseRefName', '-q', '.baseRefName'],
-              { cwd: worktreePath }
-            )
-            const targetBranch = prInfoResult.stdout.trim()
+            // The base branch is the PR's base. Prefer the value already fetched in the
+            // pre-flight; only re-query if it was missing (e.g. the pre-flight failed).
+            let targetBranch = mergeability.baseBranch ?? ''
+            if (!targetBranch) {
+              const prInfoResult = await runCommand(
+                'gh',
+                ['pr', 'view', String(prNumber), '--json', 'baseRefName', '-q', '.baseRefName'],
+                { cwd: worktreePath }
+              )
+              targetBranch = prInfoResult.stdout.trim()
+            }
 
             const worktreeListResult = await runCommand(
               'git',
@@ -2055,6 +2122,12 @@ export const makeLiveGitOpsRpcService = (
             }
           }
         },
+        catch: (cause) => cause
+      }),
+    findPullRequestForBranch: (worktreePath) =>
+      Effect.tryPromise({
+        try: (): Promise<GitFindPullRequestResult> =>
+          findPullRequestForBranch(worktreePath, runCommand),
         catch: (cause) => cause
       }),
     getPRReviewComments: (projectPath, prNumber) =>
@@ -2692,6 +2765,17 @@ export const makeGitOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.getPRState(projectPath, prNumber)
+        })
+    ],
+    [
+      'gitOps.findPullRequestForBranch',
+      (params) =>
+        Effect.gen(function* () {
+          const { worktreePath } = yield* Effect.try({
+            try: () => worktreePathParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.findPullRequestForBranch(worktreePath)
         })
     ],
     [

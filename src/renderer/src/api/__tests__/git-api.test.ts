@@ -553,6 +553,19 @@ describe('gitApi', () => {
     })
   })
 
+  it('routes findPullRequestForBranch through the renderer RPC client', async () => {
+    const result = { found: true, number: 26, state: 'OPEN', baseRefName: 'main' }
+    const request = vi.fn().mockResolvedValue(result)
+    const subscribe = vi.fn()
+
+    setRendererRpcClient({ request, subscribe })
+
+    await expect(gitApi.findPullRequestForBranch('/tmp/hive')).resolves.toBe(result)
+    expect(request).toHaveBeenCalledWith('gitOps.findPullRequestForBranch', {
+      worktreePath: '/tmp/hive'
+    })
+  })
+
   it('routes isBranchMerged through the renderer RPC client', async () => {
     const result = { success: true, isMerged: false }
     const request = vi.fn().mockResolvedValue(result)

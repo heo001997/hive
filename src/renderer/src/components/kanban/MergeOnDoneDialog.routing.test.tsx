@@ -41,6 +41,7 @@ const gitApiMocks = vi.hoisted(() => ({
   getDiffStat: vi.fn(),
   getRemoteUrl: vi.fn(),
   prMerge: vi.fn(),
+  findPullRequestForBranch: vi.fn(),
   merge: vi.fn(),
   syncLocalBaseToRemote: vi.fn()
 }))
@@ -147,6 +148,8 @@ describe('MergeOnDoneDialog merge routing', () => {
       remote: 'origin'
     })
     gitApiMocks.prMerge.mockResolvedValue({ success: true })
+    // Default: the feature branch has no PR on the remote. Individual tests override this.
+    gitApiMocks.findPullRequestForBranch.mockResolvedValue({ found: false })
     gitApiMocks.merge.mockResolvedValue({ success: true })
     gitApiMocks.syncLocalBaseToRemote.mockResolvedValue({ baseBranch: 'main', pulled: true })
   })
@@ -177,8 +180,36 @@ describe('MergeOnDoneDialog merge routing', () => {
     expect(await screen.findByText('Archive worktree')).toBeTruthy()
   })
 
-  it('falls back to a local merge (no prMerge) when no PR is attached, syncing base to origin first', async () => {
+  it('routes through the remote (prMerge) when the PR is detected on the remote but never attached', async () => {
+    // The real-world bug: a GitHub PR exists for the feature branch but the user never
+    // attached it in Hive. The dialog must still route through the remote so local <base>
+    // mirrors origin instead of building a competing local merge commit.
     seedStores(new Map())
+    gitApiMocks.findPullRequestForBranch.mockResolvedValue({
+      found: true,
+      number: 26,
+      state: 'OPEN',
+      baseRefName: 'main'
+    })
+
+    render(<MergeOnDoneDialog />)
+
+    const mergeBtn = await screen.findByRole('button', { name: 'Merge' })
+    await userEvent.click(mergeBtn)
+
+    await waitFor(() => {
+      expect(gitApiMocks.findPullRequestForBranch).toHaveBeenCalledWith(FEATURE_PATH)
+    })
+    expect(gitApiMocks.prMerge).toHaveBeenCalledWith(FEATURE_PATH, 26)
+    // The remote owns the merge commit — no local `git merge` is replayed.
+    expect(gitApiMocks.merge).not.toHaveBeenCalled()
+    expect(await screen.findByText('Archive worktree')).toBeTruthy()
+  })
+
+  it('falls back to a local merge (no prMerge) when no PR is attached or found, syncing base to origin first', async () => {
+    seedStores(new Map())
+    // No attached PR and none on the remote → genuinely-local merge.
+    gitApiMocks.findPullRequestForBranch.mockResolvedValue({ found: false })
 
     render(<MergeOnDoneDialog />)
 

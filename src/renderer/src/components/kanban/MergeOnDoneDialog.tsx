@@ -367,18 +367,30 @@ export function MergeOnDoneDialog() {
       const remoteResult = await gitApi.getRemoteUrl(resolved.baseWorktreePath)
       const attachedPR = useGitStore.getState().attachedPR.get(resolved.featureWorktreeId)
 
-      // Remote owns the merge commit: when the base has a remote AND the feature worktree
-      // has an attached PR, let GitHub create the merge commit and fast-forward the local
-      // base onto origin/<base>. A local `git merge` here would build a competing merge
-      // commit and leave local <base> ahead of origin (the divergence this fixes).
-      if (remoteResult.url && attachedPR?.number) {
-        const result = await gitApi.prMerge(resolved.featureWorktreePath, attachedPR.number)
+      // Resolve the PR for this feature branch even when the user never manually
+      // attached it. The real-world flow has GitHub PRs that Hive doesn't track, and a
+      // local `git merge` here would build a commit that competes with GitHub's merge
+      // commit — leaving local <base> ahead of origin (the divergence this fixes).
+      let prNumber = attachedPR?.number
+      if (remoteResult.url && prNumber === undefined) {
+        const detected = await gitApi.findPullRequestForBranch(resolved.featureWorktreePath)
+        if (detected.found && detected.number !== undefined) {
+          prNumber = detected.number
+        }
+      }
+
+      // Remote owns the merge commit: when the base has a remote AND a PR exists for the
+      // feature branch, let GitHub create the merge commit and fast-forward the local base
+      // onto origin/<base>. prMerge is idempotent — if the PR is already merged on GitHub
+      // it skips the merge and just mirrors origin locally, so the user never has to pull.
+      if (remoteResult.url && prNumber !== undefined) {
+        const result = await gitApi.prMerge(resolved.featureWorktreePath, prNumber)
 
         if (result.success) {
           if (result.localBasePull?.warning) {
             toast.warning(result.localBasePull.warning)
           }
-          toast.success(`PR #${attachedPR.number} merged successfully`)
+          toast.success(`PR #${prNumber} merged successfully`)
           setStep('archive')
           return
         }
@@ -387,7 +399,7 @@ export function MergeOnDoneDialog() {
         if (result.conflicted) {
           flagConflicts()
           toast.error(
-            result.error ?? `PR #${attachedPR.number} has conflicts with ${resolved.baseBranch}`
+            result.error ?? `PR #${prNumber} has conflicts with ${resolved.baseBranch}`
           )
         } else {
           toast.error(`Merge failed: ${result.error}`)
