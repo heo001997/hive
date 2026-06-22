@@ -34,6 +34,14 @@ export interface ClaudeCliStatusPayload {
   }
 }
 
+// Offsets (ms) at which to re-send a bare Enter after a Claude CLI prompt paste,
+// covering claude's settle window (cold boot or post-resize redraw). Extends one
+// step past the main-side SUBMIT_REASSERT_DELAYS_MS in
+// src/main/services/claude-cli-pty-prompt.ts because the followup case has a
+// wider window — the user often re-opens the ticket a couple seconds after
+// sending, which triggers a terminal refit/redraw that can eat the CR.
+const FOLLOWUP_SUBMIT_REASSERT_DELAYS_MS = [400, 900, 1600, 2600, 4000] as const
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
@@ -93,6 +101,22 @@ export const terminalApi = {
         terminalId: sessionId,
         data: `\x1b[200~${prompt}\x1b[201~\r`
       })
+      // The bracketed paste can land while claude's TUI isn't input-ready —
+      // either still booting, or mid-redraw because the user just re-opened the
+      // ticket and the terminal refit/resized. claude then buffers the pasted
+      // text but silently drops the submitting CR, so the prompt sits in the
+      // input box and the turn never starts (ticket reads "In Progress" yet the
+      // terminal hasn't moved). Re-assert a bare Enter across the settle window
+      // so the already-buffered text actually submits. A CR on empty/idle input
+      // is a harmless no-op, so the fixed schedule is safe. Mirrors the
+      // main-side reassertClaudeCliPromptSubmit used on the create/handoff path.
+      for (const ms of FOLLOWUP_SUBMIT_REASSERT_DELAYS_MS) {
+        setTimeout(() => {
+          void getRendererRpcClient()
+            .request<void>('terminalOps.write', { terminalId: sessionId, data: '\r' })
+            .catch(() => undefined)
+        }, ms)
+      }
       return { success: true, value: { delivered: true } }
     } catch {
       return { success: true, value: { delivered: false } }

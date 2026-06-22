@@ -84,6 +84,44 @@ describe('terminalApi', () => {
     })
   })
 
+  it('re-asserts Enter across the settle window after a Claude CLI prompt paste', async () => {
+    vi.useFakeTimers()
+    try {
+      const request = vi.fn().mockResolvedValue(undefined)
+      const subscribe = vi.fn()
+
+      setRendererRpcClient({ request, subscribe })
+
+      await terminalApi.sendClaudeCliPrompt('session-1', 'continue')
+
+      // The paste (with its own trailing CR) goes out immediately.
+      expect(request).toHaveBeenCalledTimes(1)
+      expect(request).toHaveBeenNthCalledWith(1, 'terminalOps.write', {
+        terminalId: 'session-1',
+        data: '\x1b[200~continue\x1b[201~\r'
+      })
+
+      // Each scheduled offset re-sends a bare CR so a dropped submit still lands.
+      const offsets = [400, 900, 1600, 2600, 4000]
+      let prev = 0
+      for (let i = 0; i < offsets.length; i++) {
+        await vi.advanceTimersByTimeAsync(offsets[i] - prev)
+        prev = offsets[i]
+        expect(request).toHaveBeenCalledTimes(i + 2)
+        expect(request).toHaveBeenLastCalledWith('terminalOps.write', {
+          terminalId: 'session-1',
+          data: '\r'
+        })
+      }
+
+      // No further writes after the schedule is exhausted.
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(request).toHaveBeenCalledTimes(offsets.length + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('reports undelivered Claude CLI prompts when the terminal write fails', async () => {
     const request = vi.fn().mockRejectedValue(new Error('Terminal not found'))
     const subscribe = vi.fn()
