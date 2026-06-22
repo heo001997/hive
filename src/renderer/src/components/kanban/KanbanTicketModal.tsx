@@ -1157,6 +1157,26 @@ function KanbanTicketModalContent({
     [setTicketActiveView, ticket.id]
   )
 
+  // Clamp the viewed tab back to the primary if the session it points at has
+  // disappeared (e.g. closed from the board while this modal is open). Gated on
+  // the worktree's session list actually being loaded so we never reset a valid
+  // view during the brief window before sessions hydrate.
+  const activeViewMissing = useSessionStore(
+    useCallback(
+      (s) => {
+        const id = activeViewSessionId
+        if (!id || id === ticket.current_session_id) return false
+        const wtId = ticket.worktree_id
+        if (!wtId || !s.sessionsByWorktree.has(wtId)) return false // not loaded yet
+        return !(s.sessionsByWorktree.get(wtId) ?? []).some((x) => x.id === id)
+      },
+      [activeViewSessionId, ticket.current_session_id, ticket.worktree_id]
+    )
+  )
+  useEffect(() => {
+    if (activeViewMissing) selectTicketView(ticket.current_session_id ?? null)
+  }, [activeViewMissing, selectTicketView, ticket.current_session_id])
+
   const isPrimaryTerminalBacked = isTerminalBacked(effectiveSession?.agent_sdk)
   const viewingPrimary = !activeViewSessionId || activeViewSessionId === ticket.current_session_id
   // Render the primary session's battle-tested native path only when the user is

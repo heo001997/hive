@@ -110,8 +110,8 @@ interface TicketSessionTabsProps {
   ticket: KanbanTicket
   /** Which session the detail's pane is currently viewing (view-only). */
   activeViewSessionId: string | null
-  /** Switch the viewed session. */
-  onSelectView: (sessionId: string) => void
+  /** Switch the viewed session (null clears it — e.g. the last session closed). */
+  onSelectView: (sessionId: string | null) => void
   /** Called after a new session is spawned from the + menu. */
   onSpawned?: (sessionId: string) => void
 }
@@ -178,15 +178,21 @@ export function TicketSessionTabs({
         return
       }
       const newId = result.session.id
-      // First session for a session-less ticket becomes its primary.
-      if (!ticket.current_session_id) {
+      // First session for a session-less ticket becomes its primary. Re-read the
+      // freshest primary from the store (not the possibly-stale closure) so two
+      // rapid spawns don't both promote and clobber each other.
+      const latestPrimary = useKanbanStore
+        .getState()
+        .tickets.get(ticket.project_id)
+        ?.find((t) => t.id === ticket.id)?.current_session_id
+      if (!latestPrimary) {
         await useKanbanStore
           .getState()
           .updateTicket(ticket.id, ticket.project_id, { current_session_id: newId })
       }
       onSpawned?.(newId)
     },
-    [worktreeId, ticket.project_id, ticket.id, ticket.title, ticket.current_session_id, onSpawned]
+    [worktreeId, ticket.project_id, ticket.id, ticket.title, onSpawned]
   )
 
   const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null)
@@ -212,8 +218,10 @@ export function TicketSessionTabs({
           .getState()
           .updateTicket(ticket.id, ticket.project_id, { current_session_id: nextPrimary })
       }
-      if (wasActive && remaining[0]) {
-        onSelectView(remaining[0].id)
+      if (wasActive) {
+        // Re-point the view at the next session, or clear it if none remain
+        // (the pane then shows its empty state instead of a dead session id).
+        onSelectView(remaining[0]?.id ?? null)
       }
     },
     [ticket.current_session_id, ticket.id, ticket.project_id, worktreeId, activeViewSessionId, onSelectView]

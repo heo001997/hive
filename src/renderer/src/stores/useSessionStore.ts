@@ -816,6 +816,18 @@ export const useSessionStore = create<SessionState>()(
             const newPinnedIds = new Set(state.pinnedSessionIds)
             newPinnedIds.delete(sessionId)
 
+            // Drop any ticket-detail tab view that pointed at the closed session,
+            // so a reopened ticket doesn't seed onto a dead session id.
+            let newActiveViewByTicket = state.activeViewByTicket
+            for (const [ticketId, viewedId] of Object.entries(state.activeViewByTicket)) {
+              if (viewedId === sessionId) {
+                if (newActiveViewByTicket === state.activeViewByTicket) {
+                  newActiveViewByTicket = { ...state.activeViewByTicket }
+                }
+                delete newActiveViewByTicket[ticketId]
+              }
+            }
+
             return {
               sessionsByWorktree: newWorktreeSessionsMap,
               tabOrderByWorktree: newWorktreeTabOrderMap,
@@ -824,6 +836,7 @@ export const useSessionStore = create<SessionState>()(
               activeSessionId: newActiveSessionId,
               activeSessionByWorktree: newActiveByWorktree,
               activeSessionByConnection: newActiveByConnection,
+              activeViewByTicket: newActiveViewByTicket,
               closedTerminalSessionIds: newClosedTerminals,
               pinnedSessionIds: newPinnedIds,
               pendingFollowUpMessages: newPendingFollowUps,

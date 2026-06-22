@@ -1301,6 +1301,11 @@ export const useKanbanStore = create<KanbanState>()(
           set((state) => {
             return { dependencyMap: removeDependencyLinksForTicket(state.dependencyMap, ticketKey(projectId, ticketId)) }
           })
+          // Drop the persisted ticket-detail tab view (dynamic import avoids a
+          // static cycle with useSessionStore, matching the pattern elsewhere here).
+          void import('./useSessionStore').then(({ useSessionStore }) => {
+            useSessionStore.getState().setTicketActiveView(ticketId, null)
+          })
         } catch (err) {
           // Revert on failure
           set((state) => {
