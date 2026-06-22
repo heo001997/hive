@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { LayoutGroup, motion } from 'motion/react'
 import { Pin } from 'lucide-react'
 import { parseTicketKey, ticketKey, useKanbanStore } from '@/stores/useKanbanStore'
+import { useBoardSearchStore } from '@/stores/useBoardSearchStore'
 import { usePinnedStore } from '@/stores/usePinnedStore'
 import { useBoardChatStore } from '@/stores/useBoardChatStore'
 import { useSessionStore } from '@/stores/useSessionStore'
@@ -12,9 +13,16 @@ import { MergeOnDoneDialog } from './MergeOnDoneDialog'
 import { toast } from '@/lib/toast'
 import { useMarkdownKanbanWatcher } from '@/hooks/useMarkdownKanbanWatcher'
 import { cardOccurrenceKeys } from '@/components/kanban/kanban-card-identity'
-import type { KanbanTicketColumn } from '../../../../main/db/types'
+import type { KanbanTicket, KanbanTicketColumn } from '../../../../main/db/types'
 
 const COLUMNS: KanbanTicketColumn[] = ['todo', 'in_progress', 'review', 'done']
+
+// Case-insensitive substring match across the fields a user would search by.
+function ticketMatchesQuery(ticket: KanbanTicket, normalizedQuery: string): boolean {
+  if (!normalizedQuery) return true
+  return [ticket.title, ticket.description, ticket.note, ticket.external_id]
+    .some((field) => field != null && field.toLowerCase().includes(normalizedQuery))
+}
 
 interface KanbanBoardProps {
   projectId?: string
@@ -79,6 +87,20 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
 
   // Ref for board container (SVG line rendering)
   const boardRef = useRef<HTMLDivElement>(null)
+
+  // ── Search filter (driven by the find bar in the top bar) ──────────
+  const searchIsOpen = useBoardSearchStore((s) => s.isOpen)
+  const searchQuery = useBoardSearchStore((s) => s.query)
+  const setSearchMounted = useBoardSearchStore((s) => s.setMounted)
+  const setSearchMatchCount = useBoardSearchStore((s) => s.setMatchCount)
+  const normalizedQuery = searchQuery.trim().toLowerCase()
+  const searchActive = searchIsOpen && normalizedQuery.length > 0
+
+  // Tell the top bar a board is mounted so it can show the search control.
+  useEffect(() => {
+    setSearchMounted(true)
+    return () => setSearchMounted(false)
+  }, [setSearchMounted])
 
   // SVG dependency line state
   const [svgPaths, setSvgPaths] = useState<Array<{ key: string; d: string }>>([])
@@ -293,6 +315,29 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
         ? getInvalidPlaceholdersForProject(projectId)
         : []
 
+  // Active tickets for a column, respecting the current board mode.
+  const getColumnTickets = (column: KanbanTicketColumn): KanbanTicket[] =>
+    isPinnedMode
+      ? getTicketsByColumnForPinned(column)
+      : isConnectionMode && connectionId
+        ? getTicketsByColumnForConnection(connectionId, column)
+        : projectId
+          ? getTicketsByColumn(projectId, column)
+          : []
+
+  // Total matches across every column, published to the top-bar search control.
+  const matchCount = searchActive
+    ? COLUMNS.reduce(
+        (sum, column) =>
+          sum + getColumnTickets(column).filter((t) => ticketMatchesQuery(t, normalizedQuery)).length,
+        0
+      )
+    : 0
+
+  useEffect(() => {
+    setSearchMatchCount(matchCount)
+  }, [matchCount, setSearchMatchCount])
+
   return (
     <LayoutGroup>
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -347,15 +392,12 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
             {(() => {
               const occurrenceCounts = new Map<string, number>()
               return COLUMNS.map((column) => {
-                const tickets = isPinnedMode
-                  ? getTicketsByColumnForPinned(column)
-                  : isConnectionMode
-                    ? getTicketsByColumnForConnection(connectionId, column)
-                    : projectId
-                      ? getTicketsByColumn(projectId, column)
-                      : []
+                const allTickets = getColumnTickets(column)
+                const tickets = searchActive
+                  ? allTickets.filter((t) => ticketMatchesQuery(t, normalizedQuery))
+                  : allTickets
 
-                const archivedTickets = column === 'done'
+                const allArchivedTickets = column === 'done'
                   ? isPinnedMode
                     ? pinnedArchivedDoneTickets
                     : isConnectionMode
@@ -364,6 +406,9 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
                         ? getArchivedTicketsByColumn(projectId, 'done')
                         : undefined
                   : undefined
+                const archivedTickets = searchActive && allArchivedTickets
+                  ? allArchivedTickets.filter((t) => ticketMatchesQuery(t, normalizedQuery))
+                  : allArchivedTickets
 
                 const activeCardIdentityKeys = cardOccurrenceKeys(
                   tickets,
