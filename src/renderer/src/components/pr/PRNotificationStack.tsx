@@ -320,8 +320,8 @@ function PRNotificationCard({
                 onClick={handleArchive}
                 className={cn(
                   'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
-                  'bg-secondary text-secondary-foreground',
-                  'hover:bg-secondary/80 transition-colors'
+                  'bg-emerald-600/10 border border-emerald-600/30 text-emerald-500',
+                  'hover:bg-emerald-600/20 transition-colors'
                 )}
               >
                 <Archive className="h-3 w-3" />
@@ -334,7 +334,7 @@ function PRNotificationCard({
                 disabled
                 className={cn(
                   'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
-                  'bg-secondary text-secondary-foreground',
+                  'bg-emerald-600/10 border border-emerald-600/30 text-emerald-500',
                   'opacity-60 cursor-not-allowed'
                 )}
               >
