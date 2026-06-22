@@ -926,6 +926,11 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
         ])
       }
 
+      // Seed each draft's per-ticket auto-approve flag from the global default,
+      // matching useKanbanStore.createTicket. Batch creation bypasses that store
+      // action, so without this board-assistant tickets would always default to
+      // false and ignore the user's global setting.
+      const autoApproveReviewDefault = useSettingsStore.getState().kanbanAutoApproveReview
       const batches = [...draftsByProject.entries()].map(([projectId, projectDrafts]) => {
         const projectDraftKeys = new Set(projectDrafts.map((draft) => draft.draftKey))
         return {
@@ -942,6 +947,7 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
               title: draft.title,
               description: draft.description ?? null,
               column: 'todo',
+              auto_approve_review: autoApproveReviewDefault,
               depends_on: draft.dependsOn.filter((key) => projectDraftKeys.has(key))
             }))
           })

@@ -190,6 +190,7 @@ export function WorktreePickerModal({
   const [isSending, setIsSending] = useState(false)
   const [goalMode, setGoalMode] = useState(false)
   const [goalCriteria, setGoalCriteria] = useState('')
+  const [autoApproveReview, setAutoApproveReview] = useState(false)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -306,6 +307,7 @@ export function WorktreePickerModal({
       setIsSending(false)
       setGoalMode(false)
       setGoalCriteria('')
+      setAutoApproveReview(ticket.auto_approve_review)
       setSelectedModel(null)
       setSelectedSdk(null)
       setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
@@ -507,7 +509,8 @@ export function WorktreePickerModal({
           sort_order: sortOrder,
           plan_ready: false,
           goal_mode: goalMode,
-          goal_success_criteria: goalMode ? goalCriteria.trim() : null
+          goal_success_criteria: goalMode ? goalCriteria.trim() : null,
+          auto_approve_review: autoApproveReview
         })
 
         void autoPinBaseWorktree(ticket.project_id)
@@ -648,7 +651,8 @@ export function WorktreePickerModal({
           sort_order: sortOrder,
           mode,
           goal_mode: goalMode,
-          goal_success_criteria: goalMode ? goalCriteria.trim() : null
+          goal_success_criteria: goalMode ? goalCriteria.trim() : null,
+          auto_approve_review: autoApproveReview
         })
 
         onSendComplete?.()
@@ -793,7 +797,8 @@ export function WorktreePickerModal({
         sort_order: sortOrder,
         plan_ready: false,
         goal_mode: goalMode,
-        goal_success_criteria: goalMode ? goalCriteria.trim() : null
+        goal_success_criteria: goalMode ? goalCriteria.trim() : null,
+        auto_approve_review: autoApproveReview
       })
 
       // Trigger usage refresh so the board shows up-to-date usage (debounced in store)
@@ -936,6 +941,7 @@ export function WorktreePickerModal({
     codexFastMode,
     goalMode,
     goalCriteria,
+    autoApproveReview,
     isConnectionMode,
     connectionId
   ])
@@ -1270,6 +1276,23 @@ export function WorktreePickerModal({
                       )}
                     </div>
                   )}
+                </div>
+              )}
+              {mode === 'build' && (
+                <div className="space-y-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-foreground">Auto-approve Review</span>
+                    <Switch
+                      checked={autoApproveReview}
+                      onCheckedChange={setAutoApproveReview}
+                      data-testid="auto-approve-review-toggle"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    When this ticket settles in Review, auto-commit it and — if another ticket
+                    depends on it — advance it to Done so the next chain ticket auto-starts. Runs
+                    after the global wait time (Settings → General).
+                  </p>
                 </div>
               )}
               <div className="flex items-center gap-2 flex-wrap">

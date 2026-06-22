@@ -36,26 +36,64 @@ import process from 'node:process'
 export const LEGACY_DATA_DIR = join(homedir(), '.hive')
 export const LEGACY_WORKTREES_DIR = join(homedir(), '.hive-worktrees')
 
-// Dev data location. Default = the single shared dev sandbox (~/.hive-dev), so a
-// plain `pnpm dev` from any clone behaves exactly as before. A standalone git
-// worktree can opt into FULL isolation — separate from ~/.hive (daily app),
-// ~/.hive-dev (shared dev), AND every other worktree — by exporting
-// HIVE_DEV_DATA_DIR (scripts/worktree-sync points it at <worktree>/.hive-data).
+// Detect whether the current working dir is a LINKED git worktree (created by
+// `git worktree add`) as opposed to the main checkout. A linked worktree's
+// per-worktree git dir (.git points into <main>/.git/worktrees/<name>) differs
+// from the shared common dir; in the main checkout the two are equal. Returns
+// the worktree root (toplevel) when linked, else null. Best-effort: any git
+// failure (not a repo, git missing) returns null -> shared-dev fallback.
+const detectLinkedWorktreeRoot = () => {
+  try {
+    const r = spawnSync(
+      'git',
+      ['rev-parse', '--show-toplevel', '--git-dir', '--git-common-dir'],
+      { encoding: 'utf8' }
+    )
+    if (r.status !== 0) return null
+    const [top, gitDir, commonDir] = r.stdout
+      .trim()
+      .split('\n')
+      .map((line) => line.trim())
+    if (!top || !gitDir || !commonDir) return null
+    const cwd = process.cwd()
+    // Equal => main checkout (no per-worktree git dir) => not isolated.
+    if (resolve(cwd, gitDir) === resolve(cwd, commonDir)) return null
+    return resolve(top)
+  } catch {
+    return null
+  }
+}
+
+// Dev data location. Resolution order:
+//   1. HIVE_DEV_DATA_DIR — explicit override (back-compat; worktree-sync's
+//      .envrc still sets it). resolve() as-is.
+//   2. Linked git worktree — AUTO-isolate to <worktree-root>/.hive-data (the
+//      same path the .envrc would set), so every command run in a worktree is
+//      fully isolated from ~/.hive (daily app), ~/.hive-dev (shared dev), and
+//      every other worktree — with NO env var or direnv required.
+//   3. Main checkout / non-git — the single shared dev sandbox (~/.hive-dev), so
+//      a plain `pnpm dev` from the main clone behaves exactly as before.
 // Both dirs stay siblings, mirroring the ~/.hive-dev / ~/.hive-dev-worktrees
 // layout, so the dev launcher's HIVE_DATA_DIR / HIVE_WORKTREES_DIR pinning keeps
 // relocating the whole tree with no other changes.
 const devDataOverride = process.env.HIVE_DEV_DATA_DIR?.trim()
-export const DEV_DATA_DIR = devDataOverride
+const autoWorktreeRoot = devDataOverride ? null : detectLinkedWorktreeRoot()
+const isolatedBase = devDataOverride
   ? resolve(devDataOverride)
-  : join(homedir(), '.hive-dev')
-export const DEV_WORKTREES_DIR = devDataOverride
-  ? resolve(`${devDataOverride}-worktrees`)
+  : autoWorktreeRoot
+    ? join(autoWorktreeRoot, '.hive-data')
+    : null
+
+export const DEV_DATA_DIR = isolatedBase ?? join(homedir(), '.hive-dev')
+export const DEV_WORKTREES_DIR = isolatedBase
+  ? resolve(`${isolatedBase}-worktrees`)
   : join(homedir(), '.hive-dev-worktrees')
 
-// True when this is an isolated worktree (HIVE_DEV_DATA_DIR set), as opposed to
-// the shared dev sandbox (~/.hive-dev). An isolated worktree seeds itself from
-// the SHARED DEV data, not production — see ensureDevDataReady's clone source.
-export const IS_ISOLATED_WORKTREE = Boolean(devDataOverride)
+// True when this is an isolated worktree (explicit HIVE_DEV_DATA_DIR OR an
+// auto-detected linked git worktree), as opposed to the shared dev sandbox
+// (~/.hive-dev). An isolated worktree seeds itself from the SHARED DEV data, not
+// production — see ensureDevDataReady's clone source.
+export const IS_ISOLATED_WORKTREE = Boolean(isolatedBase)
 // The shared dev sandbox data dir — always the fixed ~/.hive-dev, even when
 // DEV_DATA_DIR has been relocated into a worktree. It's the clone SOURCE for an
 // isolated worktree (copy your working dev data, never production). Only the

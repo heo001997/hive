@@ -244,6 +244,7 @@ describe('board assistant create navigation', () => {
 
   afterEach(() => {
     resetRendererRpcClientForTests()
+    useSettingsStore.setState({ kanbanAutoApproveReview: false })
   })
 
   test('switches to the sticky board tab after creating tickets', async () => {
@@ -265,12 +266,40 @@ describe('board assistant create navigation', () => {
             title: boardDraft.title,
             description: boardDraft.description,
             column: 'todo',
+            auto_approve_review: false,
             depends_on: []
           }
         ]
       }
     })
     expect(useSessionStore.getState().activeBoardAssistantProjectId).toBeNull()
+  })
+
+  test('seeds batch drafts with the global auto-approve-review default', async () => {
+    seedStores('sticky-tab')
+    useSettingsStore.setState({ kanbanAutoApproveReview: true })
+
+    render(<BoardAssistantView projectId={projectId} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Create all' }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('kanban.ticket.createBatch', {
+        projectId,
+        data: {
+          drafts: [
+            {
+              draft_key: 'draft-1',
+              project_id: projectId,
+              title: boardDraft.title,
+              description: boardDraft.description,
+              column: 'todo',
+              auto_approve_review: true,
+              depends_on: []
+            }
+          ]
+        }
+      })
+    })
   })
 
   test('switches back to the toggle board view after creating tickets', async () => {

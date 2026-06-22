@@ -288,6 +288,150 @@ interface KanbanState {
   setHoveredBlockedTicketRef: (ref: TicketRef | null) => void
 }
 
+// Pending auto-approve settle timers, keyed by ticketKey. Kept at module scope
+// (not in the store) since they are transient and must not trigger re-renders.
+const pendingAutoApprove = new Map<TicketKey, ReturnType<typeof setTimeout>>()
+
+/** Cancel a scheduled auto-approve for a ticket (e.g. it left Review or resumed work). */
+function cancelAutoApprove(key: TicketKey): void {
+  const timer = pendingAutoApprove.get(key)
+  if (timer) {
+    clearTimeout(timer)
+    pendingAutoApprove.delete(key)
+  }
+}
+
+/**
+ * Schedule an auto-approve after a settle delay. Reschedules if already pending.
+ * The delay absorbs the transient "completed → working → completed" churn that
+ * occurs with multi-turn agents, queued follow-ups, and app-relaunch status
+ * replays — a real resume of work cancels the timer before it fires.
+ */
+function scheduleAutoApprove(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  delayMs: number
+): void {
+  const key = ticketKey(projectId, ticketId)
+  cancelAutoApprove(key)
+  const timer = setTimeout(() => {
+    pendingAutoApprove.delete(key)
+    void maybeAutoApprove(get, ticketId, projectId)
+  }, Math.max(0, delayMs))
+  pendingAutoApprove.set(key, timer)
+}
+
+/**
+ * True when another ticket declares this ticket as a blocker — i.e. it is a
+ * non-terminal link in a dependency chain. Terminal tickets (the last step of a
+ * chain, or a standalone ticket) have no dependents.
+ */
+function ticketHasDependent(
+  get: () => KanbanState,
+  projectId: string,
+  ticketId: string
+): boolean {
+  const key = ticketKey(projectId, ticketId)
+  for (const blockers of get().dependencyMap.values()) {
+    if (blockers.has(key)) return true
+  }
+  return false
+}
+
+/**
+ * Stage & commit a ticket's worktree. Non-fatal: an empty or failed commit is
+ * logged, not thrown — it must never block the surrounding flow.
+ */
+async function commitTicketWorktree(ticketId: string, ticket: KanbanTicket): Promise<void> {
+  if (!ticket.worktree_id) return
+  try {
+    const { dbApi } = await import('@/api/db-api')
+    const { gitApi } = await import('@/api/git-api')
+    const worktree = await dbApi.worktree.get<{ path: string }>(ticket.worktree_id)
+    if (worktree?.path) {
+      await gitApi.stageAll(worktree.path)
+      const message = ticket.title?.trim() || 'Auto commit on review'
+      // commit returns { success: false } when there is nothing to commit — ignore it.
+      await gitApi.commit(worktree.path, message)
+    }
+  } catch (err) {
+    console.error('Auto-approve review: commit failed for ticket', ticketId, err)
+  }
+}
+
+/** Advance a settled ticket to Done (unblocks + auto-launches its dependents). */
+async function moveReviewedTicketToDone(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string
+): Promise<void> {
+  try {
+    const doneTickets = (get().tickets.get(projectId) ?? []).filter((t) => t.column === 'done')
+    const sortOrder = get().computeSortOrder(doneTickets, doneTickets.length)
+    await get().moveTicket(ticketId, projectId, 'done', sortOrder)
+  } catch (err) {
+    console.error('Auto-approve review: move to Done failed for ticket', ticketId, err)
+  }
+}
+
+/**
+ * Re-validate, at fire time, that auto-approving is still safe, then act —
+ * CHAIN-AWARE:
+ *   • Commit the worktree (if enabled) — every chain step commits.
+ *   • Non-terminal ticket (something depends on it) → move to Done, which
+ *     unblocks and auto-launches the next chain ticket via its own
+ *     pending_launch_config (the previously-configured worktree is respected).
+ *   • Terminal ticket (last step / standalone) → stay in Review for the human
+ *     to PR & merge.
+ *
+ * Safety guards (all must hold, else abort silently leaving the ticket in
+ * Review): the ticket is still opted in (`auto_approve_review`); it is still a
+ * build ticket sitting in Review; its session is genuinely idle (`completed`)
+ * and has been so for the
+ * full settle window; and there are no queued follow-up messages.
+ */
+async function maybeAutoApprove(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string
+): Promise<void> {
+  const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  if (!current || current.column !== 'review' || current.mode !== 'build') return
+
+  // Per-ticket opt-in is the source of truth (seeded from the global default at
+  // creation, overridable in Ticket Detail). The global setting no longer gates here.
+  if (!current.auto_approve_review) return
+
+  const { useSettingsStore } = await import('./useSettingsStore')
+  const settings = useSettingsStore.getState()
+  const settleMs = Math.max(0, (settings.kanbanAutoApproveDelaySeconds ?? 10) * 1000)
+
+  const sessionId = current.current_session_id
+  if (sessionId) {
+    const { useWorktreeStatusStore } = await import('./useWorktreeStatusStore')
+    const { useSessionStore } = await import('./useSessionStore')
+    // Session must be idle (`completed`) — not working/planning/permission/error —
+    // and must have stayed that way for the full settle window.
+    const statusEntry = useWorktreeStatusStore.getState().sessionStatuses[sessionId]
+    if (!statusEntry || statusEntry.status !== 'completed') return
+    if (Date.now() - statusEntry.timestamp < settleMs) return
+    // No queued follow-up turns waiting to run.
+    const queued = useSessionStore.getState().pendingFollowUpMessages.get(sessionId)
+    if (queued && queued.length > 0) return
+  }
+
+  // Passed all safety guards. Commit first (so each chain step is its own commit).
+  if (settings.kanbanAutoCommitOnReview) {
+    await commitTicketWorktree(ticketId, current)
+  }
+
+  // Only non-terminal tickets auto-advance to Done; terminal tickets wait for the human.
+  if (ticketHasDependent(get, projectId, ticketId)) {
+    await moveReviewedTicketToDone(get, ticketId, projectId)
+  }
+}
+
 // ── Store ──────────────────────────────────────────────────────────────
 export const useKanbanStore = create<KanbanState>()(
   persist(
@@ -399,9 +543,16 @@ export const useKanbanStore = create<KanbanState>()(
 
       // ── createTicket ─────────────────────────────────────────────
       createTicket: async (projectId: string, data: KanbanTicketCreate) => {
+        // Seed the per-ticket Review auto-approve flag from the global default
+        // (Settings → "Auto-approve Review by default"), unless the caller set it.
+        let seeded = data
+        if (data.auto_approve_review === undefined) {
+          const { useSettingsStore } = await import('./useSettingsStore')
+          seeded = { ...data, auto_approve_review: useSettingsStore.getState().kanbanAutoApproveReview }
+        }
         const ticket = await kanban.ticket.create<KanbanTicket, KanbanTicketCreate>(
           projectId,
-          data
+          seeded
         )
         set((state) => {
           const next = new Map(state.tickets)
@@ -437,6 +588,24 @@ export const useKanbanStore = create<KanbanState>()(
             return { tickets: next }
           })
           throw err
+        }
+
+        // Toggling the per-ticket flag while the ticket already sits idle in Review
+        // must (re)arm or cancel the settle timer — column moves are handled by
+        // moveTicket, but an in-place flag change is not.
+        if (data.auto_approve_review !== undefined) {
+          const updated = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+          if (updated?.column === 'review' && updated.mode === 'build' && updated.auto_approve_review) {
+            const { useSettingsStore } = await import('./useSettingsStore')
+            scheduleAutoApprove(
+              get,
+              ticketId,
+              projectId,
+              (useSettingsStore.getState().kanbanAutoApproveDelaySeconds ?? 10) * 1000
+            )
+          } else {
+            cancelAutoApprove(ticketKey(projectId, ticketId))
+          }
         }
       },
 
@@ -766,7 +935,8 @@ export const useKanbanStore = create<KanbanState>()(
               if (allSatisfied) {
                 const depTicket = findTicketByRef(allTickets, parseTicketKey(depKey))
                 if (depTicket?.pending_launch_config) {
-                  // Auto-launch will be handled by the auto-launch module (Task 5)
+                  // Auto-launch the dependent using its own pending_launch_config
+                  // (worktree `new`/`existing` exactly as it was queued).
                   import('../lib/auto-launch')
                     .then(({ autoLaunchTicket }) => {
                       autoLaunchTicket(depTicket).catch((err) => {
@@ -777,6 +947,18 @@ export const useKanbanStore = create<KanbanState>()(
                 }
               }
             }
+          }
+
+          // Auto-approve Review: schedule the chain-aware auto-approve (commit, then
+          // advance non-terminal tickets to Done) after a settle delay — but only for
+          // build tickets that opted in via their own `auto_approve_review` flag.
+          // Leaving Review for any other column cancels a pending approval, so the
+          // transient "completed → working → completed" churn never fires mid-work.
+          if (column === 'review' && movedTicket?.mode === 'build' && movedTicket.auto_approve_review) {
+            const { kanbanAutoApproveDelaySeconds } = useSettingsStore.getState()
+            scheduleAutoApprove(get, ticketId, projectId, (kanbanAutoApproveDelaySeconds ?? 10) * 1000)
+          } else {
+            cancelAutoApprove(ticketKey(projectId, ticketId))
           }
         } catch (err) {
           // Revert on failure

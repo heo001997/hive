@@ -496,6 +496,50 @@ function TicketGoalSection({
   )
 }
 
+// Per-ticket "Auto-approve Review" switch. Shared between the edit view (todo/done,
+// staged into the save flow) and the review view (instant-persist, arms the settle
+// timer immediately). Only meaningful for build tickets.
+function AutoApproveReviewToggle({
+  checked,
+  onChange,
+  testId
+}: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  testId: string
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <label className="text-sm font-medium text-foreground">Auto-approve Review</label>
+        <p className="text-xs text-muted-foreground">
+          When this build ticket settles in Review, auto-commit it and — if another ticket
+          depends on it — advance it to Done so the next chain ticket auto-starts. Runs after the
+          global wait time (Settings → General).
+        </p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        onClick={() => onChange(!checked)}
+        className={cn(
+          'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+          checked ? 'bg-primary' : 'bg-muted'
+        )}
+        data-testid={testId}
+      >
+        <span
+          className={cn(
+            'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+            checked ? 'translate-x-4' : 'translate-x-0'
+          )}
+        />
+      </button>
+    </div>
+  )
+}
+
 // ── Component ───────────────────────────────────────────────────────
 export function KanbanTicketModal() {
   const selectedTicketRef = useKanbanStore((s) => s.selectedTicketRef)
@@ -1295,6 +1339,7 @@ function EditModeContent({
         label: a.label
       })) ?? []
   )
+  const [autoApproveReview, setAutoApproveReview] = useState(ticket.auto_approve_review)
   const [isSaving, setIsSaving] = useState(false)
   const lifecycle = useLifecycleActions(ticket.worktree_id)
   const { pinAndActivate: pinAndActivateSession, lifecycleLoading } =
@@ -1303,7 +1348,8 @@ function EditModeContent({
   const isDirty =
     normalizeDraftText(title) !== normalizeDraftText(ticket.title) ||
     normalizeDraftText(description) !== normalizeDraftText(ticket.description) ||
-    normalizeTicketAttachments(attachments) !== normalizeTicketAttachments(ticket.attachments)
+    normalizeTicketAttachments(attachments) !== normalizeTicketAttachments(ticket.attachments) ||
+    autoApproveReview !== ticket.auto_approve_review
 
   useEffect(() => {
     onDirtyChange(isDirty)
@@ -1364,7 +1410,8 @@ function EditModeContent({
       await updateTicket(ticket.id, ticket.project_id, {
         title: title.trim(),
         description: description.trim() || null,
-        attachments: attachments.map((a) => ({ type: a.type, url: a.url, label: a.label }))
+        attachments: attachments.map((a) => ({ type: a.type, url: a.url, label: a.label })),
+        auto_approve_review: autoApproveReview
       })
       toast.success('Ticket updated')
       onClose()
@@ -1377,6 +1424,7 @@ function EditModeContent({
     title,
     description,
     attachments,
+    autoApproveReview,
     isSaving,
     updateTicket,
     ticket.id,
@@ -1508,6 +1556,13 @@ function EditModeContent({
           attachments={attachments}
           onChange={setAttachments}
           testIdPrefix="ticket-edit"
+        />
+
+        {/* Auto-approve Review (per-ticket) */}
+        <AutoApproveReviewToggle
+          checked={autoApproveReview}
+          onChange={setAutoApproveReview}
+          testId="ticket-edit-auto-approve-review-toggle"
         />
 
         {/* Dependencies section */}
@@ -2782,6 +2837,18 @@ function ReviewModeContent({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const dropZoneRef = useRef<HTMLDivElement>(null)
 
+  const [autoApproveReview, setAutoApproveReview] = useState(ticket.auto_approve_review)
+  useEffect(() => {
+    setAutoApproveReview(ticket.auto_approve_review)
+  }, [ticket.auto_approve_review])
+  const handleToggleAutoApprove = useCallback(
+    (next: boolean) => {
+      setAutoApproveReview(next)
+      void updateTicket(ticket.id, ticket.project_id, { auto_approve_review: next })
+    },
+    [ticket.id, ticket.project_id, updateTicket]
+  )
+
   const handleAttach = useCallback((file: AttachmentInput) => {
     setAttachments((prev) => {
       if (prev.length >= MAX_ATTACHMENTS) {
@@ -3166,6 +3233,17 @@ function ReviewModeContent({
               : undefined
           }
         />
+      )}
+
+      {/* Per-ticket auto-approve toggle (build tickets only) */}
+      {ticket.mode === 'build' && (
+        <div className="flex-shrink-0 rounded-md border border-border/60 bg-muted/20 p-3">
+          <AutoApproveReviewToggle
+            checked={autoApproveReview}
+            onChange={handleToggleAutoApprove}
+            testId="ticket-review-auto-approve-review-toggle"
+          />
+        </div>
       )}
 
       {/* Followup input area */}

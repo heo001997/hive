@@ -1426,7 +1426,9 @@ class MarkdownKanbanBackend implements KanbanBackend {
       pending_launch_config: runtime.pending_launch_config,
       goal_mode: asBoolean(frontmatter.goal_mode) ?? false,
       goal_success_criteria: nullableString(frontmatter.goal_success_criteria),
-      note: runtime.note
+      note: runtime.note,
+      created_from_session: false,
+      auto_approve_review: asBoolean(frontmatter.auto_approve_review) ?? false
     }
 
     return { ticket, filePath, frontmatter }
@@ -1683,7 +1685,8 @@ export async function moveKanbanTicketToProject(
       external_url: sourceTicket.external_url,
       github_pr_number: null,
       github_pr_url: null,
-      mark: sourceTicket.mark
+      mark: sourceTicket.mark,
+      auto_approve_review: sourceTicket.auto_approve_review
     })
     const updated =
       (await targetBackend.update(targetProjectId, ticketId, {

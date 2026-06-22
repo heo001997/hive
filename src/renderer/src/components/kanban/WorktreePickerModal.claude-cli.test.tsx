@@ -111,6 +111,7 @@ const baseTicket: KanbanTicket = {
   goal_success_criteria: null,
   pending_launch_config: null,
   created_from_session: false,
+  auto_approve_review: false,
   attachments: [],
   archived_at: null,
   external_provider: null,
@@ -162,34 +163,48 @@ function setupStores(): {
       projectId: string,
       sdk: TestAgentSdk = 'opencode',
       mode: TestSessionMode = 'build',
-      _options?: { autoFocus?: boolean; modelOverride?: unknown; pendingMessage?: string | null }
-    ) => ({
-      success: true,
-      session: makeSession({
-        worktree_id: worktreeId,
-        project_id: projectId,
-        agent_sdk: sdk,
-        mode: mode === 'super-plan' ? 'plan' : mode
-      })
-    })
+      options?: { autoFocus?: boolean; modelOverride?: unknown; pendingMessage?: string | null }
+    ) => {
+      const result = {
+        success: true,
+        session: makeSession({
+          worktree_id: worktreeId,
+          project_id: projectId,
+          agent_sdk: sdk,
+          mode: mode === 'super-plan' ? 'plan' : mode
+        })
+      }
+      // Mirror the real store: a pendingMessage is enqueued at create time, then
+      // dequeued by the launch path and forwarded as createClaudeCli's pendingPrompt.
+      if (options?.pendingMessage) {
+        useSessionStore.getState().setPendingMessage(result.session.id, options.pendingMessage)
+      }
+      return result
+    }
   )
   const createConnectionSession = vi.fn(
     async (
       connectionId: string,
       sdk: TestAgentSdk = 'opencode',
       mode: TestSessionMode = 'build',
-      _opts?: { autoFocus?: boolean; modelOverride?: unknown; pendingMessage?: string | null }
-    ) => ({
-      success: true,
-      session: makeSession({
-        id: 'connection-session-1',
-        worktree_id: null,
-        connection_id: connectionId,
-        project_id: 'project-1',
-        agent_sdk: sdk,
-        mode: mode === 'super-plan' ? 'plan' : mode
-      })
-    })
+      opts?: { autoFocus?: boolean; modelOverride?: unknown; pendingMessage?: string | null }
+    ) => {
+      const result = {
+        success: true,
+        session: makeSession({
+          id: 'connection-session-1',
+          worktree_id: null,
+          connection_id: connectionId,
+          project_id: 'project-1',
+          agent_sdk: sdk,
+          mode: mode === 'super-plan' ? 'plan' : mode
+        })
+      }
+      if (opts?.pendingMessage) {
+        useSessionStore.getState().setPendingMessage(result.session.id, opts.pendingMessage)
+      }
+      return result
+    }
   )
   const setSessionModel = vi.fn(async () => undefined)
   const setSessionMode = vi.fn(async () => undefined)
@@ -454,7 +469,8 @@ describe('WorktreePickerModal Claude CLI launch', () => {
       sort_order: 1,
       plan_ready: false,
       goal_mode: false,
-      goal_success_criteria: null
+      goal_success_criteria: null,
+      auto_approve_review: false
     })
     expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', {
       sessionId: 'connection-session-1',

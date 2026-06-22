@@ -58,6 +58,7 @@ export const createDevHeadlessEnv = ({ env = process.env } = {}) => {
   // resolveDatabasePath() honors them ahead of the HIVE_DATA_DIR fallback.
   delete childEnv.HIVE_SERVER_DB_PATH
   delete childEnv.HIVE_SERVER_BASE_DIR
+  delete childEnv.HIVE_SERVER_ENTRY_PATH
 
   return {
     ...childEnv,

@@ -110,6 +110,8 @@ function setupStores(): {
         setup_script: null,
         run_script: null,
         archive_script: null,
+        worktree_create_script: null,
+        custom_commands: null,
         auto_assign_port: false,
         sort_order: 0,
         created_at: '2026-01-01T00:00:00.000Z',
