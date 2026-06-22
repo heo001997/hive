@@ -2586,7 +2586,8 @@ export class DatabaseService {
           external_url: draft.external_url,
           github_pr_number: draft.github_pr_number,
           github_pr_url: draft.github_pr_url,
-          mark: draft.mark
+          mark: draft.mark,
+          auto_approve_review: draft.auto_approve_review
         })
         createdTickets.push(ticket)
         createdByDraftKey.set(draft.draft_key, ticket)

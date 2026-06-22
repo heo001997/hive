@@ -584,6 +584,7 @@ export interface KanbanTicketBatchCreateItem {
   github_pr_number?: number | null
   github_pr_url?: string | null
   mark?: TicketMark | null
+  auto_approve_review?: boolean
   depends_on?: string[]
 }
 
