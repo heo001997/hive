@@ -53,6 +53,8 @@ import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useSleepWhenIdleStore } from '@/stores/useSleepWhenIdleStore'
 import { useVimModeStore } from '@/stores/useVimModeStore'
 import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useBoardSearchStore } from '@/stores/useBoardSearchStore'
+import { BoardSearchControl } from '@/components/kanban/BoardSearchControl'
 import { useTipStore } from '@/stores/useTipStore'
 import { Tip } from '@/components/ui/Tip'
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
@@ -100,6 +102,7 @@ export function Header(): React.JSX.Element {
   const mugIsOn = keepAwakeEnabled && streamingCount > 0
   const showVimHints = vimModeEnabled && vimMode === 'normal'
   const isBoardViewActive = useKanbanStore((s) => s.isBoardViewActive)
+  const boardSearchMounted = useBoardSearchStore((s) => s.mounted)
   const toggleBoardView = useKanbanStore((s) => s.toggleBoardView)
   const kanbanIconSeen = useTipStore((s) => s.isTipSeen('kanban-icon'))
   const hatchFirstPetSeen = useTipStore((s) => s.isTipSeen('hatch-first-pet'))
@@ -744,6 +747,7 @@ export function Header(): React.JSX.Element {
             </Button>
           </Tip>
         )}
+        {boardSearchMounted && <BoardSearchControl />}
         <Button
           variant="ghost"
           size="icon"
