@@ -46,11 +46,21 @@ function isStatefulTerminalSession(agentSdk: string | null): boolean {
   return isTerminalBacked(agentSdk)
 }
 
-function ClaudeCliSessionPortal({
+/**
+ * Keeps a terminal-backed session permanently mounted (preserving PTY state)
+ * while letting an off-board surface — a ticket detail — adopt it. When that
+ * surface registers a portal target via the portal context, the live terminal
+ * is moved into it; otherwise it renders in place. Handles both plain `terminal`
+ * sessions (rendered as {@link SessionTerminalView}) and `claude-code-cli`
+ * sessions (rendered as {@link SessionView}).
+ */
+function MountedSessionPortal({
   sessionId,
+  agentSdk,
   isActive
 }: {
   sessionId: string
+  agentSdk: string | null
   isActive: boolean
 }): React.JSX.Element {
   const { getTarget, revision } = useClaudeCliSessionPortal()
@@ -81,9 +91,13 @@ function ClaudeCliSessionPortal({
     }
   }, [])
 
-  const sessionView = (
-    <SessionView sessionId={sessionId} isVisible={modalTarget ? true : isActive} />
-  )
+  const isVisible = modalTarget ? true : isActive
+  const sessionView =
+    agentSdk === 'terminal' ? (
+      <SessionTerminalView sessionId={sessionId} isVisible={isVisible} />
+    ) : (
+      <SessionView sessionId={sessionId} isVisible={isVisible} />
+    )
 
   return (
     <>
@@ -151,8 +165,12 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       }
     }
 
+    // Mount requests come from off-board surfaces (e.g. a ticket detail portaling
+    // a terminal in). Honor any terminal-backed session — plain `terminal` as well
+    // as `claude-code-cli` — so it stays mounted even when its worktree isn't the
+    // selected one.
     for (const [sessionId, count] of sessionMountRequests.entries()) {
-      if (count > 0 && getAgentSdk(sessionId) === 'claude-code-cli') {
+      if (count > 0 && isTerminalBacked(getAgentSdk(sessionId))) {
         terminals.add(sessionId)
       }
     }
@@ -483,13 +501,11 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
             getAgentSdk(sessionId) ?? mountedTerminalAgentSdkBySessionId.current.get(sessionId)
           return (
             <div key={sessionId} className={isActive ? 'flex-1 flex flex-col min-h-0' : 'hidden'}>
-              {agentSdk === 'terminal' ? (
-                <SessionTerminalView sessionId={sessionId} isVisible={isActive} />
-              ) : agentSdk === 'claude-code-cli' ? (
-                <ClaudeCliSessionPortal sessionId={sessionId} isActive={isActive} />
-              ) : (
-                <SessionView sessionId={sessionId} isVisible={isActive} />
-              )}
+              <MountedSessionPortal
+                sessionId={sessionId}
+                agentSdk={agentSdk ?? null}
+                isActive={isActive}
+              />
             </div>
           )
         })}

@@ -32,6 +32,7 @@ import {
   RadioTower
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
+import { CreateSessionMenu } from './CreateSessionMenu'
 import { useSessionStore, BOARD_TAB_ID } from '@/stores/useSessionStore'
 import { useShallow } from 'zustand/react/shallow'
 import {
@@ -82,8 +83,6 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/Tip'
-import { useTipStore } from '@/stores/useTipStore'
 import { opencodeApi } from '@/api/opencode-api'
 import { kanbanApi } from '@/api/kanban-api'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
@@ -715,12 +714,6 @@ export function SessionTabs(): React.JSX.Element | null {
   // Auto-start runs as a direct follow-up to loadSessions (not a separate effect) to
   // eliminate race conditions between the two async operations.
   const autoStartSession = useSettingsStore((state) => state.autoStartSession)
-  const availableAgentSdks = useSettingsStore((state) => state.availableAgentSdks)
-  const defaultAgentSdk = useSettingsStore((state) => state.defaultAgentSdk)
-  const multipleProvidersAvailable =
-    [availableAgentSdks?.opencode, availableAgentSdks?.claude, availableAgentSdks?.codex].filter(
-      Boolean
-    ).length >= 2
   const autoStartedRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -894,17 +887,11 @@ export function SessionTabs(): React.JSX.Element | null {
 
   // Handle creating a new session with a specific agent SDK (from context menu)
   const handleCreateSessionWithSdk = async (sdk: AgentSdk) => {
+    // The provider-right-click tip side-effects are handled by CreateSessionMenu.
     if (isConnectionMode && selectedConnectionId) {
       const result = await createConnectionSession(selectedConnectionId, sdk)
       if (!result.success) {
         toast.error(result.error || 'Failed to create session')
-      }
-      // Tip logic for AI providers (not terminal)
-      if (sdk !== 'terminal') {
-        useTipStore.getState().markTipAsSeen('provider-right-click')
-        if (sdk !== defaultAgentSdk) {
-          useTipStore.getState().setNonDefaultProviderChosen(true)
-        }
       }
       return
     }
@@ -914,13 +901,6 @@ export function SessionTabs(): React.JSX.Element | null {
     const result = await createSession(selectedWorktreeId, project.id, sdk)
     if (!result.success) {
       toast.error(result.error || 'Failed to create session')
-    }
-    // Tip logic for AI providers (not terminal)
-    if (sdk !== 'terminal') {
-      useTipStore.getState().markTipAsSeen('provider-right-click')
-      if (sdk !== defaultAgentSdk) {
-        useTipStore.getState().setNonDefaultProviderChosen(true)
-      }
     }
   }
 
@@ -1368,56 +1348,12 @@ export function SessionTabs(): React.JSX.Element | null {
       {/* New session / new ticket button - on the left */}
       {boardMode === 'sticky-tab' || !isBoardViewActive ? (
         /* Session create button with right-click provider menu */
-        <Tip tipId="provider-right-click" enabled={multipleProvidersAvailable}>
-          <div className="shrink-0">
-            <ContextMenu>
-              <ContextMenuTrigger asChild>
-                <button
-                  onClick={handleCreateSession}
-                  className="p-1.5 hover:bg-accent transition-colors border-r border-border"
-                  data-testid="create-session"
-                  title="Create new session (right-click for options)"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </ContextMenuTrigger>
-              <ContextMenuContent>
-                {availableAgentSdks?.opencode && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('opencode')}>
-                    New OpenCode Session
-                  </ContextMenuItem>
-                )}
-                {availableAgentSdks?.claude && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('claude-code')}>
-                    New Claude Code Session
-                  </ContextMenuItem>
-                )}
-                {availableAgentSdks?.claude && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('claude-code-cli')}>
-                    New Claude Code CLI Session
-                  </ContextMenuItem>
-                )}
-                {availableAgentSdks?.codex && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('codex')}>
-                    New Codex Session
-                  </ContextMenuItem>
-                )}
-                {(availableAgentSdks?.opencode ||
-                  availableAgentSdks?.claude ||
-                  availableAgentSdks?.codex) && <ContextMenuSeparator />}
-                <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('terminal')}>
-                  <TerminalSquare className="h-4 w-4 mr-2 text-emerald-500" />
-                  New Terminal
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onSelect={handleCreateBoardAssistant}>
-                  <KanbanIcon className="h-4 w-4 mr-2 text-blue-500" />
-                  New Board Assistant
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
-          </div>
-        </Tip>
+        <CreateSessionMenu
+          onDefaultCreate={handleCreateSession}
+          onCreate={handleCreateSessionWithSdk}
+          includeBoardAssistant
+          onCreateBoardAssistant={handleCreateBoardAssistant}
+        />
       ) : isBoardViewActive && !isConnectionBoardActive ? (
         /* Toggle mode kanban: plus button opens the ticket creation modal (hidden in connection board — board has its own) */
         <button
