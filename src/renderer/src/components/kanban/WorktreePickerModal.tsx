@@ -11,11 +11,13 @@ import {
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { cn } from '@/lib/utils'
-import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useKanbanStore, ticketKey, parseTicketKey } from '@/stores/useKanbanStore'
+import { getChainTicketKeys } from '@/lib/chain-utils'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -191,6 +193,7 @@ export function WorktreePickerModal({
   const [goalMode, setGoalMode] = useState(false)
   const [goalCriteria, setGoalCriteria] = useState('')
   const [autoApproveReview, setAutoApproveReview] = useState(false)
+  const [moveChain, setMoveChain] = useState(false)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -273,6 +276,35 @@ export function WorktreePickerModal({
     return counts
   }, [ticketsForProject])
 
+  // ── Resolve the rest of this ticket's dependency chain ──────────
+  // Only meaningful when actually starting a session in a worktree (not in
+  // pre-assign / save-config / connection modes — those have no concrete
+  // worktree to share). Limited to tickets still in To Do, since the chain
+  // members already started shouldn't be touched.
+  const dependencyMap = useKanbanStore((state) => state.dependencyMap)
+  const chainTodoTickets = useMemo(() => {
+    if (preAssignOnly || saveConfigOnly || isConnectionMode) return [] as KanbanTicket[]
+    const rootKey = ticketKey(ticket.project_id, ticket.id)
+    const keys = getChainTicketKeys(dependencyMap, rootKey)
+    const result: KanbanTicket[] = []
+    for (const key of keys) {
+      const ref = parseTicketKey(key)
+      if (ref.projectId !== ticket.project_id) continue
+      const chainTicket = ticketsForProject.find((t) => t.id === ref.ticketId)
+      if (chainTicket && chainTicket.column === 'todo') result.push(chainTicket)
+    }
+    return result
+  }, [
+    dependencyMap,
+    ticketsForProject,
+    ticket.project_id,
+    ticket.id,
+    preAssignOnly,
+    saveConfigOnly,
+    isConnectionMode
+  ])
+  const showChainOption = chainTodoTickets.length > 0
+
   // ── Lazy branch loading ────────────────────────────────────────
   useEffect(() => {
     // branches.length guard: only fetch once per modal-open cycle (reset clears branches on close)
@@ -308,6 +340,7 @@ export function WorktreePickerModal({
       setGoalMode(false)
       setGoalCriteria('')
       setAutoApproveReview(ticket.auto_approve_review)
+      setMoveChain(false)
       setSelectedModel(null)
       setSelectedSdk(null)
       setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
@@ -801,6 +834,41 @@ export function WorktreePickerModal({
         auto_approve_review: autoApproveReview
       })
 
+      // ── Bring the whole dependency chain into In Progress on the same worktree ──
+      // Each remaining chain ticket is moved to In Progress, pinned to this worktree,
+      // and queued with a pending launch config that reuses the worktree — so it
+      // auto-launches here (instead of spawning its own) once its blockers resolve.
+      if (moveChain && chainTodoTickets.length > 0) {
+        const chainBaseSortOrder = useKanbanStore
+          .getState()
+          .computeSortOrder(useKanbanStore.getState().getTicketsByColumn(projectId, 'in_progress'), 0)
+        await Promise.all(
+          chainTodoTickets.map((chainTicket, index) => {
+            const chainConfig = {
+              worktree: { type: 'existing' as const, worktreeId: worktreeId! },
+              prompt: buildPrompt(mode, chainTicket),
+              mode,
+              model: selectedModel ?? null,
+              sdk: agentSdk,
+              codexFastMode,
+              goalMode: false,
+              goalSuccessCriteria: null
+            }
+            return updateTicket(chainTicket.id, projectId, {
+              pending_launch_config: JSON.stringify(chainConfig),
+              column: 'in_progress',
+              sort_order: chainBaseSortOrder - (index + 1),
+              worktree_id: worktreeId!,
+              mode,
+              // Mirror the head ticket's Auto/Bypass Review Approve choice onto the
+              // whole chain so each member auto-advances out of Review and the next
+              // one launches automatically — keeping the chain running unattended.
+              auto_approve_review: autoApproveReview
+            })
+          })
+        )
+      }
+
       // Trigger usage refresh so the board shows up-to-date usage (debounced in store)
       useUsageStore.getState().fetchUsageForProvider(resolveDefaultUsageProvider(agentSdk))
 
@@ -943,7 +1011,9 @@ export function WorktreePickerModal({
     goalCriteria,
     autoApproveReview,
     isConnectionMode,
-    connectionId
+    connectionId,
+    moveChain,
+    chainTodoTickets
   ])
 
   // ── Mode toggle chip ────────────────────────────────────────────
@@ -1170,6 +1240,29 @@ export function WorktreePickerModal({
                   )
                 })}
               </div>
+            </div>
+          )}
+
+          {/* ── Bring whole dependency chain along (same worktree) ── */}
+          {showChainOption && (
+            <div
+              className="flex items-start gap-2.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5"
+              data-testid="move-chain-row"
+            >
+              <Checkbox
+                checked={moveChain}
+                onCheckedChange={setMoveChain}
+                data-testid="move-chain-checkbox"
+                className="mt-0.5"
+                aria-label="Move all chain tickets to In Progress on the same worktree"
+              />
+              <span
+                className="text-sm text-foreground cursor-pointer select-none"
+                onClick={() => setMoveChain((v) => !v)}
+              >
+                Move all chain tickets to In Progress too, running within the same worktree{' '}
+                <span className="text-muted-foreground">({chainTodoTickets.length})</span>
+              </span>
             </div>
           )}
 
