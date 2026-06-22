@@ -43,7 +43,7 @@ function StatusIcon({ status }: { status: string }): React.JSX.Element {
 // Single notification card
 // ---------------------------------------------------------------------------
 
-type MergePhase = 'idle' | 'merging' | 'merged' | 'archiving'
+type MergePhase = 'idle' | 'merging' | 'merged' | 'moving' | 'moved' | 'archiving'
 
 function PRNotificationCard({
   id,
@@ -118,6 +118,49 @@ function PRNotificationCard({
     }
   }, [prNumber, worktreeId])
 
+  // Step 1 (after merge): advance the linked ticket to Done. Mirrors the
+  // MergeOnDoneDialog flow — a merged PR means the work is finished. Only once this
+  // succeeds does the card reveal the Archive button (phase 'moved').
+  const handleMoveToDone = useCallback(async () => {
+    if (!worktreeId) return
+
+    // Resolve the owning project for this worktree.
+    const worktreeStore = useWorktreeStore.getState()
+    let projectId: string | null = null
+    for (const [projId, worktrees] of worktreeStore.worktreesByProject) {
+      if (worktrees.some((w) => w.id === worktreeId)) {
+        projectId = projId
+        break
+      }
+    }
+    if (!projectId) {
+      toast.error('Worktree not found')
+      return
+    }
+
+    const kanbanStore = useKanbanStore.getState()
+    const ticket = kanbanStore
+      .getTicketsForProject(projectId)
+      .find((t) => t.worktree_id === worktreeId)
+
+    setMergePhase('moving')
+    try {
+      // No-op when there is no linked ticket or it is already Done — the card still
+      // advances so the user can archive.
+      if (ticket && ticket.column !== 'done') {
+        const doneTickets = kanbanStore.getTicketsByColumn(projectId, 'done')
+        const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
+        await kanbanStore.moveTicket(ticket.id, projectId, 'done', sortOrder)
+      }
+      setMergePhase('moved')
+    } catch (err) {
+      console.error('PR notification: move to Done failed', err)
+      toast.error('Failed to move ticket to Done')
+      setMergePhase('merged')
+    }
+  }, [worktreeId])
+
+  // Step 2 (after Move to Done): archive the worktree.
   const handleArchive = useCallback(async () => {
     if (!worktreeId) return
 
@@ -145,23 +188,6 @@ function PRNotificationCard({
       return
     }
 
-    // Mirror the MergeOnDoneDialog archive step: archiving after a merged PR means the
-    // work is finished, so advance the linked ticket to Done first. Must happen before
-    // archiveWorktree(), which detaches the worktree from its ticket (nulls worktree_id).
-    const kanbanStore = useKanbanStore.getState()
-    const ticket = kanbanStore
-      .getTicketsForProject(projectId)
-      .find((t) => t.worktree_id === worktreeId)
-    if (ticket && ticket.column !== 'done') {
-      try {
-        const doneTickets = kanbanStore.getTicketsByColumn(projectId, 'done')
-        const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
-        await kanbanStore.moveTicket(ticket.id, projectId, 'done', sortOrder)
-      } catch (err) {
-        console.error('PR notification archive: move to Done failed', err)
-      }
-    }
-
     setMergePhase('archiving')
     try {
       const result = await worktreeStore.archiveWorktree(
@@ -174,11 +200,11 @@ function PRNotificationCard({
         dismiss(id)
       } else {
         toast.error(result.error || 'Archive failed')
-        setMergePhase('merged')
+        setMergePhase('moved')
       }
     } catch {
       toast.error('Failed to archive worktree')
-      setMergePhase('merged')
+      setMergePhase('moved')
     }
   }, [worktreeId, id, dismiss])
 
@@ -261,6 +287,34 @@ function PRNotificationCard({
               </button>
             )}
             {mergePhase === 'merged' && (
+              <button
+                type="button"
+                onClick={handleMoveToDone}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
+                  'bg-emerald-600/10 border border-emerald-600/30 text-emerald-500',
+                  'hover:bg-emerald-600/20 transition-colors'
+                )}
+              >
+                <Check className="h-3 w-3" />
+                Move to Done
+              </button>
+            )}
+            {mergePhase === 'moving' && (
+              <button
+                type="button"
+                disabled
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
+                  'bg-emerald-600/10 border border-emerald-600/30 text-emerald-500',
+                  'opacity-60 cursor-not-allowed'
+                )}
+              >
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Moving to Done...
+              </button>
+            )}
+            {mergePhase === 'moved' && (
               <button
                 type="button"
                 onClick={handleArchive}

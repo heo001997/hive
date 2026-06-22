@@ -110,15 +110,19 @@ describe('PRNotificationStack — archive moves linked ticket to Done', () => {
     useKanbanStore.setState(initialKanbanState, true)
   })
 
-  it('moves the linked ticket to Done before archiving the worktree', async () => {
+  it('gates Archive behind a two-step Move to Done flow', async () => {
     seedStores('review')
 
     render(<PRNotificationStack />)
 
-    // Merge the PR first so the card advances to the "merged" phase that shows Archive.
+    // After merge, the card shows "Move to Done" — Archive is NOT yet offered.
     await userEvent.click(await screen.findByRole('button', { name: 'Merge PR' }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Archive' }))
+    expect(await screen.findByRole('button', { name: 'Move to Done' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument()
+    expect(archiveWorktreeMock).not.toHaveBeenCalled()
 
+    // Clicking "Move to Done" moves the ticket and reveals "Archive".
+    await userEvent.click(screen.getByRole('button', { name: 'Move to Done' }))
     await waitFor(() => {
       expect(moveTicketMock).toHaveBeenCalledWith(
         TICKET_ID,
@@ -127,20 +131,22 @@ describe('PRNotificationStack — archive moves linked ticket to Done', () => {
         expect.any(Number)
       )
     })
-    expect(archiveWorktreeMock).toHaveBeenCalledWith(
-      WT_ID,
-      WT_PATH,
-      'feature/x',
-      '/tmp/hive'
-    )
+    expect(archiveWorktreeMock).not.toHaveBeenCalled()
+
+    // Only the second click archives.
+    await userEvent.click(await screen.findByRole('button', { name: 'Archive' }))
+    await waitFor(() => {
+      expect(archiveWorktreeMock).toHaveBeenCalledWith(WT_ID, WT_PATH, 'feature/x', '/tmp/hive')
+    })
   })
 
-  it('does not re-move a ticket that is already Done', async () => {
+  it('still reveals Archive when the ticket is already Done (no re-move)', async () => {
     seedStores('done')
 
     render(<PRNotificationStack />)
 
     await userEvent.click(await screen.findByRole('button', { name: 'Merge PR' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Move to Done' }))
     await userEvent.click(await screen.findByRole('button', { name: 'Archive' }))
 
     await waitFor(() => {
