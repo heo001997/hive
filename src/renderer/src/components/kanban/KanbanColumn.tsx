@@ -803,8 +803,30 @@ export function KanbanColumn({
                 title centered. Every column now has a right cluster (Sort by menu
                 + optional toggle). For In Progress, only rendered in 'centered'
                 mode so 'right'/'abbreviated' modes can reclaim that space. */}
-            {(!isInProgressColumn || titleMode === 'centered') && (
-              <div className="w-[50px] shrink" aria-hidden="true" />
+            {isTodoColumn ? (
+              <div className="flex w-[50px] shrink items-center">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      title="Create ticket"
+                      aria-label="Create ticket"
+                      data-testid="kanban-column-create"
+                      onClick={() => setIsCreateModalOpen(true)}
+                      className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8}>
+                    New ticket
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            ) : (
+              (!isInProgressColumn || titleMode === 'centered') && (
+                <div className="w-[50px] shrink" aria-hidden="true" />
+              )
             )}
 
             {/* Title group — centered, or right-aligned when In Progress can't fit centered */}
