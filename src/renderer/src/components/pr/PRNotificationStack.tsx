@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils'
 import { usePRNotificationStore } from '@/stores/usePRNotificationStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useProjectStore } from '@/stores/useProjectStore'
+import { useKanbanStore } from '@/stores/useKanbanStore'
 import { toast } from '@/lib/toast'
 import { gitApi } from '@/api/git-api'
 
@@ -142,6 +143,23 @@ function PRNotificationCard({
     if (!projectPath) {
       toast.error('Project not found')
       return
+    }
+
+    // Mirror the MergeOnDoneDialog archive step: archiving after a merged PR means the
+    // work is finished, so advance the linked ticket to Done first. Must happen before
+    // archiveWorktree(), which detaches the worktree from its ticket (nulls worktree_id).
+    const kanbanStore = useKanbanStore.getState()
+    const ticket = kanbanStore
+      .getTicketsForProject(projectId)
+      .find((t) => t.worktree_id === worktreeId)
+    if (ticket && ticket.column !== 'done') {
+      try {
+        const doneTickets = kanbanStore.getTicketsByColumn(projectId, 'done')
+        const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
+        await kanbanStore.moveTicket(ticket.id, projectId, 'done', sortOrder)
+      } catch (err) {
+        console.error('PR notification archive: move to Done failed', err)
+      }
     }
 
     setMergePhase('archiving')
