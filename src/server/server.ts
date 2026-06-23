@@ -125,6 +125,24 @@ export const startHiveServer = (
             if (request.method === 'GET' && url.pathname === '/.well-known/hive/environment') {
               const address = server.address()
               const port = typeof address === 'object' && address ? address.port : config.port
+              // Identity fields (filesystem paths, labels) go ONLY to non-browser
+              // callers — a request without an Origin header (CLI/tooling). Browsers
+              // always send Origin, so a drive-by page or sandboxed iframe (origin
+              // 'null', which CORS here permits) sees only the base connection
+              // fields and never the host's paths. This lets a local CLI pick the
+              // right instance among several running (prod / dev / per-worktree)
+              // without leaking layout to the web.
+              const identity = request.headers.origin
+                ? {}
+                : {
+                    instanceKind: config.instanceKind,
+                    label: config.instanceLabel,
+                    appVersion: config.appVersion,
+                    dataDir: config.baseDir,
+                    repoRoot: config.repoRoot,
+                    pid: process.pid,
+                    startedAt: config.startedAt
+                  }
               writeJson(
                 response,
                 200,
@@ -134,7 +152,8 @@ export const startHiveServer = (
                   port,
                   httpBaseUrl: `http://${config.host}:${port}`,
                   wsBaseUrl: `ws://${config.host}:${port}/ws`,
-                  hasDesktopBootstrapToken: config.desktopBootstrapToken !== null
+                  hasDesktopBootstrapToken: config.desktopBootstrapToken !== null,
+                  ...identity
                 },
                 corsOrigin
               )
