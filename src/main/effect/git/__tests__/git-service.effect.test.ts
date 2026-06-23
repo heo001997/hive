@@ -57,6 +57,36 @@ describe('GitLive', () => {
     }
   })
 
+  it('includes committed, modified, and untracked files in the branch diff', async () => {
+    const git = simpleGit(repoPath)
+    const baseBranch = (await git.branch()).current
+
+    // Diverge on a feature branch: one committed change, one untracked new file.
+    await git.checkoutLocalBranch('feature')
+    writeFileSync(join(repoPath, 'a.txt'), 'original\nchanged\n')
+    await git.add('a.txt')
+    await git.commit('modify a')
+    writeFileSync(join(repoPath, 'untracked.txt'), 'one\ntwo\nthree\n')
+
+    const result = await runGit(
+      Effect.flatMap(Git, (g) => g.diff.branchDiffFiles(repoPath, baseBranch))
+    )
+
+    expect(Either.isRight(result)).toBe(true)
+    if (Either.isRight(result)) {
+      expect(result.right.success).toBe(true)
+      const byPath = new Map(result.right.files!.map((f) => [f.relativePath, f]))
+      // Committed/tracked change is present (as it always was).
+      expect(byPath.has('a.txt')).toBe(true)
+      // Untracked file must also appear so this view matches what the PR contains.
+      const untracked = byPath.get('untracked.txt')
+      expect(untracked).toBeDefined()
+      expect(untracked!.status).toBe('A')
+      expect(untracked!.additions).toBeGreaterThan(0)
+      expect(untracked!.deletions).toBe(0)
+    }
+  })
+
   it('classifies operations against a non-git directory as GitNotARepository', async () => {
     const nonRepo = mkdtempSync(join(tmpdir(), 'hive-not-git-'))
     try {
