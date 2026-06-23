@@ -2351,9 +2351,13 @@ function PlanReviewModeContent({
         })
 
       if (ticket.column === 'todo' || ticket.column === 'review') {
-        useKanbanStore
-          .getState()
-          .moveTicket(ticket.id, ticket.project_id, 'in_progress', ticket.sort_order)
+        const kanbanStore = useKanbanStore.getState()
+        const sortOrder = kanbanStore.computeSortOrder(
+          kanbanStore.getTicketsByColumn(ticket.project_id, 'in_progress'),
+          0
+        )
+        kanbanStore
+          .moveTicket(ticket.id, ticket.project_id, 'in_progress', sortOrder)
           .catch((err) => {
             console.error(
               '[KanbanTicketModal] failed to move supercharged ticket to in_progress:',
@@ -3144,7 +3148,7 @@ function ReviewModeContent({
           if (resolvedBaseBranch && worktree.branch_name !== resolvedBaseBranch) {
             const kanbanStore = useKanbanStore.getState()
             const doneTickets = kanbanStore.getTicketsByColumn(ticket.project_id, 'done')
-            const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
+            const sortOrder = kanbanStore.computeSortOrder(doneTickets, 0)
             kanbanStore.setPendingDoneMove({
               ticketId: ticket.id,
               projectId: ticket.project_id,
@@ -3162,7 +3166,7 @@ function ReviewModeContent({
     try {
       const kanbanStore = useKanbanStore.getState()
       const doneTickets = kanbanStore.getTicketsByColumn(ticket.project_id, 'done')
-      const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
+      const sortOrder = kanbanStore.computeSortOrder(doneTickets, 0)
       await moveTicket(ticket.id, ticket.project_id, 'done', sortOrder)
       toast.success('Ticket moved to Done')
     } catch {

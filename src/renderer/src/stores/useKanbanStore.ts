@@ -360,6 +360,20 @@ async function commitTicketWorktree(ticketId: string, ticket: KanbanTicket): Pro
   }
 }
 
+/**
+ * Compute the sort_order that lands a ticket at the TOP of `column`.
+ * Used by every column-advancing action (a ticket the user just acted on
+ * should surface at the top of its new column, not stay buried at its old
+ * position). Excludes archived tickets via getTicketsByColumn.
+ */
+function topOfColumnSortOrder(
+  get: () => KanbanState,
+  projectId: string,
+  column: KanbanTicketColumn
+): number {
+  return get().computeSortOrder(get().getTicketsByColumn(projectId, column), 0)
+}
+
 /** Advance a settled ticket to Done (unblocks + auto-launches its dependents). */
 async function moveReviewedTicketToDone(
   get: () => KanbanState,
@@ -367,8 +381,7 @@ async function moveReviewedTicketToDone(
   projectId: string
 ): Promise<void> {
   try {
-    const doneTickets = (get().tickets.get(projectId) ?? []).filter((t) => t.column === 'done')
-    const sortOrder = get().computeSortOrder(doneTickets, doneTickets.length)
+    const sortOrder = topOfColumnSortOrder(get, projectId, 'done')
     await get().moveTicket(ticketId, projectId, 'done', sortOrder)
   } catch (err) {
     console.error('Auto-approve review: move to Done failed for ticket', ticketId, err)
@@ -1096,7 +1109,7 @@ export const useKanbanStore = create<KanbanState>()(
                 ) {
                   // Auto-advance build ticket to review column (idempotent — skip if already there)
                   get()
-                    .moveTicket(ticket.id, projectId, 'review', ticket.sort_order)
+                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
                     .catch(() => {})
                 } else if (isPlanLike(ticket.mode) && !ticket.plan_ready) {
                   // Plan finished — set plan_ready and move to review for user attention
@@ -1105,7 +1118,7 @@ export const useKanbanStore = create<KanbanState>()(
                     .catch(() => {})
                   if (ticket.column !== 'review' && ticket.column !== 'done') {
                     get()
-                      .moveTicket(ticket.id, projectId, 'review', ticket.sort_order)
+                      .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
                       .catch(() => {})
                   }
                 }
@@ -1138,7 +1151,7 @@ export const useKanbanStore = create<KanbanState>()(
                     .catch(() => {})
                   if (ticket.column !== 'review' && ticket.column !== 'done') {
                     get()
-                      .moveTicket(ticket.id, projectId, 'review', ticket.sort_order)
+                      .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
                       .catch(() => {})
                   }
                 }
@@ -1156,7 +1169,7 @@ export const useKanbanStore = create<KanbanState>()(
                 }
                 if (ticket.column !== 'in_progress' && ticket.column !== 'done') {
                   get()
-                    .moveTicket(ticket.id, projectId, 'in_progress', ticket.sort_order)
+                    .moveTicket(ticket.id, projectId, 'in_progress', topOfColumnSortOrder(get, projectId, 'in_progress'))
                     .catch(() => {})
                 }
                 break
@@ -1206,7 +1219,7 @@ export const useKanbanStore = create<KanbanState>()(
                 // Error requires user attention — move to review if currently in_progress
                 if (ticket.column === 'in_progress') {
                   get()
-                    .moveTicket(ticket.id, projectId, 'review', ticket.sort_order)
+                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
                     .catch(() => {})
                 }
                 break
@@ -1222,7 +1235,7 @@ export const useKanbanStore = create<KanbanState>()(
                 }
                 if (ticket.column === 'todo' || ticket.column === 'review') {
                   get()
-                    .moveTicket(ticket.id, projectId, 'in_progress', ticket.sort_order)
+                    .moveTicket(ticket.id, projectId, 'in_progress', topOfColumnSortOrder(get, projectId, 'in_progress'))
                     .catch(() => {})
                 }
                 break
