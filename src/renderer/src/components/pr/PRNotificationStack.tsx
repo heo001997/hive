@@ -149,7 +149,7 @@ function PRNotificationCard({
       // advances so the user can archive.
       if (ticket && ticket.column !== 'done') {
         const doneTickets = kanbanStore.getTicketsByColumn(projectId, 'done')
-        const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
+        const sortOrder = kanbanStore.computeSortOrder(doneTickets, 0)
         await kanbanStore.moveTicket(ticket.id, projectId, 'done', sortOrder)
       }
       setMergePhase('moved')
