@@ -654,3 +654,33 @@ body::after {
     animation: none;
   }
 }
+
+/* Selected-worktree glow: gently pulses the Kanban ticket card attached to the
+   worktree currently selected in the left sidebar, so the user can spot which
+   ticket belongs to it. Uses INSET box-shadow only (no border-color): inset
+   shadows draw inside the card border, so a scrolling column's `overflow` can
+   never clip them the way an outer-blur halo gets cut off. */
+@keyframes worktree-selected-glow {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 0 0 1.5px color-mix(in srgb, var(--primary) 60%, transparent),
+      inset 0 0 12px 1px color-mix(in srgb, var(--primary) 22%, transparent);
+  }
+  50% {
+    box-shadow:
+      inset 0 0 0 2px color-mix(in srgb, var(--primary) 95%, transparent),
+      inset 0 0 20px 3px color-mix(in srgb, var(--primary) 55%, transparent);
+  }
+}
+.worktree-selected-glow {
+  animation: worktree-selected-glow 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .worktree-selected-glow {
+    animation: none;
+    box-shadow:
+      inset 0 0 0 2px color-mix(in srgb, var(--primary) 80%, transparent),
+      inset 0 0 14px 2px color-mix(in srgb, var(--primary) 45%, transparent);
+  }
+}

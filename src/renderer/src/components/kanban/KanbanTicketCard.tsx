@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import {
   Paperclip,
@@ -98,6 +98,7 @@ import { useSessionTimer } from '@/hooks/useSessionTimer'
 import { useSessionTokenDelta } from '@/hooks/useSessionTokenDelta'
 import { useConflictFixFlow } from '@/hooks/useConflictFixFlow'
 import { formatTokenCount } from '@/lib/format-utils'
+import { canonicalizeTicketTitle } from '@shared/types/branch-utils'
 import type { KanbanTicket, TicketMark } from '../../../../main/db/types'
 
 // ── Project tag color palette ──────────────────────────────────────
@@ -235,6 +236,56 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
       [ticket.worktree_id]
     )
   )
+
+  // True when this ticket should glow because its worktree matches the one
+  // selected in the left sidebar. Cannot-miss matching, in order:
+  //   1. exact link — ticket.worktree_id === selected id
+  //   2. same name  — ticket's linked worktree name === selected worktree name
+  //                   (covers duplicated workspaces: twins share a name, not an id)
+  //   3. title slug — unlinked ticket whose canonicalized title === selected name
+  const isSelectedWorktree = useWorktreeStore(
+    useCallback(
+      (state) => {
+        const selectedId = state.selectedWorktreeId
+        if (!selectedId) return false
+
+        // Single pass: grab the selected worktree's name + default flag, and
+        // (if this ticket is linked) its own worktree's name.
+        let selectedName: string | null = null
+        let selectedIsDefault = false
+        let linkedName: string | null = null
+        for (const worktrees of state.worktreesByProject.values()) {
+          for (const w of worktrees) {
+            if (w.id === selectedId) {
+              selectedName = w.name
+              selectedIsDefault = w.is_default
+            }
+            if (ticket.worktree_id && w.id === ticket.worktree_id) linkedName = w.name
+          }
+        }
+        // Never glow for the main/default worktree — every project has one and
+        // it isn't tied to a single ticket.
+        if (selectedIsDefault) return false
+        if (ticket.worktree_id && ticket.worktree_id === selectedId) return true
+        if (!selectedName) return false
+
+        // Linked to a different id: match by name (duplicate-workspace twin).
+        if (linkedName !== null) return linkedName === selectedName
+        // Unlinked (or link not loaded): compare the slug the name is built from.
+        return canonicalizeTicketTitle(ticket.title) === selectedName
+      },
+      [ticket.worktree_id, ticket.title]
+    )
+  )
+
+  // Scroll this card into view when its worktree gets selected, so the glow is
+  // never hidden below the fold of a scrolling column.
+  const cardRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (isSelectedWorktree && !isArchived) {
+      cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+    }
+  }, [isSelectedWorktree, isArchived])
 
   const conflictTargetWorktreeId = useWorktreeStatusStore(
     useCallback(
@@ -862,6 +913,7 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
           <ContextMenuTrigger asChild>
             <PopoverAnchor asChild>
               <div
+                ref={cardRef}
                 data-testid={`kanban-ticket-${ticket.id}`}
                 data-ticket-id={ticket.id}
                 data-project-id={ticket.project_id}
@@ -879,6 +931,8 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                   isDragging && 'invisible',
                   isArchived && 'opacity-50 cursor-default',
                   (isBlocked || blockingDiagnostic) && 'opacity-60',
+                  // Glow when this card's worktree is selected in the left sidebar
+                  isSelectedWorktree && !isArchived && 'worktree-selected-glow',
                   // Highlighted as a blocker of the currently hovered ticket
                   isHighlightedAsBlocker && 'border-dashed !border-amber-500/70 ring-1 ring-amber-500/30',
                   !isHighlightedAsBlocker && borderState === 'default' && 'border-border/60',
