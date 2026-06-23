@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process'
 import { spawn } from 'node:child_process'
 import { app, BrowserWindow, clipboard, dialog, shell } from 'electron'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import {
   isDesktopCommandRequest,
   makeDesktopCommandResult,
@@ -86,6 +86,7 @@ import {
   type DesktopBackendSpawnConfig
 } from './backend-config'
 import { getCurrentBackend, setCurrentBackend } from './backend-event-publisher'
+import { removeCliConnectionFile, writeCliConnectionFile } from './cli-connection-file'
 
 export interface DesktopBackendBootstrap {
   readonly httpBaseUrl: string
@@ -541,6 +542,13 @@ export const startDesktopBackend = async (
   // its Vite dev server can target it. When set, scan only that single port.
   const pinnedPort = parseDesktopBackendPortEnv(process.env.HIVE_DESKTOP_BACKEND_PORT)
   const envBootstrapToken = process.env.HIVE_DESKTOP_BOOTSTRAP_TOKEN?.trim() || undefined
+  // Instance identity for multi-instance discovery (surfaced via the server's
+  // /.well-known/hive/environment to non-browser callers). `app.isPackaged`
+  // distinguishes the production app from a `pnpm dev` / worktree build; the label
+  // defaults to the worktree directory name so a human can tell instances apart.
+  const instanceCwd = input.cwd ?? process.cwd()
+  const instanceKind = app.isPackaged ? 'production' : 'development'
+  const instanceLabel = app.isPackaged ? 'production' : basename(instanceCwd) || 'development'
   const config = await makeDesktopBackendSpawnConfig({
     executablePath: input.executablePath,
     entryPath: input.entryPath,
@@ -550,6 +558,9 @@ export const startDesktopBackend = async (
     port: input.port ?? pinnedPort ?? DEFAULT_DESKTOP_BACKEND_PORT,
     maxPort: input.maxPort ?? pinnedPort ?? DEFAULT_DESKTOP_BACKEND_MAX_PORT,
     bootstrapToken: envBootstrapToken,
+    instanceKind,
+    appVersion: app.getVersion(),
+    instanceLabel,
     // The desktop backend canonically reads the existing desktop database at
     // <baseDir>/hive.db (i.e. ~/.hive/hive.db). This is intentional and
     // permanent: updating users must keep seeing their existing
@@ -624,6 +635,20 @@ export const startDesktopBackend = async (
     throw error
   }
 
+  // Backend confirmed live: hand its bootstrap token to co-located same-user CLIs
+  // via a 0600 file in this instance's own (per-worktree / ~/.hive) data dir.
+  // Overwrites any stale file from a prior crash; removed on stop.
+  try {
+    writeCliConnectionFile(baseDir, {
+      port: config.port,
+      bootstrapToken: config.bootstrapToken,
+      pid: processRef?.pid ?? process.pid,
+      startedAt: new Date().toISOString()
+    })
+  } catch (error) {
+    log.warn('Failed to write CLI connection file', { error })
+  }
+
   const started: StartedDesktopBackend = {
     config,
     bootstrap: {
@@ -634,6 +659,7 @@ export const startDesktopBackend = async (
     getChild: () => processRef,
     stop: async () => {
       stopping = true
+      removeCliConnectionFile(baseDir)
       const child = processRef
       processRef = null
       if (!child || child.killed) return

@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { Effect } from 'effect'
 
 export type ServerMode = 'desktop' | 'browser'
@@ -12,6 +12,8 @@ export interface ServerDerivedPaths {
   readonly logsDir: string
 }
 
+export type InstanceKind = 'production' | 'development'
+
 export interface ServerConfig extends ServerDerivedPaths {
   readonly mode: ServerMode
   readonly host: string
@@ -22,6 +24,13 @@ export interface ServerConfig extends ServerDerivedPaths {
   readonly desktopBootstrapToken: string | null
   readonly requireAuth: boolean
   readonly logLevel: ServerLogLevel
+  // Identity for multi-instance discovery (prod / dev / per-worktree). Returned
+  // only to non-browser callers of GET /.well-known/hive/environment.
+  readonly instanceKind: InstanceKind
+  readonly appVersion: string
+  readonly instanceLabel: string
+  readonly repoRoot: string
+  readonly startedAt: string
 }
 
 export interface ServerConfigInput {
@@ -34,6 +43,9 @@ export interface ServerConfigInput {
   readonly desktopBootstrapToken?: string | null
   readonly requireAuth?: boolean
   readonly logLevel?: ServerLogLevel
+  readonly instanceKind?: InstanceKind
+  readonly appVersion?: string
+  readonly instanceLabel?: string
 }
 
 export const DEFAULT_HOST = '127.0.0.1'
@@ -86,6 +98,11 @@ export const resolveServerConfig = (
       const baseDir = resolve(
         input.baseDir ?? env.HIVE_DATA_DIR ?? env.HIVE_SERVER_BASE_DIR ?? join(homedir(), '.hive')
       )
+      // The backend is spawned with cwd = the launching repo/worktree (or the
+      // packaged app dir in prod), so process.cwd() identifies the worktree.
+      const repoRoot = process.cwd()
+      const instanceKind: InstanceKind =
+        input.instanceKind ?? (env.HIVE_INSTANCE_KIND === 'production' ? 'production' : 'development')
       return {
         mode: input.mode ?? parseMode(env.HIVE_SERVER_MODE),
         host: input.host ?? env.HIVE_SERVER_HOST ?? bindIp ?? DEFAULT_HOST,
@@ -97,6 +114,14 @@ export const resolveServerConfig = (
           input.desktopBootstrapToken ?? env.HIVE_DESKTOP_BOOTSTRAP_TOKEN ?? null,
         requireAuth,
         logLevel: input.logLevel ?? parseLogLevel(env.HIVE_SERVER_LOG_LEVEL),
+        instanceKind,
+        appVersion: input.appVersion ?? env.HIVE_APP_VERSION ?? env.npm_package_version ?? '0.0.0',
+        instanceLabel:
+          input.instanceLabel ??
+          (env.HIVE_INSTANCE_LABEL?.trim() ||
+            (instanceKind === 'production' ? 'production' : basename(repoRoot) || 'hive')),
+        repoRoot,
+        startedAt: new Date().toISOString(),
         ...deriveServerPaths(baseDir)
       }
     },
