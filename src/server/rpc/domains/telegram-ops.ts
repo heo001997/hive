@@ -174,7 +174,7 @@ export const makeLiveTelegramOpsRpcService = (eventBus?: EventBus): TelegramOpsR
             'telegramOps.discoverChats failed',
             toError(error)
           )
-          return []
+          throw error
         }
       },
       catch: (cause) => cause
