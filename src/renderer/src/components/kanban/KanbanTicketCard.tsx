@@ -159,6 +159,10 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
   const currentTicketKey = ticketKey(ticket.project_id, ticket.id)
   const domTicketKey = cardIdentityKey ?? currentTicketKey
 
+  // Multi-select (marquee) membership — selector returns a stable boolean so the
+  // card only re-renders when its own selection state flips.
+  const isSelected = useKanbanStore((s) => s.selectedTicketKeys.has(domTicketKey))
+
   // ── Dependency selectors ────────────────────────────────────────
   // useShallow prevents infinite re-render loops by doing shallow equality
   // comparison on the returned array instead of Object.is reference check.
@@ -553,6 +557,21 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
       clone.style.left = '-9999px'
       clone.style.pointerEvents = 'none'
       clone.style.zIndex = '9999'
+
+      // When this card is part of a multi-selection, badge the drag image with
+      // the count so the user sees the whole group is moving.
+      const selection = useKanbanStore.getState().selectedTicketKeys
+      if (selection.size > 1 && selection.has(domTicketKey)) {
+        const badge = document.createElement('div')
+        badge.textContent = String(selection.size)
+        badge.style.cssText =
+          'position:absolute;top:-10px;right:-10px;min-width:22px;height:22px;padding:0 6px;' +
+          'display:flex;align-items:center;justify-content:center;border-radius:9999px;' +
+          'background:hsl(var(--primary));color:hsl(var(--primary-foreground));' +
+          'font-size:12px;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.3);'
+        clone.appendChild(badge)
+      }
+
       document.body.appendChild(clone)
       e.dataTransfer.setDragImage(clone, el.offsetWidth / 2, el.offsetHeight / 2)
       dragCloneRef.current = clone
@@ -570,7 +589,7 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
 
       setIsDragging(true)
     },
-    [ticket.project_id, ticket.id, ticket.column, index]
+    [ticket.project_id, ticket.id, ticket.column, index, domTicketKey]
   )
 
   const handleDragEnd = useCallback(() => {
@@ -617,6 +636,8 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
         return
       }
 
+      // Opening a single ticket supersedes any marquee multi-selection.
+      useKanbanStore.getState().clearSelectedTicketKeys()
       useKanbanStore.getState().setSelectedTicketRef({
         projectId: ticket.project_id,
         ticketId: ticket.id
@@ -879,6 +900,8 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                   isDragging && 'invisible',
                   isArchived && 'opacity-50 cursor-default',
                   (isBlocked || blockingDiagnostic) && 'opacity-60',
+                  // Marquee multi-select highlight
+                  isSelected && 'ring-2 ring-primary ring-offset-1 ring-offset-background',
                   // Highlighted as a blocker of the currently hovered ticket
                   isHighlightedAsBlocker && 'border-dashed !border-amber-500/70 ring-1 ring-amber-500/30',
                   !isHighlightedAsBlocker && borderState === 'default' && 'border-border/60',
