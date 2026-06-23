@@ -1191,7 +1191,9 @@ function KanbanTicketModalContent({
           {isClaudeCli && ticket.current_session_id ? (
             <div className="flex flex-col h-full bg-background flex-1 min-w-0">
               <div className="shrink-0 px-4 py-3 border-b border-border/60 flex items-center gap-2">
-                <span className="text-sm font-medium text-foreground truncate">{ticket.title}</span>
+                <span className="text-sm font-medium text-foreground truncate min-w-0">
+                  {ticket.title}
+                </span>
                 <div className="ml-auto shrink-0 flex items-center gap-2">
                   <TicketRunButton
                     state={runScriptState}
@@ -1253,7 +1255,7 @@ function KanbanTicketModalContent({
             {/* Shared ticket context header for non-edit modes */}
             {modalMode !== 'edit' && (
               <div className="space-y-2 pb-3 border-b border-border/40">
-                <h2 className="text-base font-semibold text-foreground leading-tight">
+                <h2 className="text-base font-semibold text-foreground leading-tight break-words">
                   {ticket.title}
                 </h2>
                 {ticket.description && (
@@ -1613,7 +1615,7 @@ function EditModeContent({
                     key={`${dep.project_id}:${dep.id}`}
                     className="flex items-center gap-2 px-2 py-1 rounded-md bg-muted/30"
                   >
-                    <span className="text-sm truncate">{dep.title}</span>
+                    <span className="text-sm truncate min-w-0">{dep.title}</span>
                   </div>
                 ))}
               </div>
@@ -2694,10 +2696,14 @@ function PlanReviewModeContent({
   return (
     <div ref={dropZoneRef} className="relative contents">
       <DialogHeader>
-        <div className="flex items-center justify-between">
-          <DialogTitle className="flex items-center gap-2">
-            {!dualPane && ticket.title}
-            <span className="inline-flex items-center rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[11px] font-medium text-violet-500">
+        <div className="flex items-center justify-between gap-2 pr-6">
+          <DialogTitle className="flex min-w-0 items-center gap-2">
+            {!dualPane && (
+              <span className="truncate" title={ticket.title}>
+                {ticket.title}
+              </span>
+            )}
+            <span className="inline-flex shrink-0 items-center rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[11px] font-medium text-violet-500">
               Plan ready
             </span>
           </DialogTitle>
@@ -3177,9 +3183,11 @@ function ReviewModeContent({
   return (
     <div ref={dropZoneRef} className="relative contents">
       <DialogHeader>
-        <div className="flex items-center justify-between">
-          <DialogTitle>{dualPane ? 'Review' : ticket.title}</DialogTitle>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 pr-6">
+          <DialogTitle className="min-w-0 truncate" title={dualPane ? undefined : ticket.title}>
+            {dualPane ? 'Review' : ticket.title}
+          </DialogTitle>
+          <div className="flex shrink-0 items-center gap-2">
             {lifecycle.hasAttachedPR && lifecycle.attachedPR && (
               <button
                 onClick={() => lifecycle.openPRInBrowser()}
@@ -3550,10 +3558,14 @@ function ErrorModeContent({
   return (
     <div ref={dropZoneRef} className="relative contents">
       <DialogHeader>
-        <div className="flex items-center justify-between">
-          <DialogTitle className="flex items-center gap-2">
-            {!dualPane && ticket.title}
-            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 border border-red-500/30 px-2 py-0.5 text-[11px] font-medium text-red-500">
+        <div className="flex items-center justify-between gap-2 pr-6">
+          <DialogTitle className="flex min-w-0 items-center gap-2">
+            {!dualPane && (
+              <span className="truncate" title={ticket.title}>
+                {ticket.title}
+              </span>
+            )}
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-red-500/10 border border-red-500/30 px-2 py-0.5 text-[11px] font-medium text-red-500">
               <AlertCircle className="h-3 w-3" />
               Error
             </span>
