@@ -167,6 +167,16 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
 
     if (!effectiveVisible) return
 
+    // Re-sync size and force a clean repaint immediately on becoming visible,
+    // without waiting for the 50ms settle below. A reparent (e.g. into the
+    // ticket modal) hands xterm a freshly reattached WebGL canvas that would
+    // otherwise show stale/overlapping glyphs during the gap. fit() also runs
+    // forceRepaint internally. The delayed pass below repeats this after any
+    // open/resize animation settles, then restores focus.
+    const xtermBackend =
+      backendRef.current.type === 'xterm' ? (backendRef.current as XtermBackend) : null
+    xtermBackend?.fit()
+
     const timer = setTimeout(() => {
       const backend = backendRef.current
       if (backend && backend.type === 'xterm') {
