@@ -347,7 +347,24 @@ export class TelegramForwardingService {
   async discoverChats(config?: TelegramConfig | null): Promise<TelegramDiscoveredChat[]> {
     const cfg = config ?? this.getConfig()
     if (!cfg?.botToken) return []
-    const updates = await this.api<TelegramUpdate[]>(cfg.botToken, 'getUpdates', { timeout: 0 })
+    let updates: TelegramUpdate[]
+    try {
+      updates = await this.api<TelegramUpdate[]>(cfg.botToken, 'getUpdates', { timeout: 0 })
+    } catch (error) {
+      // getUpdates returns HTTP 409 while a webhook is registered for the bot, or
+      // while another getUpdates consumer is already polling the same token. Both
+      // surface here as a thrown error. Probe getWebhookInfo so we can tell the user
+      // the actionable reason instead of a generic "No chats found".
+      const webhook = await this.api<{ url?: string }>(cfg.botToken, 'getWebhookInfo').catch(
+        () => null
+      )
+      if (webhook?.url) {
+        throw new Error(
+          'A webhook is registered for this bot, so getUpdates is blocked. Remove it (call deleteWebhook on the bot) before connecting Hive.'
+        )
+      }
+      throw error
+    }
     const chats = new Map<number, TelegramDiscoveredChat>()
     for (const update of updates) {
       const chat = update.message?.chat ?? update.callback_query?.message?.chat

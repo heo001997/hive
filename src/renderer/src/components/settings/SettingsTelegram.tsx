@@ -82,8 +82,12 @@ export function SettingsTelegram(): React.JSX.Element {
       const chats = await telegramApi.discoverChats(draft)
       setDiscoveredChats(chats)
       if (chats.length === 0) {
-        toast.error('No chats found. Send a message to the bot, then refresh.')
+        toast.error(
+          'No chats found. Open Telegram, send any message to your bot, then click Refresh. Messages must be from the last 24 hours.'
+        )
       }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load Telegram chats')
     } finally {
       setRefreshing(false)
     }
