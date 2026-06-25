@@ -17,7 +17,7 @@ import { Input } from '@/components/ui/input'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { cn } from '@/lib/utils'
 import { useKanbanStore, ticketKey, parseTicketKey } from '@/stores/useKanbanStore'
-import { getChainTicketKeys } from '@/lib/chain-utils'
+import { getChainTicketKeys, getChainExecutionOrder } from '@/lib/chain-utils'
 import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useSessionStore } from '@/stores/useSessionStore'
@@ -830,17 +830,41 @@ export function WorktreePickerModal({
         await useSessionStore.getState().setSessionModel(sessionId, selectedModel)
       }
 
-      // Update the ticket with session info and move to in_progress
-      const sortOrder = useKanbanStore
+      // ── Resolve where the head + chain land in In Progress ──────
+      // When the whole chain comes along it should read top-to-bottom as
+      // "first task (this head) → last task", as one contiguous block sitting
+      // above the tickets already in the column. Order the remaining chain
+      // tickets by execution order (blockers before dependents) and assign a
+      // monotonically increasing block of sort_order values starting at the head.
+      const willMoveChain = moveChain && chainTodoTickets.length > 0
+      const rootKey = ticketKey(ticket.project_id, ticket.id)
+      const orderedChainTickets = willMoveChain
+        ? (() => {
+            // NOTE: `Map` is shadowed by the lucide-react icon import in this
+            // file, so index into the execution-order array directly.
+            const execOrder = getChainExecutionOrder(dependencyMap, rootKey)
+            const execRank = (id: string): number => {
+              const idx = execOrder.indexOf(ticketKey(ticket.project_id, id))
+              return idx === -1 ? Number.MAX_SAFE_INTEGER : idx
+            }
+            return [...chainTodoTickets].sort((a, b) => execRank(a.id) - execRank(b.id))
+          })()
+        : []
+      // Top-of-column anchor (the value a single ticket would get at index 0),
+      // computed before the head moves so it reflects only the pre-existing
+      // tickets. The block ends at this anchor and grows upward from the head.
+      const anchorTop = useKanbanStore
         .getState()
         .computeSortOrder(useKanbanStore.getState().getTicketsByColumn(projectId, 'in_progress'), 0)
+      const headSortOrder = anchorTop - orderedChainTickets.length
 
+      // Update the ticket with session info and move to in_progress
       await updateTicket(ticket.id, projectId, {
         current_session_id: sessionId,
         worktree_id: worktreeId,
         mode,
         column: 'in_progress',
-        sort_order: sortOrder,
+        sort_order: headSortOrder,
         plan_ready: false,
         goal_mode: goalMode,
         goal_success_criteria: goalMode ? goalCriteria.trim() : null,
@@ -851,12 +875,9 @@ export function WorktreePickerModal({
       // Each remaining chain ticket is moved to In Progress, pinned to this worktree,
       // and queued with a pending launch config that reuses the worktree — so it
       // auto-launches here (instead of spawning its own) once its blockers resolve.
-      if (moveChain && chainTodoTickets.length > 0) {
-        const chainBaseSortOrder = useKanbanStore
-          .getState()
-          .computeSortOrder(useKanbanStore.getState().getTicketsByColumn(projectId, 'in_progress'), 0)
+      if (willMoveChain) {
         await Promise.all(
-          chainTodoTickets.map((chainTicket, index) => {
+          orderedChainTickets.map((chainTicket, index) => {
             const chainConfig = {
               worktree: { type: 'existing' as const, worktreeId: worktreeId! },
               prompt: buildPrompt(mode, chainTicket),
@@ -870,7 +891,9 @@ export function WorktreePickerModal({
             return updateTicket(chainTicket.id, projectId, {
               pending_launch_config: JSON.stringify(chainConfig),
               column: 'in_progress',
-              sort_order: chainBaseSortOrder - (index + 1),
+              // Head sits at headSortOrder; chain members follow in execution
+              // order directly below it, all still above the pre-existing tickets.
+              sort_order: headSortOrder + (index + 1),
               worktree_id: worktreeId!,
               mode,
               // Mirror the head ticket's Auto/Bypass Review Approve choice onto the
@@ -1026,7 +1049,8 @@ export function WorktreePickerModal({
     isConnectionMode,
     connectionId,
     moveChain,
-    chainTodoTickets
+    chainTodoTickets,
+    dependencyMap
   ])
 
   // ── Mode toggle chip ────────────────────────────────────────────

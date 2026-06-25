@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { LayoutGroup, motion } from 'motion/react'
 import { Pin } from 'lucide-react'
 import { parseTicketKey, ticketKey, useKanbanStore } from '@/stores/useKanbanStore'
+import { useSettingsStore } from '@/stores/useSettingsStore'
+import { isBlockerSatisfied } from '@/lib/blocker-utils'
+import { orderInProgressTickets } from '@/lib/in-progress-order'
 import { useBoardSearchStore } from '@/stores/useBoardSearchStore'
 import { usePinnedStore } from '@/stores/usePinnedStore'
 import { useBoardChatStore } from '@/stores/useBoardChatStore'
@@ -106,7 +109,9 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
   const [svgPaths, setSvgPaths] = useState<Array<{ key: string; d: string }>>([])
   const [svgSize, setSvgSize] = useState({ width: 0, height: 0 })
 
-  useKanbanStore((state) => state.tickets)
+  const ticketsMap = useKanbanStore((state) => state.tickets)
+  const simpleModeByProject = useKanbanStore((state) => state.simpleModeByProject)
+  const followUpTriggerColumn = useSettingsStore((state) => state.followUpTriggerColumn)
 
   const isConnectionMode = !!connectionId
   const connectionProjectIds = isConnectionMode && connectionId ? getConnectionProjectIds(connectionId) : []
@@ -315,15 +320,39 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
         ? getInvalidPlaceholdersForProject(projectId)
         : []
 
-  // Active tickets for a column, respecting the current board mode.
-  const getColumnTickets = (column: KanbanTicketColumn): KanbanTicket[] =>
-    isPinnedMode
+  // A ticket is "running" when it has a live session and is not blocked by an
+  // unresolved dependency — the In Progress task that's actually executing.
+  const isRunningNotBlocked = (ticket: KanbanTicket): boolean => {
+    if (!ticket.current_session_id) return false
+    const blockers = dependencyMap.get(ticketKey(ticket.project_id, ticket.id))
+    if (blockers?.size) {
+      const inSimpleMode = simpleModeByProject[ticket.project_id] ?? false
+      if (!inSimpleMode) {
+        for (const blockerKey of blockers) {
+          const ref = parseTicketKey(blockerKey)
+          const blocker = ticketsMap.get(ref.projectId)?.find((t) => t.id === ref.ticketId)
+          if (blocker && !isBlockerSatisfied(blocker.column, blocker.mode, followUpTriggerColumn)) {
+            return false
+          }
+        }
+      }
+    }
+    return true
+  }
+
+  // Active tickets for a column, respecting the current board mode. The In
+  // Progress column gets the actively-running task lifted to the top (the rest
+  // stay in chain order: first task → last task).
+  const getColumnTickets = (column: KanbanTicketColumn): KanbanTicket[] => {
+    const base = isPinnedMode
       ? getTicketsByColumnForPinned(column)
       : isConnectionMode && connectionId
         ? getTicketsByColumnForConnection(connectionId, column)
         : projectId
           ? getTicketsByColumn(projectId, column)
           : []
+    return column === 'in_progress' ? orderInProgressTickets(base, isRunningNotBlocked) : base
+  }
 
   // Total matches across every column, published to the top-bar search control.
   const matchCount = searchActive

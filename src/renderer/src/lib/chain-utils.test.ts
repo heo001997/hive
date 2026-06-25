@@ -1,5 +1,9 @@
 import { describe, test, expect } from 'vitest'
-import { getChainTicketKeys, getDownstreamDependentKeys } from './chain-utils'
+import {
+  getChainTicketKeys,
+  getChainExecutionOrder,
+  getDownstreamDependentKeys
+} from './chain-utils'
 
 // dependencyMap is Map<dependentKey, Set<blockerKey>> — "dependent depends on blocker".
 function makeMap(edges: Array<[string, string]>): Map<string, Set<string>> {
@@ -65,6 +69,65 @@ describe('getChainTicketKeys', () => {
       ['c', 'b']
     ])
     expect(getChainTicketKeys(map, 'a').sort()).toEqual(['b', 'c'])
+  })
+})
+
+describe('getChainExecutionOrder', () => {
+  test('returns just the root for a ticket with no dependencies', () => {
+    const map = makeMap([['b', 'a']])
+    expect(getChainExecutionOrder(map, 'standalone')).toEqual(['standalone'])
+  })
+
+  test('orders a linear chain first task → last task (blockers before dependents)', () => {
+    // a → b → c (b depends on a, c depends on b). Parent a runs first.
+    const map = makeMap([
+      ['b', 'a'],
+      ['c', 'b']
+    ])
+    expect(getChainExecutionOrder(map, 'a')).toEqual(['a', 'b', 'c'])
+  })
+
+  test('produces a topological order even when starting from the middle', () => {
+    const map = makeMap([
+      ['b', 'a'],
+      ['c', 'b'],
+      ['d', 'c']
+    ])
+    expect(getChainExecutionOrder(map, 'b')).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  test('includes the root', () => {
+    const map = makeMap([['b', 'a']])
+    expect(getChainExecutionOrder(map, 'a')).toContain('a')
+  })
+
+  test('keeps every blocker ahead of its dependent in a diamond', () => {
+    // c depends on both a and b.
+    const map = makeMap([
+      ['c', 'a'],
+      ['c', 'b']
+    ])
+    const order = getChainExecutionOrder(map, 'a')
+    expect(order.sort()).toEqual(['a', 'b', 'c'])
+    expect(order.indexOf('c')).toBeGreaterThan(order.indexOf('a'))
+    expect(order.indexOf('c')).toBeGreaterThan(order.indexOf('b'))
+  })
+
+  test('does not cross into a separate chain', () => {
+    const map = makeMap([
+      ['b', 'a'],
+      ['y', 'x']
+    ])
+    expect(getChainExecutionOrder(map, 'a')).toEqual(['a', 'b'])
+  })
+
+  test('terminates and emits each member once when a cycle exists', () => {
+    // a → b → a (mutual). Should not loop forever; each appears once.
+    const map = makeMap([
+      ['b', 'a'],
+      ['a', 'b']
+    ])
+    expect(getChainExecutionOrder(map, 'a').sort()).toEqual(['a', 'b'])
   })
 })
 
