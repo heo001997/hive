@@ -11,6 +11,18 @@ describe('ImageLightbox', () => {
     expect(screen.getByText('diagram.png')).toBeInTheDocument()
   })
 
+  it('portals the overlay directly under document.body (escapes transformed ancestors)', () => {
+    const { container } = render(
+      <ImageLightbox src="data:image/png;base64,abc" name="pic" onClose={() => {}} />
+    )
+
+    const overlay = screen.getByTestId('image-lightbox')
+    // Rendered via portal => not inside the component's own container subtree...
+    expect(container).not.toContainElement(overlay)
+    // ...but a direct child of document.body, so `fixed inset-0` covers the viewport.
+    expect(overlay.parentElement).toBe(document.body)
+  })
+
   it('calls onClose when Escape is pressed', () => {
     const onClose = vi.fn()
     render(<ImageLightbox src="data:image/png;base64,abc" onClose={onClose} />)
