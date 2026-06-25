@@ -1,6 +1,8 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import { X, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { ImageLightbox } from '@/components/ui/ImageLightbox'
+import { projectApi } from '@/api/project-api'
 
 export type Attachment =
   | { kind: 'data'; id: string; name: string; mime: string; dataUrl: string }
@@ -39,6 +41,7 @@ export const AttachmentPreview = memo(function AttachmentPreview(
   props: AttachmentPreviewProps
 ): React.JSX.Element | null {
   const { onRemove } = props
+  const [expandedImage, setExpandedImage] = useState<{ dataUrl: string; name: string } | null>(null)
   const fileAttachments =
     props.fileAttachments ??
     props.attachments.filter(
@@ -60,10 +63,24 @@ export const AttachmentPreview = memo(function AttachmentPreview(
             <img
               src={attachment.dataUrl}
               alt={attachment.name}
-              className="h-16 w-16 object-cover rounded border border-border"
+              className="h-16 w-16 object-cover rounded border border-border cursor-pointer hover:opacity-90 transition-opacity"
+              onClick={() =>
+                setExpandedImage({ dataUrl: attachment.dataUrl, name: attachment.name })
+              }
             />
           ) : (
-            <div className="h-16 w-16 flex flex-col items-center justify-center gap-1 rounded border border-border bg-muted">
+            <div
+              className={`h-16 w-16 flex flex-col items-center justify-center gap-1 rounded border border-border bg-muted ${
+                attachment.kind === 'path'
+                  ? 'cursor-pointer hover:opacity-90 transition-opacity'
+                  : ''
+              }`}
+              onClick={
+                attachment.kind === 'path'
+                  ? () => projectApi.openPath(attachment.filePath).catch(() => {})
+                  : undefined
+              }
+            >
               <FileText className="h-5 w-5 text-muted-foreground" />
               <span className="text-[10px] text-muted-foreground truncate max-w-[56px] px-1">
                 {attachment.name}
@@ -74,7 +91,10 @@ export const AttachmentPreview = memo(function AttachmentPreview(
             variant="ghost"
             size="sm"
             className="absolute -top-1.5 -right-1.5 h-5 w-5 p-0 rounded-full bg-background border border-border shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={() => onRemove(attachment.id)}
+            onClick={(e) => {
+              e.stopPropagation()
+              onRemove(attachment.id)
+            }}
             aria-label={`Remove ${attachment.name}`}
             data-testid="attachment-remove"
           >
@@ -82,6 +102,13 @@ export const AttachmentPreview = memo(function AttachmentPreview(
           </Button>
         </div>
       ))}
+      {expandedImage && (
+        <ImageLightbox
+          src={expandedImage.dataUrl}
+          name={expandedImage.name}
+          onClose={() => setExpandedImage(null)}
+        />
+      )}
     </div>
   )
 })
