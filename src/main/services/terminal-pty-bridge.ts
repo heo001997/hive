@@ -26,11 +26,54 @@ import {
 import { ghosttyService } from './ghostty-service'
 import { createLogger } from './logger'
 import { ptyService } from './pty-service'
+import { stripAnsi } from '../../shared/lib/ansi'
 
 const log = createLogger({ component: 'TerminalPtyBridge' })
 
+/** Cap on the rolling liveness tail kept per terminal (ANSI-stripped). */
+const LIVENESS_TAIL_CAP = 16 * 1024
+
 const listenerCleanups = new Map<string, { removeData: () => void; removeExit: () => void }>()
 const dataBuffers = new Map<string, string>()
+/**
+ * A non-cleared accumulator of each terminal's emitted output, distinct from
+ * `dataBuffers` (which is flushed-and-deleted every tick and therefore only ever
+ * holds un-flushed bytes). `bytes` is the running total length observed; `tail`
+ * is a capped, ANSI-stripped rolling window of the most recent output. Used by
+ * `getTerminalLiveness` to fingerprint whether a session is still emitting.
+ */
+const terminalLiveness = new Map<string, { bytes: number; raw: string }>()
+
+/**
+ * Append `data` to a terminal's liveness accumulator (never cleared on flush).
+ * The rolling tail is stored RAW (with ANSI) and stripped once at read time —
+ * PTY `onData` chunks split on arbitrary byte boundaries, so an escape sequence
+ * can straddle two chunks; stripping per chunk would leave the split fragment
+ * behind. `bytes` is the uncapped running total (the frozen check only needs it
+ * to move when output is still being emitted).
+ */
+function recordTerminalLiveness(terminalId: string, data: string): void {
+  const prev = terminalLiveness.get(terminalId)
+  const bytes = (prev?.bytes ?? 0) + data.length
+  const combined = (prev?.raw ?? '') + data
+  const raw = combined.length > LIVENESS_TAIL_CAP ? combined.slice(-LIVENESS_TAIL_CAP) : combined
+  terminalLiveness.set(terminalId, { bytes, raw })
+}
+
+/**
+ * Snapshot of a terminal's emitted output so far. For Claude CLI sessions
+ * `sessionId === terminalId`, so the lookup is direct. Returns `undefined` when
+ * no PTY output has been recorded for this id (e.g. a non-PTY provider) — the
+ * caller then falls back to a coarser source. The tail is ANSI-stripped here,
+ * once, over the combined buffer (see `recordTerminalLiveness`).
+ */
+export function getTerminalLiveness(
+  terminalId: string
+): { bytes: number; tail: string } | undefined {
+  const live = terminalLiveness.get(terminalId)
+  if (!live) return undefined
+  return { bytes: live.bytes, tail: stripAnsi(live.raw) }
+}
 const flushScheduled = new Set<string>()
 const claudeWatchers = new Map<string, ClaudeSessionWatchHandle>()
 const claudePlanFollowupWatchers = new Map<string, ClaudePlanFollowupWatchHandle>()
@@ -130,6 +173,7 @@ export function destroyNodePtyTerminal(terminalId: string): void {
     listenerCleanups.delete(terminalId)
   }
   dataBuffers.delete(terminalId)
+  terminalLiveness.delete(terminalId)
   flushScheduled.delete(terminalId)
   claudeWatchers.get(terminalId)?.close()
   claudeWatchers.delete(terminalId)
@@ -153,6 +197,8 @@ function attachNodePtyListeners(terminalId: string): void {
   const removeData = ptyService.onData(terminalId, (data) => {
     const existing = dataBuffers.get(terminalId)
     dataBuffers.set(terminalId, existing ? existing + data : data)
+    // Liveness accumulator: unlike dataBuffers above, this is NOT cleared on flush.
+    recordTerminalLiveness(terminalId, data)
 
     if (claudeCliSessions.has(terminalId)) {
       const title = processClaudeCliPtyData(terminalId, data, {
@@ -194,6 +240,7 @@ function attachNodePtyListeners(terminalId: string): void {
       .catch(() => undefined)
     listenerCleanups.delete(terminalId)
     dataBuffers.delete(terminalId)
+    terminalLiveness.delete(terminalId)
     flushScheduled.delete(terminalId)
     claudeWatchers.get(terminalId)?.close()
     claudeWatchers.delete(terminalId)
@@ -364,6 +411,7 @@ export function cleanupTerminals(): void {
   }
   listenerCleanups.clear()
   dataBuffers.clear()
+  terminalLiveness.clear()
   flushScheduled.clear()
   for (const [, watcher] of claudeWatchers) {
     watcher.close()

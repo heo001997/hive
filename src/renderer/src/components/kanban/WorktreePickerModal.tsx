@@ -18,6 +18,7 @@ import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { cn } from '@/lib/utils'
 import { useKanbanStore, ticketKey, parseTicketKey } from '@/stores/useKanbanStore'
 import { getChainTicketKeys } from '@/lib/chain-utils'
+import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -727,7 +728,19 @@ export function WorktreePickerModal({
         // so the ticket tracks session lifecycle (progress bar, auto-advance).
         const existingSessions = useSessionStore.getState().sessionsByWorktree.get(worktreeId) || []
         const activeSession = existingSessions[0]
-        if (activeSession) {
+        // ...but only if no OTHER ticket already owns that session. Binding two
+        // tickets to one current_session_id makes session events (completed/error)
+        // drive both at once — e.g. a blocked sibling rides the running ticket into
+        // Review. When the session is already owned, attach the worktree only; this
+        // ticket gets its own session when it launches.
+        const sessionAlreadyOwned =
+          !!activeSession &&
+          isSessionOwnedByAnotherTicket(
+            useKanbanStore.getState().tickets,
+            activeSession.id,
+            ticket.id
+          )
+        if (activeSession && !sessionAlreadyOwned) {
           await updateTicket(ticket.id, projectId, {
             worktree_id: worktreeId,
             current_session_id: activeSession.id,
