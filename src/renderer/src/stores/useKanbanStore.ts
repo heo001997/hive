@@ -16,6 +16,12 @@ import {
   type KanbanSessionEvent
 } from './store-coordination'
 import { isPlanLike } from '../lib/constants'
+import type {
+  CompletionCheckProvider,
+  SessionFingerprint,
+  StoredCompletionVerdict,
+  VerifyProgress
+} from '@shared/types/completion'
 import { sortTicketsBy, SORT_STEP, type SortField, type SortDir } from '../lib/kanban-sort'
 import { useConnectionStore } from './useConnectionStore'
 import { usePinnedStore } from './usePinnedStore'
@@ -172,6 +178,18 @@ function placeholdersFromDiagnostics(
 }
 
 // ── State interface ────────────────────────────────────────────────────
+/** Options for `moveTicket`. */
+export interface MoveTicketOptions {
+  /**
+   * True when the move was triggered directly by the user (e.g. a drag-and-drop),
+   * as opposed to an automatic system move (Stop-hook promotion, `session_completed`
+   * replay, rescue re-promote). A user-initiated move into Review busts any cached
+   * completion verdict for the ticket's session so Strict Verify re-judges fresh —
+   * the deliberate "judge it again" the reuse guard would otherwise swallow.
+   */
+  userInitiated?: boolean
+}
+
 interface KanbanState {
   /** Tickets keyed by project ID */
   tickets: Map<string, KanbanTicket[]>
@@ -217,7 +235,8 @@ interface KanbanState {
     ticketId: string,
     projectId: string,
     column: KanbanTicketColumn,
-    sortOrder: number
+    sortOrder: number,
+    opts?: MoveTicketOptions
   ) => Promise<void>
   reorderTicket: (ticketId: string, projectId: string, newSortOrder: number) => Promise<void>
   applyColumnSort: (tickets: KanbanTicket[], field: SortField, dir: SortDir) => Promise<void>
@@ -286,40 +305,234 @@ interface KanbanState {
   enterDependencyMode: (sourceTicketId: string, sourceProjectId?: string) => void
   exitDependencyMode: () => void
   setHoveredBlockedTicketRef: (ref: TicketRef | null) => void
+
+  // ── AI completion verdicts (transient, not persisted) ──────────────
+  /** Latest AI "is this really complete?" verdict per ticket, keyed by ticketKey. */
+  completionVerdicts: Map<TicketKey, StoredCompletionVerdict>
+  setCompletionVerdict: (key: TicketKey, verdict: StoredCompletionVerdict) => void
+  clearCompletionVerdict: (key: TicketKey) => void
+  /**
+   * Live progress of the Strict Verify / Auto Review Bypass pipeline per ticket,
+   * keyed by ticketKey. Drives the countdown + status badge on the Kanban card.
+   * Transient (not persisted); a `null` value clears it.
+   */
+  verifyProgress: Map<TicketKey, VerifyProgress>
+  setVerifyProgress: (key: TicketKey, progress: VerifyProgress | null) => void
+  /**
+   * Run the AI completion check for a ticket on demand (manual "Verify
+   * completion" action). Stores the verdict and, if the verdict is incomplete,
+   * moves the ticket back to In Progress — same as the automatic settle path.
+   */
+  recheckTicketCompletion: (
+    ticketId: string,
+    projectId: string
+  ) => Promise<StoredCompletionVerdict | null>
 }
 
-// Pending auto-approve settle timers, keyed by ticketKey. Kept at module scope
-// (not in the store) since they are transient and must not trigger re-renders.
-const pendingAutoApprove = new Map<TicketKey, ReturnType<typeof setTimeout>>()
+// Pending settle timers, keyed by ticketKey. Kept at module scope (not in the
+// store) since they are transient and must not trigger re-renders. There are two
+// independent, sequential delays:
+//   D1 — Strict Verify (Feature A): frozen check + AI Watcher.
+//   D2 — Auto Review Bypass (Feature B): commit + advance a verified ticket.
+const pendingStrictVerify = new Map<TicketKey, ReturnType<typeof setTimeout>>()
+const pendingAutoBypass = new Map<TicketKey, ReturnType<typeof setTimeout>>()
 
-/** Cancel a scheduled auto-approve for a ticket (e.g. it left Review or resumed work). */
-function cancelAutoApprove(key: TicketKey): void {
-  const timer = pendingAutoApprove.get(key)
+/**
+ * Gate-1 frozen-check snapshots. Captured (asynchronously) when Strict Verify is
+ * armed: S0 is the session's output fingerprint at arm time. At settle the
+ * handler re-captures S1 and compares — a change means the session is still
+ * emitting (not done) so it's bounced back without a model call. Stored as the
+ * in-flight promise so the settle handler can await it regardless of whether the
+ * capture has resolved by the time the timer fires.
+ */
+const frozenSnapshots = new Map<
+  TicketKey,
+  { sessionId: string; fp: Promise<SessionFingerprint | null> }
+>()
+
+/**
+ * Maximum number of times the In Progress rescue may re-promote a single ticket
+ * (per session) back to Review. After this it gives up, labels the card
+ * "Re-checked", and leaves the ticket alone — the loop-breaker the user asked for.
+ */
+const MAX_RESCUE_ATTEMPTS = 1
+
+/**
+ * In Progress rescue state (mirrors the Strict Verify timers/snapshots). When
+ * Strict Verify bounces a build ticket back to In Progress as "Not done", we arm a
+ * watcher: after the delay we re-fingerprint the session and, if it has gone frozen
+ * (stopped emitting) while the ticket is still stuck, re-promote it to Review for a
+ * fresh judgment — at most MAX_RESCUE_ATTEMPTS times per session.
+ *   pendingRescue   — the armed settle timer, keyed by ticketKey.
+ *   rescueSnapshots — S0 fingerprint captured at arm time (the frozen baseline).
+ *   rescueAttempts  — re-promote count per session (survives the bounce cycle;
+ *                     reset only when a different session is tracked or work resumes).
+ */
+const pendingRescue = new Map<TicketKey, ReturnType<typeof setTimeout>>()
+const rescueSnapshots = new Map<
+  TicketKey,
+  { sessionId: string; fp: Promise<SessionFingerprint | null> }
+>()
+const rescueAttempts = new Map<TicketKey, { sessionId: string; count: number }>()
+
+function cancelInProgressRescue(key: TicketKey): void {
+  const timer = pendingRescue.get(key)
   if (timer) {
     clearTimeout(timer)
-    pendingAutoApprove.delete(key)
+    pendingRescue.delete(key)
+  }
+  rescueSnapshots.delete(key)
+}
+
+function cancelStrictVerify(key: TicketKey): void {
+  const timer = pendingStrictVerify.get(key)
+  if (timer) {
+    clearTimeout(timer)
+    pendingStrictVerify.delete(key)
   }
 }
 
+function cancelAutoBypass(key: TicketKey): void {
+  const timer = pendingAutoBypass.get(key)
+  if (timer) {
+    clearTimeout(timer)
+    pendingAutoBypass.delete(key)
+  }
+}
+
+/** Cancel both settle timers and drop any frozen snapshot for a ticket. */
+function cancelAll(key: TicketKey): void {
+  cancelStrictVerify(key)
+  cancelAutoBypass(key)
+  cancelInProgressRescue(key)
+  frozenSnapshots.delete(key)
+}
+
 /**
- * Schedule an auto-approve after a settle delay. Reschedules if already pending.
- * The delay absorbs the transient "completed → working → completed" churn that
- * occurs with multi-turn agents, queued follow-ups, and app-relaunch status
- * replays — a real resume of work cancels the timer before it fires.
+ * Forget every transient Strict Verify entry for a ticket that is leaving this
+ * board — deleted, archived, or moved to another project. Mirrors the
+ * `session_working` cleanup so a removed ticket can't leak timers/snapshots or
+ * fire a settle/rescue handler (and a stray fingerprint round-trip) against a
+ * row that no longer exists. Includes `rescueAttempts`, which `cancelAll`
+ * intentionally preserves across the In Progress bounce cycle.
  */
-function scheduleAutoApprove(
+function forgetTicketState(get: () => KanbanState, key: TicketKey): void {
+  cancelAll(key)
+  rescueAttempts.delete(key)
+  get().clearCompletionVerdict(key)
+  get().setVerifyProgress(key, null)
+}
+
+/**
+ * Schedule Strict Verify (Feature A, D1) after a settle delay. Reschedules if
+ * already pending and supersedes any pending bypass. Asynchronously captures the
+ * S0 fingerprint so the frozen check has a baseline to compare against. The delay
+ * absorbs the transient "completed → working → completed" churn that occurs with
+ * multi-turn agents, queued follow-ups, and app-relaunch status replays — a real
+ * resume of work cancels the timer before it fires.
+ */
+function scheduleStrictVerify(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  delayMs: number,
+  captureSnapshot: boolean
+): void {
+  const key = ticketKey(projectId, ticketId)
+  cancelStrictVerify(key)
+  cancelAutoBypass(key)
+
+  // Capture the S0 fingerprint only when the Snapshot gate is on — otherwise the
+  // frozen check won't run and the extra round-trip would be wasted.
+  const ticket = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  const sessionId = captureSnapshot ? (ticket?.current_session_id ?? null) : null
+  if (sessionId) {
+    const fp = (async (): Promise<SessionFingerprint | null> => {
+      try {
+        const { completionApi } = await import('@/api/completion-api')
+        return await completionApi.getSessionFingerprint(sessionId)
+      } catch (err) {
+        console.warn('Strict verify: failed to capture S0 fingerprint', err)
+        return null
+      }
+    })()
+    frozenSnapshots.set(key, { sessionId, fp })
+  } else {
+    frozenSnapshots.delete(key)
+  }
+
+  const ms = Math.max(0, delayMs)
+  const timer = setTimeout(() => {
+    pendingStrictVerify.delete(key)
+    void onStrictVerifySettled(get, ticketId, projectId)
+  }, ms)
+  pendingStrictVerify.set(key, timer)
+  get().setVerifyProgress(key, { phase: 'verify-countdown', deadline: Date.now() + ms })
+}
+
+/**
+ * Schedule Auto Review Bypass (Feature B, D2) after a settle delay. Reschedules
+ * if already pending. Armed either by Strict Verify once it verifies a ticket, or
+ * directly (legacy path) when Strict Verify is off.
+ */
+function scheduleAutoBypass(
   get: () => KanbanState,
   ticketId: string,
   projectId: string,
   delayMs: number
 ): void {
   const key = ticketKey(projectId, ticketId)
-  cancelAutoApprove(key)
+  cancelAutoBypass(key)
+  const ms = Math.max(0, delayMs)
   const timer = setTimeout(() => {
-    pendingAutoApprove.delete(key)
-    void maybeAutoApprove(get, ticketId, projectId)
-  }, Math.max(0, delayMs))
-  pendingAutoApprove.set(key, timer)
+    pendingAutoBypass.delete(key)
+    void onAutoBypassSettled(get, ticketId, projectId)
+  }, ms)
+  pendingAutoBypass.set(key, timer)
+  get().setVerifyProgress(key, { phase: 'bypass-countdown', deadline: Date.now() + ms })
+}
+
+/**
+ * (Re)arm the settle pipeline for a ticket. Called whenever a build ticket lands
+ * in (or changes while sitting in) Review. When Strict Verify (Feature A) is on,
+ * arm D1 — it arms D2 itself after verifying. Otherwise fall back to the legacy
+ * path: arm D2 directly if the ticket opted into auto-approve. Any other state
+ * cancels both timers (and drops the frozen snapshot). `ticket` must be the
+ * freshly-looked-up row (post optimistic update) so its column is current.
+ */
+async function armSettleTimers(
+  get: () => KanbanState,
+  projectId: string,
+  ticketId: string,
+  ticket: KanbanTicket | undefined
+): Promise<void> {
+  const key = ticketKey(projectId, ticketId)
+  if (!ticket || ticket.column !== 'review' || ticket.mode !== 'build') {
+    cancelAll(key)
+    get().setVerifyProgress(key, null)
+    return
+  }
+  const { useSettingsStore } = await import('./useSettingsStore')
+  const settings = useSettingsStore.getState()
+  if (settings.kanbanStrictVerifyEnabled) {
+    scheduleStrictVerify(
+      get,
+      ticketId,
+      projectId,
+      (settings.kanbanStrictVerifyDelaySeconds ?? 8) * 1000,
+      settings.kanbanStrictVerifySnapshotEnabled ?? true
+    )
+  } else if (ticket.auto_approve_review) {
+    scheduleAutoBypass(
+      get,
+      ticketId,
+      projectId,
+      (settings.kanbanAutoApproveDelaySeconds ?? 10) * 1000
+    )
+  } else {
+    cancelAll(key)
+    get().setVerifyProgress(key, null)
+  }
 }
 
 /**
@@ -388,61 +601,429 @@ async function moveReviewedTicketToDone(
   }
 }
 
-/**
- * Re-validate, at fire time, that auto-approving is still safe, then act —
- * CHAIN-AWARE:
- *   • Commit the worktree (if enabled) — every chain step commits.
- *   • Non-terminal ticket (something depends on it) → move to Done, which
- *     unblocks and auto-launches the next chain ticket via its own
- *     pending_launch_config (the previously-configured worktree is respected).
- *   • Terminal ticket (last step / standalone) → stay in Review for the human
- *     to PR & merge.
- *
- * Safety guards (all must hold, else abort silently leaving the ticket in
- * Review): the ticket is still opted in (`auto_approve_review`); it is still a
- * build ticket sitting in Review; its session is genuinely idle (`completed`)
- * and has been so for the
- * full settle window; and there are no queued follow-up messages.
- */
-async function maybeAutoApprove(
+/** Move a settled-but-incomplete ticket back to In Progress (bottom of the column). */
+async function moveTicketBackToInProgress(
   get: () => KanbanState,
   ticketId: string,
   projectId: string
 ): Promise<void> {
-  const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
-  if (!current || current.column !== 'review' || current.mode !== 'build') return
+  try {
+    const inProgress = (get().tickets.get(projectId) ?? []).filter((t) => t.column === 'in_progress')
+    const sortOrder = get().computeSortOrder(inProgress, inProgress.length)
+    await get().moveTicket(ticketId, projectId, 'in_progress', sortOrder)
+  } catch (err) {
+    console.error('Completion check: move back to In Progress failed for ticket', ticketId, err)
+  }
+}
 
-  // Per-ticket opt-in is the source of truth (seeded from the global default at
-  // creation, overridable in Ticket Detail). The global setting no longer gates here.
-  if (!current.auto_approve_review) return
+/**
+ * Arm the In Progress rescue watcher for a ticket Strict Verify just bounced back
+ * to In Progress as "Not done". Captures the S0 fingerprint now and schedules the
+ * frozen re-check after `delayMs`. Resets the per-session retry budget when a
+ * different session is being watched. Silent (no countdown UI — the ticket is in
+ * In Progress, not Review). Caller must gate on the rescue setting + a non-needsInput
+ * verdict, and arm AFTER the move-back (the move re-runs armSettleTimers → cancelAll,
+ * which would otherwise cancel this timer).
+ */
+function armInProgressRescue(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  sessionId: string,
+  delayMs: number
+): void {
+  const key = ticketKey(projectId, ticketId)
+  cancelInProgressRescue(key)
+
+  // Reset the retry budget when we start watching a different session.
+  const att = rescueAttempts.get(key)
+  if (!att || att.sessionId !== sessionId) {
+    rescueAttempts.set(key, { sessionId, count: 0 })
+  }
+
+  // Capture S0 now so the frozen check has a baseline at settle time.
+  const fp = (async (): Promise<SessionFingerprint | null> => {
+    try {
+      const { completionApi } = await import('@/api/completion-api')
+      return await completionApi.getSessionFingerprint(sessionId)
+    } catch (err) {
+      console.warn('In Progress rescue: failed to capture S0 fingerprint', err)
+      return null
+    }
+  })()
+  rescueSnapshots.set(key, { sessionId, fp })
+
+  const ms = Math.max(0, delayMs)
+  const timer = setTimeout(() => {
+    pendingRescue.delete(key)
+    void onInProgressRescueSettled(get, ticketId, projectId)
+  }, ms)
+  pendingRescue.set(key, timer)
+}
+
+/**
+ * In Progress rescue settle handler. Fires `delayMs` after a build ticket was
+ * bounced to In Progress as "Not done". Re-fingerprints the session:
+ *   not frozen (still emitting) → genuinely working → leave it (correct in In Progress).
+ *   frozen (idle) but still "Not done" → the bounce was likely premature (stale
+ *     transcript at judge time); re-promote to Review for a fresh judgment — up to
+ *     MAX_RESCUE_ATTEMPTS times per session, then label "Re-checked" and give up.
+ * Aborts silently (leaves the ticket) on any guard failure or missing baseline.
+ */
+async function onInProgressRescueSettled(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string
+): Promise<void> {
+  const key = ticketKey(projectId, ticketId)
+  const snap = rescueSnapshots.get(key)
+  rescueSnapshots.delete(key)
+
+  const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  // Guard: still a build ticket sitting in In Progress.
+  if (!current || current.column !== 'in_progress' || current.mode !== 'build') return
+  const sessionId = current.current_session_id
+  if (!sessionId) return
+
+  // Only rescue a ticket Strict Verify bounced here as "Not done" — not one waiting
+  // on the user (needsInput), and only for the session we snapshotted.
+  const verdict = get().completionVerdicts.get(key)
+  if (!verdict || verdict.sessionId !== sessionId || !verdict.movedBack || verdict.needsInput) {
+    return
+  }
+
+  // Frozen check (S0 at arm vs S1 now). No baseline → can't tell → conservatively
+  // leave it (treat as possibly still working).
+  if (!snap || snap.sessionId !== sessionId) return
+  const s0 = await snap.fp.catch(() => null)
+  if (!s0) return
+  let s1: SessionFingerprint | null = null
+  try {
+    const { completionApi } = await import('@/api/completion-api')
+    s1 = await completionApi.getSessionFingerprint(sessionId)
+  } catch (err) {
+    console.warn('In Progress rescue: failed to capture S1 fingerprint', err)
+    return
+  }
+  if (!s1) return
+
+  const frozen = s1.length === s0.length && s1.hash === s0.hash
+  if (!frozen) {
+    console.log(
+      `[StrictVerify] rescue: ticket ${ticketId} still emitting → leaving in In Progress`
+    )
+    return
+  }
+
+  // Frozen + still "Not done" → re-promote to Review (capped), or give up + label.
+  const tracked = rescueAttempts.get(key)
+  const count = tracked && tracked.sessionId === sessionId ? tracked.count : 0
+  if (count >= MAX_RESCUE_ATTEMPTS) {
+    console.warn(
+      `[StrictVerify] rescue: ticket ${ticketId} exhausted ${MAX_RESCUE_ATTEMPTS} retry — leaving in In Progress with "Re-checked" label`
+    )
+    const v = get().completionVerdicts.get(key)
+    if (v && !v.rescueExhausted) {
+      get().setCompletionVerdict(key, { ...v, rescueExhausted: true })
+    }
+    return
+  }
+
+  rescueAttempts.set(key, { sessionId, count: count + 1 })
+  console.log(
+    `[StrictVerify] rescue: ticket ${ticketId} frozen + Not done → re-promoting to Review (attempt ${count + 1}/${MAX_RESCUE_ATTEMPTS})`
+  )
+  // Clear the cached verdict so the re-judge is FRESH (bypasses runStrictVerify's
+  // per-session reuse guard).
+  get().clearCompletionVerdict(key)
+  try {
+    const reviewTickets = (get().tickets.get(projectId) ?? []).filter((t) => t.column === 'review')
+    const sortOrder = get().computeSortOrder(reviewTickets, reviewTickets.length)
+    await get().moveTicket(ticketId, projectId, 'review', sortOrder)
+  } catch (err) {
+    console.error('In Progress rescue: re-promote to Review failed for ticket', ticketId, err)
+  }
+}
+
+/**
+ * Arm the In Progress rescue after a "Not done" bounce, if enabled and the verdict
+ * is a plain incomplete (not a needsInput / waiting-on-user verdict). Reuses the
+ * Strict Verify delay as the frozen-check window. No-op when rescue is off.
+ */
+function maybeArmRescueAfterBounce(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  sessionId: string,
+  needsInput: boolean,
+  settings: { kanbanInProgressRescueEnabled?: boolean; kanbanStrictVerifyDelaySeconds?: number }
+): void {
+  if (needsInput || !settings.kanbanInProgressRescueEnabled) return
+  armInProgressRescue(
+    get,
+    ticketId,
+    projectId,
+    sessionId,
+    (settings.kanbanStrictVerifyDelaySeconds ?? 8) * 1000
+  )
+}
+
+/** The Strict Verify settings slice (subset of the settings store). */
+interface StrictVerifySettings {
+  kanbanStrictVerifyProvider: CompletionCheckProvider
+  kanbanStrictVerifyModel: string
+  kanbanStrictVerifyChars: number
+  kanbanStrictVerifyConfidenceThreshold: number
+  /** User-editable Ticket Reviewer system prompt (blank → built-in default). */
+  kanbanStrictVerifyPrompt: string
+  /** Settle delay (s); reused as the In Progress rescue frozen-check window. */
+  kanbanStrictVerifyDelaySeconds?: number
+  /** In Progress rescue master switch (re-promote a frozen "Not done" ticket once). */
+  kanbanInProgressRescueEnabled?: boolean
+}
+
+/**
+ * Gate 2 — the AI Watcher. Returns `true` when the ticket is judged NOT genuinely
+ * complete (incomplete, low confidence, OR the agent is waiting on the user), in
+ * which case it stores the verdict and bounces the ticket back to In Progress.
+ *
+ * Idempotent per session: once a verdict exists for the ticket's current session,
+ * we neither re-call the model nor re-store — this absorbs the `session_completed`
+ * status replays that fire on app relaunch/focus. A genuine resume of work clears
+ * the verdict (see `session_working`), so the next settle re-checks the now-longer
+ * transcript. Detection errors fail open (return `false`) so a flaky provider
+ * never traps a ticket.
+ */
+async function runStrictVerify(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  ticket: KanbanTicket,
+  settings: StrictVerifySettings
+): Promise<boolean> {
+  const sessionId = ticket.current_session_id
+  if (!sessionId) return false // no transcript to judge → don't block
+
+  const key = ticketKey(projectId, ticketId)
+  const prior = get().completionVerdicts.get(key)
+  if (prior && prior.sessionId === sessionId) {
+    // Already judged this session's settle — reuse it (no model call). Re-apply
+    // the move-back so a `session_completed` replay (which the sync handler
+    // bounces back to Review) can't strand an incomplete ticket there.
+    console.warn(
+      `[StrictVerify] REUSING cached verdict for ticket ${ticketId} — session ${sessionId} unchanged, NO fresh model call. ` +
+        `complete=${prior.complete} conf=${prior.confidence} reason="${prior.reason}"`
+    )
+    if (prior.movedBack) {
+      await moveTicketBackToInProgress(get, ticketId, projectId)
+      maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, prior.needsInput, settings)
+    }
+    return prior.movedBack
+  }
+
+  const threshold = settings.kanbanStrictVerifyConfidenceThreshold ?? 0.6
+  let result
+  try {
+    const { completionApi } = await import('@/api/completion-api')
+    result = await completionApi.detectTicketCompletion({
+      sessionId,
+      ticketId,
+      maxChars: settings.kanbanStrictVerifyChars,
+      provider: settings.kanbanStrictVerifyProvider,
+      model: settings.kanbanStrictVerifyModel || undefined,
+      systemPrompt: settings.kanbanStrictVerifyPrompt || undefined
+    })
+  } catch (err) {
+    console.error('Strict verify failed for ticket', ticketId, err)
+    return false
+  }
+
+  if (!result.success || !result.verdict) {
+    if (result.error) console.warn('Strict verify returned no verdict:', result.error)
+    return false
+  }
+
+  const verdict = result.verdict
+  const incomplete = !verdict.complete || verdict.confidence < threshold || verdict.needsInput
+  console.log(
+    `[StrictVerify] FRESH verdict for ticket ${ticketId} (session ${sessionId}): ` +
+      `complete=${verdict.complete} conf=${verdict.confidence} needsInput=${verdict.needsInput} ` +
+      `threshold=${threshold} → ${incomplete ? 'INCOMPLETE (moving back)' : 'COMPLETE (stays)'} reason="${verdict.reason}"`
+  )
+  get().setCompletionVerdict(key, {
+    ...verdict,
+    sessionId,
+    checkedAt: Date.now(),
+    movedBack: incomplete
+  })
+
+  if (incomplete) {
+    await moveTicketBackToInProgress(get, ticketId, projectId)
+    maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, verdict.needsInput, settings)
+  }
+  return incomplete
+}
+
+/**
+ * Shared liveness gate used by both settle handlers: the ticket is still a build
+ * ticket in Review, and its session has been idle (`completed`) for the full
+ * settle window with no queued follow-ups. Returns `false` (abort silently,
+ * leaving the ticket in Review) when any condition fails.
+ */
+async function passesSettleGuards(
+  current: KanbanTicket,
+  settleMs: number
+): Promise<boolean> {
+  if (current.column !== 'review' || current.mode !== 'build') return false
+  const sessionId = current.current_session_id
+  if (!sessionId) return true
+  const { useSessionStore } = await import('./useSessionStore')
+  const statusEntry = useWorktreeStatusStore.getState().sessionStatuses[sessionId]
+  if (!statusEntry || statusEntry.status !== 'completed') return false
+  if (Date.now() - statusEntry.timestamp < settleMs) return false
+  const queued = useSessionStore.getState().pendingFollowUpMessages.get(sessionId)
+  if (queued && queued.length > 0) return false
+  return true
+}
+
+/**
+ * Feature A settle handler (D1). Runs the two-gate Strict Verify pipeline:
+ *
+ *   Gate 1 (frozen check) — re-capture the session fingerprint (S1) and compare
+ *     to the snapshot taken at arm time (S0). If they differ the session is still
+ *     emitting output → bounce back to In Progress WITHOUT a model call. A missing
+ *     S0 (capture failed / no session) fails open to Gate 2.
+ *   Gate 2 (AI Watcher) — judge complete / asking-user / incomplete. Anything but
+ *     "genuinely complete" stores the verdict and bounces back.
+ *
+ * On a verified-complete verdict the ticket stays in Review; if it opted into
+ * auto-approve, Feature B (Auto Review Bypass, D2) is armed.
+ */
+async function onStrictVerifySettled(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string
+): Promise<void> {
+  const key = ticketKey(projectId, ticketId)
+  const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  if (!current) {
+    frozenSnapshots.delete(key)
+    get().setVerifyProgress(key, null)
+    return
+  }
+
+  const { useSettingsStore } = await import('./useSettingsStore')
+  const settings = useSettingsStore.getState()
+  const settleMs = Math.max(0, (settings.kanbanStrictVerifyDelaySeconds ?? 8) * 1000)
+  if (!(await passesSettleGuards(current, settleMs))) {
+    frozenSnapshots.delete(key)
+    get().setVerifyProgress(key, null)
+    return
+  }
+
+  // Countdown elapsed — the gates run now (no fixed duration).
+  get().setVerifyProgress(key, { phase: 'checking' })
+  const sessionId = current.current_session_id
+
+  // ── Gate 1: frozen check ──────────────────────────────────────────
+  const snap = frozenSnapshots.get(key)
+  if (sessionId && snap && snap.sessionId === sessionId) {
+    const s0 = await snap.fp.catch(() => null)
+    if (s0) {
+      let s1: SessionFingerprint | null = null
+      try {
+        const { completionApi } = await import('@/api/completion-api')
+        s1 = await completionApi.getSessionFingerprint(sessionId)
+      } catch (err) {
+        console.warn('Strict verify: failed to capture S1 fingerprint', err)
+      }
+      if (s1 && (s1.length !== s0.length || s1.hash !== s0.hash)) {
+        // Output changed since arm time → still emitting, not frozen. Bounce back
+        // without spending a model call.
+        frozenSnapshots.delete(key)
+        await moveTicketBackToInProgress(get, ticketId, projectId)
+        return
+      }
+    }
+  }
+  frozenSnapshots.delete(key)
+
+  // ── Gate 2: Ticket Reviewer (the AI Watcher) ──────────────────────
+  // Skipped when the Reviewer sub-gate is off — a ticket that cleared the
+  // snapshot (or had it disabled) is then treated as verified without a model call.
+  if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
+    const incomplete = await runStrictVerify(get, ticketId, projectId, current, settings)
+    if (incomplete) return // verdict stored + moved back (the move clears progress)
+  }
+
+  // Verified complete — the ticket stays in Review. Hand off to Feature B if this
+  // ticket opted into auto-approve; otherwise the pipeline is done.
+  if (current.auto_approve_review) {
+    scheduleAutoBypass(
+      get,
+      ticketId,
+      projectId,
+      (settings.kanbanAutoApproveDelaySeconds ?? 10) * 1000
+    )
+  } else {
+    get().setVerifyProgress(key, null)
+  }
+}
+
+/**
+ * Feature B settle handler (D2) — Auto Review Bypass. Commits the worktree (if
+ * enabled), then advances a non-terminal (chain) ticket to Done so the next ticket
+ * auto-starts; a terminal ticket stays in Review. Per-ticket opt-in
+ * (`auto_approve_review`).
+ *
+ * When Strict Verify (Feature A) is on, this only proceeds once a VERIFIED verdict
+ * (complete, not bounced) exists for the current session — Feature A arms this
+ * timer itself after verifying. When Feature A is off, the opt-in alone is enough
+ * (legacy behavior). Re-checks the settle guards so transient churn can't fire it.
+ */
+async function onAutoBypassSettled(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string
+): Promise<void> {
+  const key = ticketKey(projectId, ticketId)
+  const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  if (!current || !current.auto_approve_review) {
+    get().setVerifyProgress(key, null)
+    return
+  }
 
   const { useSettingsStore } = await import('./useSettingsStore')
   const settings = useSettingsStore.getState()
   const settleMs = Math.max(0, (settings.kanbanAutoApproveDelaySeconds ?? 10) * 1000)
-
-  const sessionId = current.current_session_id
-  if (sessionId) {
-    const { useWorktreeStatusStore } = await import('./useWorktreeStatusStore')
-    const { useSessionStore } = await import('./useSessionStore')
-    // Session must be idle (`completed`) — not working/planning/permission/error —
-    // and must have stayed that way for the full settle window.
-    const statusEntry = useWorktreeStatusStore.getState().sessionStatuses[sessionId]
-    if (!statusEntry || statusEntry.status !== 'completed') return
-    if (Date.now() - statusEntry.timestamp < settleMs) return
-    // No queued follow-up turns waiting to run.
-    const queued = useSessionStore.getState().pendingFollowUpMessages.get(sessionId)
-    if (queued && queued.length > 0) return
+  if (!(await passesSettleGuards(current, settleMs))) {
+    get().setVerifyProgress(key, null)
+    return
   }
 
-  // Passed all safety guards. Commit first (so each chain step is its own commit).
+  if (settings.kanbanStrictVerifyEnabled) {
+    const verdict = get().completionVerdicts.get(key)
+    const verified =
+      !!verdict &&
+      verdict.sessionId === current.current_session_id &&
+      verdict.complete &&
+      !verdict.movedBack
+    if (!verified) {
+      get().setVerifyProgress(key, null)
+      return
+    }
+  }
+
+  // Countdown elapsed — commit and (if a chain) advance now.
+  get().setVerifyProgress(key, { phase: 'finalizing' })
   if (settings.kanbanAutoCommitOnReview) {
     await commitTicketWorktree(ticketId, current)
   }
-
-  // Only non-terminal tickets auto-advance to Done; terminal tickets wait for the human.
   if (ticketHasDependent(get, projectId, ticketId)) {
     await moveReviewedTicketToDone(get, ticketId, projectId)
   }
+  // Terminal ticket stays in Review (no move to clear it); ensure the badge clears.
+  get().setVerifyProgress(key, null)
 }
 
 // ── Store ──────────────────────────────────────────────────────────────
@@ -466,6 +1047,8 @@ export const useKanbanStore = create<KanbanState>()(
       dependencyMap: new Map(),
       dependencyMode: null,
       hoveredBlockedTicketKey: null,
+      completionVerdicts: new Map(),
+      verifyProgress: new Map(),
 
       // ── setSelectedTicketId ────────────────────────────────────────
       setSelectedTicketId: (_id: null) => {
@@ -604,21 +1187,12 @@ export const useKanbanStore = create<KanbanState>()(
         }
 
         // Toggling the per-ticket flag while the ticket already sits idle in Review
-        // must (re)arm or cancel the settle timer — column moves are handled by
-        // moveTicket, but an in-place flag change is not.
+        // must (re)arm or cancel the settle pipeline — column moves are handled by
+        // moveTicket, but an in-place flag change is not. armSettleTimers decides
+        // between Strict Verify (D1) and the legacy Auto Review Bypass (D2).
         if (data.auto_approve_review !== undefined) {
           const updated = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
-          if (updated?.column === 'review' && updated.mode === 'build' && updated.auto_approve_review) {
-            const { useSettingsStore } = await import('./useSettingsStore')
-            scheduleAutoApprove(
-              get,
-              ticketId,
-              projectId,
-              (useSettingsStore.getState().kanbanAutoApproveDelaySeconds ?? 10) * 1000
-            )
-          } else {
-            cancelAutoApprove(ticketKey(projectId, ticketId))
-          }
+          await armSettleTimers(get, projectId, ticketId, updated)
         }
       },
 
@@ -637,6 +1211,9 @@ export const useKanbanStore = create<KanbanState>()(
 
         try {
           await kanban.ticket.delete(projectId, ticketId)
+
+          // Drop any pending Strict Verify timers/snapshots for the gone ticket.
+          forgetTicketState(get, ticketKey(projectId, ticketId))
 
           // Remove all dependency links for deleted ticket
           kanban.dependency.removeAll(projectId, ticketId).catch(() => {})
@@ -708,6 +1285,10 @@ export const useKanbanStore = create<KanbanState>()(
             })
           }
 
+          // The ticket left this board — drop its transient Strict Verify state
+          // (the target board re-arms fresh when the ticket settles there).
+          forgetTicketState(get, ticketKey(sourceProjectId, ticketId))
+
           // Detach dependency links (they reference the source project's board)
           kanban.dependency.removeAll(sourceProjectId, ticketId).catch(() => {})
           set((state) => {
@@ -750,6 +1331,9 @@ export const useKanbanStore = create<KanbanState>()(
         try {
           await kanban.ticket.archive(projectId, ticketId)
 
+          // Drop any pending Strict Verify timers/snapshots for the archived ticket.
+          forgetTicketState(get, ticketKey(projectId, ticketId))
+
           // Remove all dependency links for archived ticket
           await kanban.dependency.removeAll(projectId, ticketId)
           // Update local dependency map
@@ -774,12 +1358,14 @@ export const useKanbanStore = create<KanbanState>()(
 
         const now = new Date().toISOString()
         let count = 0
+        const archivedKeys: TicketKey[] = []
         // Optimistic local archive of all non-archived done tickets
         set((state) => {
           const next = new Map(state.tickets)
           const tickets = (next.get(projectId) ?? []).map((t) => {
             if (t.column === 'done' && !t.archived_at) {
               count++
+              archivedKeys.push(ticketKey(projectId, t.id))
               return { ...t, archived_at: now, updated_at: now }
             }
             return t
@@ -790,6 +1376,8 @@ export const useKanbanStore = create<KanbanState>()(
 
         try {
           await kanban.ticket.archiveAllDone(projectId)
+          // Drop any pending Strict Verify state for the archived tickets.
+          for (const key of archivedKeys) forgetTicketState(get, key)
           return count
         } catch (err) {
           // Revert on failure
@@ -898,10 +1486,23 @@ export const useKanbanStore = create<KanbanState>()(
         ticketId: string,
         projectId: string,
         column: KanbanTicketColumn,
-        sortOrder: number
+        sortOrder: number,
+        opts?: MoveTicketOptions
       ) => {
         const prev = get().tickets.get(projectId) ?? []
         const snapshot = prev.map((t) => ({ ...t }))
+
+        // A user-initiated move INTO Review is a deliberate "judge this again" —
+        // drop any cached verdict + rescue budget for the session so Strict Verify
+        // runs a FRESH model call (the per-session reuse guard would otherwise replay
+        // the stale verdict and bounce it straight back, unchanged). Automatic moves
+        // (Stop-hook, session_completed replay, rescue re-promote) keep the cache so
+        // they stay idempotent.
+        if (opts?.userInitiated && column === 'review') {
+          const key = ticketKey(projectId, ticketId)
+          get().clearCompletionVerdict(key)
+          rescueAttempts.delete(key)
+        }
 
         // Optimistic local update
         set((state) => {
@@ -962,17 +1563,13 @@ export const useKanbanStore = create<KanbanState>()(
             }
           }
 
-          // Auto-approve Review: schedule the chain-aware auto-approve (commit, then
-          // advance non-terminal tickets to Done) after a settle delay — but only for
-          // build tickets that opted in via their own `auto_approve_review` flag.
-          // Leaving Review for any other column cancels a pending approval, so the
-          // transient "completed → working → completed" churn never fires mid-work.
-          if (column === 'review' && movedTicket?.mode === 'build' && movedTicket.auto_approve_review) {
-            const { kanbanAutoApproveDelaySeconds } = useSettingsStore.getState()
-            scheduleAutoApprove(get, ticketId, projectId, (kanbanAutoApproveDelaySeconds ?? 10) * 1000)
-          } else {
-            cancelAutoApprove(ticketKey(projectId, ticketId))
-          }
+          // (Re)arm the settle pipeline for build tickets entering Review.
+          // armSettleTimers picks Strict Verify (D1) when Feature A is on, else the
+          // legacy Auto Review Bypass (D2) for auto-approve tickets; any other
+          // column cancels both. Use the freshly-updated row from state (its column
+          // reflects the move target) — `movedTicket` is the pre-move snapshot.
+          const updated = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+          await armSettleTimers(get, projectId, ticketId, updated)
         } catch (err) {
           // Revert on failure
           set((state) => {
@@ -1102,6 +1699,12 @@ export const useKanbanStore = create<KanbanState>()(
             // Each column-moving branch below guards on `column !== 'done'`.
             switch (event.type) {
               case 'session_completed': {
+                // A queued/un-launched ticket still carries pending_launch_config —
+                // it does NOT own this session. It only got current_session_id by
+                // being attached to a shared worktree's already-running session (or
+                // swept by a handoff relink). Never auto-advance it on another
+                // ticket's completion, or a blocked/queued ticket rides to Review.
+                if (ticket.pending_launch_config) break
                 if (
                   ticket.mode === 'build' &&
                   ticket.column !== 'review' &&
@@ -1216,6 +1819,9 @@ export const useKanbanStore = create<KanbanState>()(
               }
 
               case 'session_error': {
+                // Same rider guard as session_completed: a queued ticket attached to
+                // someone else's session must not be dragged to Review on their error.
+                if (ticket.pending_launch_config) break
                 // Error requires user attention — move to review if currently in_progress
                 if (ticket.column === 'in_progress') {
                   get()
@@ -1228,6 +1834,15 @@ export const useKanbanStore = create<KanbanState>()(
               case 'session_working': {
                 // Session became active — move ticket to in_progress if it's in
                 // todo (pre-assigned, first activity) or review (returning to work).
+                // A genuine resume invalidates any prior completion verdict so the
+                // next settle re-checks the now-longer transcript, and cancels any
+                // armed Strict Verify / Auto Review Bypass timers (the ticket is no
+                // longer idle in Review).
+                get().clearCompletionVerdict(ticketKey(projectId, ticket.id))
+                cancelAll(ticketKey(projectId, ticket.id))
+                // Genuine resume = fresh work → reset the rescue retry budget too.
+                rescueAttempts.delete(ticketKey(projectId, ticket.id))
+                get().setVerifyProgress(ticketKey(projectId, ticket.id), null)
                 if (ticket.plan_ready) {
                   get()
                     .updateTicket(ticket.id, projectId, { plan_ready: false })
@@ -1730,6 +2345,96 @@ export const useKanbanStore = create<KanbanState>()(
       // ── setHoveredBlockedTicketRef ──────────────────────────────────
       setHoveredBlockedTicketRef: (ref: TicketRef | null) => {
         set({ hoveredBlockedTicketKey: ref ? ticketRefKey(ref) : null })
+      },
+
+      // ── completion verdicts (transient) ─────────────────────────────
+      setCompletionVerdict: (key: TicketKey, verdict: StoredCompletionVerdict) => {
+        set((state) => {
+          const next = new Map(state.completionVerdicts)
+          next.set(key, verdict)
+          return { completionVerdicts: next }
+        })
+      },
+
+      clearCompletionVerdict: (key: TicketKey) => {
+        set((state) => {
+          if (!state.completionVerdicts.has(key)) return state
+          const next = new Map(state.completionVerdicts)
+          next.delete(key)
+          return { completionVerdicts: next }
+        })
+      },
+
+      setVerifyProgress: (key: TicketKey, progress: VerifyProgress | null) => {
+        set((state) => {
+          if (progress === null && !state.verifyProgress.has(key)) return state
+          const next = new Map(state.verifyProgress)
+          if (progress === null) next.delete(key)
+          else next.set(key, progress)
+          return { verifyProgress: next }
+        })
+      },
+
+      // Manual "Verify completion" — runs the Watcher (Gate 2) on demand, ignoring
+      // the per-session idempotency cache (forces a fresh model call) and skipping
+      // the deterministic frozen gate (Gate 1) entirely. Stores the verdict and
+      // bounces the ticket back to In Progress when incomplete or asking the user.
+      recheckTicketCompletion: async (ticketId: string, projectId: string) => {
+        const ticket = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+        if (!ticket) return null
+        const sessionId = ticket.current_session_id
+        if (!sessionId) return null
+
+        // A manual recheck supersedes any in-flight automatic countdown — cancel
+        // pending timers so the auto pass can't fire a redundant judge after this
+        // one. The rescue budget (rescueAttempts) is intentionally preserved.
+        cancelAll(ticketKey(projectId, ticketId))
+
+        const { useSettingsStore } = await import('./useSettingsStore')
+        const settings = useSettingsStore.getState()
+        const threshold = settings.kanbanStrictVerifyConfidenceThreshold ?? 0.6
+
+        let result
+        try {
+          const { completionApi } = await import('@/api/completion-api')
+          result = await completionApi.detectTicketCompletion({
+            sessionId,
+            ticketId,
+            maxChars: settings.kanbanStrictVerifyChars,
+            provider: settings.kanbanStrictVerifyProvider,
+            model: settings.kanbanStrictVerifyModel || undefined,
+            systemPrompt: settings.kanbanStrictVerifyPrompt || undefined
+          })
+        } catch (err) {
+          console.error('Manual completion check failed for ticket', ticketId, err)
+          return null
+        }
+        if (!result.success || !result.verdict) {
+          if (result.error) console.warn('Manual completion check returned no verdict:', result.error)
+          return null
+        }
+
+        const verdict = result.verdict
+        const incomplete = !verdict.complete || verdict.confidence < threshold || verdict.needsInput
+        const stored: StoredCompletionVerdict = {
+          ...verdict,
+          sessionId,
+          checkedAt: Date.now(),
+          movedBack: incomplete
+        }
+        get().setCompletionVerdict(ticketKey(projectId, ticketId), stored)
+        if (incomplete && ticket.column === 'review') {
+          await moveTicketBackToInProgress(get, ticketId, projectId)
+          maybeArmRescueAfterBounce(
+            get,
+            ticketId,
+            projectId,
+            sessionId,
+            verdict.needsInput,
+            settings
+          )
+        }
+        return stored
       }
     }),
     {
