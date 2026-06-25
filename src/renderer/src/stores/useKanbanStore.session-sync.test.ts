@@ -128,6 +128,59 @@ describe('syncTicketWithSession — done is terminal', () => {
   })
 })
 
+describe('syncTicketWithSession — rider guard (pending_launch_config)', () => {
+  // A queued/un-launched ticket carries pending_launch_config and never owns the
+  // session it points at — it was only attached to a shared worktree's session (or
+  // swept by a handoff relink). It must NOT ride to Review when the real owner's
+  // session completes/errors. Regression for the "Speckit fix — 2830" auto-move bug.
+  const RIDER_PLC = '{"prompt":"queued","mode":"build"}'
+
+  it('does NOT advance a queued rider to review on session_completed', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build', pending_launch_config: RIDER_PLC }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, {
+      type: 'session_completed',
+      sessionMode: 'build'
+    })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalled()
+  })
+
+  it('advances the owner but leaves the rider when both share one session', async () => {
+    const owner = makeTicket({ id: 'owner', column: 'in_progress', pending_launch_config: null })
+    const rider = makeTicket({
+      id: 'rider',
+      column: 'in_progress',
+      sort_order: 1,
+      pending_launch_config: RIDER_PLC
+    })
+    useKanbanStore.setState({ tickets: new Map([[PROJECT_ID, [owner, rider]]]) })
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, {
+      type: 'session_completed',
+      sessionMode: 'build'
+    })
+    await flush()
+
+    expect(columnOf('owner')).toBe('review')
+    expect(columnOf('rider')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).toHaveBeenCalledWith(PROJECT_ID, 'owner', 'review', 0)
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalledWith(PROJECT_ID, 'rider', 'review', 1)
+  })
+
+  it('does NOT move a queued rider to review on session_error', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build', pending_launch_config: RIDER_PLC }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_error' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalled()
+  })
+})
+
 describe('syncTicketWithSession — non-done paths unchanged', () => {
   it('still advances an in_progress build ticket to review on session_completed', async () => {
     seed(makeTicket({ column: 'in_progress', mode: 'build' }))

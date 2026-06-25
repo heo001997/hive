@@ -34,6 +34,14 @@ export interface DesktopBackendConfigInput {
   readonly bootstrapToken?: string
   readonly staticDir?: string
   readonly env?: NodeJS.ProcessEnv
+  // Instance identity surfaced (for non-browser callers only) via
+  // GET /.well-known/hive/environment so local CLIs can tell prod / dev / each
+  // worktree apart and target the right one. Sourced from the Electron main
+  // process; threaded through env rather than importing `app` here to keep this
+  // module electron-free.
+  readonly instanceKind?: 'production' | 'development'
+  readonly appVersion?: string
+  readonly instanceLabel?: string
 }
 
 export const createDesktopBootstrapToken = (): string => randomBytes(24).toString('hex')
@@ -148,7 +156,10 @@ export const makeDesktopBackendSpawnConfig = async (
       // Desktop RPC/WS always requires auth: the renderer uses the injected
       // bootstrap token transparently, closing token-less CSWSH-to-RCE access.
       HIVE_SERVER_STATIC_DIR: staticDir,
-      HIVE_SERVER_REQUIRE_AUTH: 'true'
+      HIVE_SERVER_REQUIRE_AUTH: 'true',
+      HIVE_INSTANCE_KIND: input.instanceKind ?? 'development',
+      HIVE_APP_VERSION: input.appVersion ?? '',
+      HIVE_INSTANCE_LABEL: input.instanceLabel ?? ''
     }
   }
 }

@@ -1198,6 +1198,28 @@ const make = Effect.gen(function* () {
                     binary
                   })
                 }
+                // `git diff <mergeBase>` covers committed, staged, and unstaged
+                // changes to tracked files but never untracked files. Without them
+                // this view undercounts vs. what the PR will actually contain (the
+                // PR/commit view lists untracked files too), so fold them in as
+                // additions to keep both "Changed Files" views consistent.
+                const status = await git.status()
+                for (const fileStatus of status.files) {
+                  if (fileStatus.index !== '?' || fileStatus.working_dir !== '?') continue
+                  const relativePath = fileStatus.path
+                  if (!relativePath || files.has(relativePath)) continue
+                  const content = await readFileAsync(join(repoPath, relativePath), 'utf-8').catch(
+                    () => null
+                  )
+                  const binary = content !== null && content.includes('\u0000')
+                  files.set(relativePath, {
+                    relativePath,
+                    status: 'A',
+                    additions: !content || binary ? 0 : content.split('\n').length,
+                    deletions: 0,
+                    binary
+                  })
+                }
                 return {
                   success: true as const,
                   files: Array.from(files.values()).sort((a, b) => {

@@ -165,7 +165,7 @@ const mockOpencodeOps = apiMocks.opencodeApi
 const mockConnectionOps = apiMocks.connectionApi
 
 // ── Import stores AFTER mocking ─────────────────────────────────────
-import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useKanbanStore, ticketKey } from '@/stores/useKanbanStore'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -1676,6 +1676,199 @@ describe('Session 9: Worktree Picker Modal', () => {
           nameHint: 'add-keyboard-shortcuts-for-playi'
         })
       })
+    })
+  })
+
+  // ── Bring whole dependency chain to In Progress ──────────────────
+  describe('chain tickets — bring whole chain to In Progress', () => {
+    // a → chain-2 → chain-3 (chain-2 depends on ticket-1, chain-3 depends on chain-2)
+    function setupChain() {
+      act(() => {
+        useKanbanStore.setState({
+          tickets: new Map([
+            [
+              'proj-1',
+              [
+                makeTicket({ id: 'ticket-1', column: 'todo' }),
+                makeTicket({ id: 'chain-2', title: 'Second step', column: 'todo' }),
+                makeTicket({ id: 'chain-3', title: 'Third step', column: 'todo' })
+              ]
+            ]
+          ]),
+          dependencyMap: new Map([
+            [ticketKey('proj-1', 'chain-2'), new Set([ticketKey('proj-1', 'ticket-1')])],
+            [ticketKey('proj-1', 'chain-3'), new Set([ticketKey('proj-1', 'chain-2')])]
+          ])
+        })
+      })
+    }
+
+    test('checkbox is hidden when the ticket has no dependency chain', () => {
+      render(
+        <WorktreePickerModal
+          ticket={makeTicket()}
+          projectId="proj-1"
+          open={true}
+          onOpenChange={() => {}}
+        />
+      )
+      expect(screen.queryByTestId('move-chain-checkbox')).not.toBeInTheDocument()
+    })
+
+    test('checkbox appears and shows the count of To Do chain tickets', () => {
+      setupChain()
+      render(
+        <WorktreePickerModal
+          ticket={makeTicket({ id: 'ticket-1' })}
+          projectId="proj-1"
+          open={true}
+          onOpenChange={() => {}}
+        />
+      )
+      const row = screen.getByTestId('move-chain-row')
+      expect(row).toHaveTextContent('Move all chain tickets to In Progress too')
+      expect(row).toHaveTextContent('(2)')
+    })
+
+    test('checkbox is hidden in saveConfigOnly mode (no concrete worktree to share)', () => {
+      setupChain()
+      render(
+        <WorktreePickerModal
+          ticket={makeTicket({ id: 'ticket-1' })}
+          projectId="proj-1"
+          open={true}
+          onOpenChange={() => {}}
+          saveConfigOnly
+        />
+      )
+      expect(screen.queryByTestId('move-chain-checkbox')).not.toBeInTheDocument()
+    })
+
+    test('checking it moves chain tickets to In Progress on the same worktree with a reuse config', async () => {
+      setupChain()
+      render(
+        <WorktreePickerModal
+          ticket={makeTicket({ id: 'ticket-1' })}
+          projectId="proj-1"
+          open={true}
+          onOpenChange={vi.fn()}
+        />
+      )
+
+      fireEvent.click(screen.getByTestId('worktree-item-wt-1'))
+      fireEvent.click(screen.getByTestId('move-chain-checkbox'))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wt-picker-send-btn'))
+      })
+
+      await waitFor(() => {
+        expect(mockKanban.ticket.update).toHaveBeenCalledWith(
+          'proj-1',
+          'chain-2',
+          expect.objectContaining({ column: 'in_progress', worktree_id: 'wt-1' })
+        )
+      })
+
+      const chain2Call = mockKanban.ticket.update.mock.calls.find((c) => c[1] === 'chain-2')
+      const cfg = JSON.parse(
+        (chain2Call?.[2] as { pending_launch_config: string }).pending_launch_config
+      )
+      expect(cfg.worktree).toEqual({ type: 'existing', worktreeId: 'wt-1' })
+      expect(cfg.prompt).toContain('Second step')
+
+      expect(mockKanban.ticket.update).toHaveBeenCalledWith(
+        'proj-1',
+        'chain-3',
+        expect.objectContaining({ column: 'in_progress', worktree_id: 'wt-1' })
+      )
+    })
+
+    test('propagates the head ticket Auto-approve Review choice to chain tickets when enabled', async () => {
+      setupChain()
+      render(
+        <WorktreePickerModal
+          ticket={makeTicket({ id: 'ticket-1', auto_approve_review: true })}
+          projectId="proj-1"
+          open={true}
+          onOpenChange={vi.fn()}
+        />
+      )
+
+      fireEvent.click(screen.getByTestId('worktree-item-wt-1'))
+      fireEvent.click(screen.getByTestId('move-chain-checkbox'))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wt-picker-send-btn'))
+      })
+
+      await waitFor(() => {
+        expect(mockKanban.ticket.update).toHaveBeenCalledWith(
+          'proj-1',
+          'chain-2',
+          expect.objectContaining({ auto_approve_review: true })
+        )
+      })
+      expect(mockKanban.ticket.update).toHaveBeenCalledWith(
+        'proj-1',
+        'chain-3',
+        expect.objectContaining({ auto_approve_review: true })
+      )
+    })
+
+    test('chain tickets are not auto-approved when the option is disabled', async () => {
+      setupChain()
+      render(
+        <WorktreePickerModal
+          ticket={makeTicket({ id: 'ticket-1', auto_approve_review: false })}
+          projectId="proj-1"
+          open={true}
+          onOpenChange={vi.fn()}
+        />
+      )
+
+      fireEvent.click(screen.getByTestId('worktree-item-wt-1'))
+      fireEvent.click(screen.getByTestId('move-chain-checkbox'))
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wt-picker-send-btn'))
+      })
+
+      await waitFor(() => {
+        expect(mockKanban.ticket.update).toHaveBeenCalledWith(
+          'proj-1',
+          'chain-2',
+          expect.objectContaining({ column: 'in_progress' })
+        )
+      })
+      const chain2Call = mockKanban.ticket.update.mock.calls.find((c) => c[1] === 'chain-2')
+      expect((chain2Call?.[2] as { auto_approve_review: boolean }).auto_approve_review).toBe(false)
+    })
+
+    test('chain tickets are left untouched when the checkbox stays unchecked', async () => {
+      setupChain()
+      render(
+        <WorktreePickerModal
+          ticket={makeTicket({ id: 'ticket-1' })}
+          projectId="proj-1"
+          open={true}
+          onOpenChange={vi.fn()}
+        />
+      )
+
+      fireEvent.click(screen.getByTestId('worktree-item-wt-1'))
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('wt-picker-send-btn'))
+      })
+
+      await waitFor(() => {
+        expect(mockKanban.ticket.update).toHaveBeenCalledWith(
+          'proj-1',
+          'ticket-1',
+          expect.anything()
+        )
+      })
+      expect(mockKanban.ticket.update.mock.calls.some((c) => c[1] === 'chain-2')).toBe(false)
     })
   })
 })

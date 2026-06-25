@@ -219,3 +219,67 @@ describe('TelegramForwardingService Claude CLI forwarding bridge', () => {
     )
   })
 })
+
+describe('TelegramForwardingService discoverChats', () => {
+  const config = { botToken: 'token', chatId: 0, chatName: '', contextSize: 3 }
+
+  const stubFetch = (byMethod: Record<string, { ok?: boolean; json: unknown }>): void => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const entry = Object.entries(byMethod).find(([method]) => url.includes(`/${method}`))
+        const response = entry?.[1] ?? { ok: true, json: { ok: true, result: [] } }
+        return { ok: response.ok ?? true, json: async () => response.json }
+      })
+    )
+  }
+
+  it('returns the unique chats found in pending updates', async () => {
+    const service = new TelegramForwardingService()
+    stubFetch({
+      getUpdates: {
+        json: {
+          ok: true,
+          result: [
+            { update_id: 1, message: { chat: { id: 555, type: 'private', first_name: 'Alice' } } },
+            { update_id: 2, message: { chat: { id: 555, type: 'private', first_name: 'Alice' } } }
+          ]
+        }
+      }
+    })
+
+    const chats = await service.discoverChats(config)
+
+    expect(chats).toEqual([{ chatId: 555, firstName: 'Alice', type: 'private' }])
+  })
+
+  it('throws an actionable error when a webhook is blocking getUpdates', async () => {
+    const service = new TelegramForwardingService()
+    stubFetch({
+      getUpdates: {
+        ok: false,
+        json: { ok: false, error_code: 409, description: 'Conflict: webhook is active' }
+      },
+      getWebhookInfo: { json: { ok: true, result: { url: 'https://example.com/webhook' } } }
+    })
+
+    await expect(service.discoverChats(config)).rejects.toThrow(/webhook is registered/i)
+  })
+
+  it('rethrows the raw Telegram error when getUpdates conflicts without a webhook', async () => {
+    const service = new TelegramForwardingService()
+    stubFetch({
+      getUpdates: {
+        ok: false,
+        json: {
+          ok: false,
+          error_code: 409,
+          description: 'Conflict: terminated by other getUpdates request'
+        }
+      },
+      getWebhookInfo: { json: { ok: true, result: { url: '' } } }
+    })
+
+    await expect(service.discoverChats(config)).rejects.toThrow(/terminated by other getUpdates/i)
+  })
+})

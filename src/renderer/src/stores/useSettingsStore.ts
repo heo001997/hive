@@ -6,6 +6,10 @@ import type { TelegramConfig } from '@shared/types/telegram'
 import type { UsageProvider } from '@shared/types/usage'
 import type { PetSettings } from '@shared/types/pet'
 import type { AgentSdk, HandoffAgentSdk } from '@shared/types/agent-sdk'
+import {
+  DEFAULT_STRICT_VERIFY_PROMPT,
+  type CompletionCheckProvider
+} from '@shared/types/completion'
 import type { ReviewPromptType } from '@/constants/reviewPrompts'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { systemApi } from '@/api/system-api'
@@ -94,8 +98,28 @@ export interface AppSettings {
   kanbanAutoApproveReview: boolean
   /** Kanban: global behavior — when an opted-in ticket auto-approves Review, stage & commit the worktree's changes first. */
   kanbanAutoCommitOnReview: boolean
-  /** Kanban: global behavior — settle delay (seconds) an opted-in ticket must sit idle in Review before auto-approve acts. */
+  /** Kanban: global behavior — settle delay (seconds) for Auto Review Bypass (Feature B / D2) before it commits + advances a verified ticket. */
   kanbanAutoApproveDelaySeconds: number
+  /** Kanban: Strict Verify (Feature A) — master switch. When on, every build ticket that settles in Review runs the two sub-gates below (Snapshot + Ticket Reviewer); an "incomplete"/"asking-user" verdict moves it back to In Progress. */
+  kanbanStrictVerifyEnabled: boolean
+  /** Kanban: Sub-gate 1 — the deterministic Snapshot (frozen check). When on, re-fingerprint the session after the delay and bounce if it's still emitting output (no model call). */
+  kanbanStrictVerifySnapshotEnabled: boolean
+  /** Kanban: Sub-gate 2 — the Ticket Reviewer LLM (the AI Watcher). When on, an AI judges complete / asking-user / incomplete. When off, a ticket that passes the snapshot is treated as verified. */
+  kanbanStrictVerifyReviewerEnabled: boolean
+  /** Kanban: user-editable system prompt for the Ticket Reviewer LLM (must still ask for the complete/needsInput/confidence/reason JSON). */
+  kanbanStrictVerifyPrompt: string
+  /** Kanban: settle delay (seconds) the ticket must sit idle in Review before Strict Verify (Feature A / D1) runs. */
+  kanbanStrictVerifyDelaySeconds: number
+  /** Kanban: which AI provider runs the Strict Verify Watcher (claude-code | codex | opencode). */
+  kanbanStrictVerifyProvider: CompletionCheckProvider
+  /** Kanban: optional model id forwarded to the Watcher provider (empty → provider default). */
+  kanbanStrictVerifyModel: string
+  /** Kanban: how many trailing characters of the session transcript to send to the Watcher. */
+  kanbanStrictVerifyChars: number
+  /** Kanban: minimum confidence (0–1) the Watcher must report for a "complete" verdict to be trusted; below this the ticket is treated as incomplete. */
+  kanbanStrictVerifyConfidenceThreshold: number
+  /** Kanban: In Progress rescue — when on, a build ticket that Strict Verify bounced to In Progress as "Not done" is watched; if its session goes frozen (stopped emitting) it is re-promoted to Review once for a fresh judgment, then left alone (with a "Re-checked" label) if it still isn't done. Only acts while Strict Verify is enabled. */
+  kanbanInProgressRescueEnabled: boolean
 
   // Editor
   defaultEditor: EditorOption
@@ -221,6 +245,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanAutoApproveReview: false,
   kanbanAutoCommitOnReview: false,
   kanbanAutoApproveDelaySeconds: 10,
+  kanbanStrictVerifyEnabled: false,
+  kanbanStrictVerifySnapshotEnabled: true,
+  kanbanStrictVerifyReviewerEnabled: true,
+  kanbanStrictVerifyPrompt: DEFAULT_STRICT_VERIFY_PROMPT,
+  kanbanStrictVerifyDelaySeconds: 8,
+  kanbanStrictVerifyProvider: 'claude-code',
+  kanbanStrictVerifyModel: '',
+  kanbanStrictVerifyChars: 6000,
+  kanbanStrictVerifyConfidenceThreshold: 0.6,
+  kanbanInProgressRescueEnabled: true,
   defaultEditor: 'vscode',
   customEditorCommand: '',
   defaultTerminal: 'terminal',
@@ -456,6 +490,16 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanAutoApproveReview: state.kanbanAutoApproveReview,
     kanbanAutoCommitOnReview: state.kanbanAutoCommitOnReview,
     kanbanAutoApproveDelaySeconds: state.kanbanAutoApproveDelaySeconds,
+    kanbanStrictVerifyEnabled: state.kanbanStrictVerifyEnabled,
+    kanbanStrictVerifySnapshotEnabled: state.kanbanStrictVerifySnapshotEnabled,
+    kanbanStrictVerifyReviewerEnabled: state.kanbanStrictVerifyReviewerEnabled,
+    kanbanStrictVerifyPrompt: state.kanbanStrictVerifyPrompt,
+    kanbanStrictVerifyDelaySeconds: state.kanbanStrictVerifyDelaySeconds,
+    kanbanStrictVerifyProvider: state.kanbanStrictVerifyProvider,
+    kanbanStrictVerifyModel: state.kanbanStrictVerifyModel,
+    kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
+    kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
+    kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
     defaultEditor: state.defaultEditor,
     customEditorCommand: state.customEditorCommand,
     defaultTerminal: state.defaultTerminal,
@@ -835,6 +879,16 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanAutoApproveReview: state.kanbanAutoApproveReview,
         kanbanAutoCommitOnReview: state.kanbanAutoCommitOnReview,
         kanbanAutoApproveDelaySeconds: state.kanbanAutoApproveDelaySeconds,
+        kanbanStrictVerifyEnabled: state.kanbanStrictVerifyEnabled,
+        kanbanStrictVerifySnapshotEnabled: state.kanbanStrictVerifySnapshotEnabled,
+        kanbanStrictVerifyReviewerEnabled: state.kanbanStrictVerifyReviewerEnabled,
+        kanbanStrictVerifyPrompt: state.kanbanStrictVerifyPrompt,
+        kanbanStrictVerifyDelaySeconds: state.kanbanStrictVerifyDelaySeconds,
+        kanbanStrictVerifyProvider: state.kanbanStrictVerifyProvider,
+        kanbanStrictVerifyModel: state.kanbanStrictVerifyModel,
+        kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
+        kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
+        kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
         defaultEditor: state.defaultEditor,
         customEditorCommand: state.customEditorCommand,
         defaultTerminal: state.defaultTerminal,

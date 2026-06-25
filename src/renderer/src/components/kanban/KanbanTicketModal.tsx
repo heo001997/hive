@@ -1191,7 +1191,9 @@ function KanbanTicketModalContent({
           {isClaudeCli && ticket.current_session_id ? (
             <div className="flex flex-col h-full bg-background flex-1 min-w-0">
               <div className="shrink-0 px-4 py-3 border-b border-border/60 flex items-center gap-2">
-                <span className="text-sm font-medium text-foreground truncate">{ticket.title}</span>
+                <span className="text-sm font-medium text-foreground truncate min-w-0">
+                  {ticket.title}
+                </span>
                 <div className="ml-auto shrink-0 flex items-center gap-2">
                   <TicketRunButton
                     state={runScriptState}
@@ -1253,7 +1255,7 @@ function KanbanTicketModalContent({
             {/* Shared ticket context header for non-edit modes */}
             {modalMode !== 'edit' && (
               <div className="space-y-2 pb-3 border-b border-border/40">
-                <h2 className="text-base font-semibold text-foreground leading-tight">
+                <h2 className="text-base font-semibold text-foreground leading-tight break-words">
                   {ticket.title}
                 </h2>
                 {ticket.description && (
@@ -1460,7 +1462,7 @@ function EditModeContent({
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={cn(isDragOver && 'ring-2 ring-primary ring-offset-2 rounded-lg')}
+      className={cn('min-w-0', isDragOver && 'ring-2 ring-primary ring-offset-2 rounded-lg')}
     >
       <DialogHeader>
         <div className="flex items-center justify-between">
@@ -1528,7 +1530,7 @@ function EditModeContent({
           {showPreview ? (
             <div
               data-testid="ticket-edit-description-preview"
-              className="min-h-[120px] rounded-md border border-input bg-muted/30 px-3 py-2 text-sm prose prose-sm dark:prose-invert max-w-none"
+              className="min-h-[120px] rounded-md border border-input bg-muted/30 px-3 py-2 text-sm prose prose-sm dark:prose-invert max-w-none break-words"
             >
               {description.trim() ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{description}</ReactMarkdown>
@@ -1613,7 +1615,7 @@ function EditModeContent({
                     key={`${dep.project_id}:${dep.id}`}
                     className="flex items-center gap-2 px-2 py-1 rounded-md bg-muted/30"
                   >
-                    <span className="text-sm truncate">{dep.title}</span>
+                    <span className="text-sm truncate min-w-0">{dep.title}</span>
                   </div>
                 ))}
               </div>
@@ -2205,16 +2207,20 @@ function PlanReviewModeContent({
             await setModePromise
             if (newSession.agent_sdk === 'claude-code-cli') {
               bumpWorktreeLastMessage({ connectionId: sessionRecord.connection_id })
+              // Claim the queued prompt before spawning so the new session view's
+              // mount path (ClaudeCliSessionView.createClaudeTerminal) doesn't also
+              // deliver it — sending a private copy here enters the prompt twice.
+              const outboundPrompt = sessionStore.dequeuePendingMessage(newSessionId)
               const cliResult = unwrapEnvelope(
                 await terminalApi.createClaudeCli(newSessionId, {
-                  pendingPrompt: handoffPrompt
+                  pendingPrompt: outboundPrompt
                 })
               )
               if (!cliResult.success) {
+                if (outboundPrompt) {
+                  sessionStore.requeuePendingMessage(newSessionId, outboundPrompt)
+                }
                 throw new Error(cliResult.error ?? 'Failed to start Claude CLI handoff')
-              }
-              if (handoffPrompt) {
-                sessionStore.dequeuePendingMessage(newSessionId)
               }
               startHivePromptTelemetry({
                 sessionId: newSessionId,
@@ -2288,16 +2294,20 @@ function PlanReviewModeContent({
           await setModePromise
           if (newSession.agent_sdk === 'claude-code-cli') {
             bumpWorktreeLastMessage({ worktreeId })
+            // Claim the queued prompt before spawning so the new session view's
+            // mount path (ClaudeCliSessionView.createClaudeTerminal) doesn't also
+            // deliver it — sending a private copy here enters the prompt twice.
+            const outboundPrompt = sessionStore.dequeuePendingMessage(newSessionId)
             const cliResult = unwrapEnvelope(
               await terminalApi.createClaudeCli(newSessionId, {
-                pendingPrompt: handoffPrompt
+                pendingPrompt: outboundPrompt
               })
             )
             if (!cliResult.success) {
+              if (outboundPrompt) {
+                sessionStore.requeuePendingMessage(newSessionId, outboundPrompt)
+              }
               throw new Error(cliResult.error ?? 'Failed to start Claude CLI handoff')
-            }
-            if (handoffPrompt) {
-              sessionStore.dequeuePendingMessage(newSessionId)
             }
             startHivePromptTelemetry({
               sessionId: newSessionId,
@@ -2351,9 +2361,13 @@ function PlanReviewModeContent({
         })
 
       if (ticket.column === 'todo' || ticket.column === 'review') {
-        useKanbanStore
-          .getState()
-          .moveTicket(ticket.id, ticket.project_id, 'in_progress', ticket.sort_order)
+        const kanbanStore = useKanbanStore.getState()
+        const sortOrder = kanbanStore.computeSortOrder(
+          kanbanStore.getTicketsByColumn(ticket.project_id, 'in_progress'),
+          0
+        )
+        kanbanStore
+          .moveTicket(ticket.id, ticket.project_id, 'in_progress', sortOrder)
           .catch((err) => {
             console.error(
               '[KanbanTicketModal] failed to move supercharged ticket to in_progress:',
@@ -2690,10 +2704,14 @@ function PlanReviewModeContent({
   return (
     <div ref={dropZoneRef} className="relative contents">
       <DialogHeader>
-        <div className="flex items-center justify-between">
-          <DialogTitle className="flex items-center gap-2">
-            {!dualPane && ticket.title}
-            <span className="inline-flex items-center rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[11px] font-medium text-violet-500">
+        <div className="flex items-center justify-between gap-2 pr-6">
+          <DialogTitle className="flex min-w-0 items-center gap-2">
+            {!dualPane && (
+              <span className="truncate" title={ticket.title}>
+                {ticket.title}
+              </span>
+            )}
+            <span className="inline-flex shrink-0 items-center rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[11px] font-medium text-violet-500">
               Plan ready
             </span>
           </DialogTitle>
@@ -2848,6 +2866,35 @@ function ReviewModeContent({
     },
     [ticket.id, ticket.project_id, updateTicket]
   )
+
+  // ── Manual "Verify completion" ────────────────────────────────────
+  const recheckTicketCompletion = useKanbanStore((s) => s.recheckTicketCompletion)
+  const completionVerdict = useKanbanStore(
+    useCallback(
+      (s) => s.completionVerdicts.get(ticketKey(ticket.project_id, ticket.id)) ?? null,
+      [ticket.project_id, ticket.id]
+    )
+  )
+  const [isVerifyingCompletion, setIsVerifyingCompletion] = useState(false)
+  const handleVerifyCompletion = useCallback(async () => {
+    setIsVerifyingCompletion(true)
+    try {
+      const verdict = await recheckTicketCompletion(ticket.id, ticket.project_id)
+      if (!verdict) {
+        toast.error('Completion check unavailable — no session transcript or provider error')
+        return
+      }
+      if (verdict.needsInput) {
+        toast.warning('Agent is waiting on you — moved back to In Progress')
+      } else if (verdict.movedBack) {
+        toast.warning('AI judged this incomplete — moved back to In Progress')
+      } else {
+        toast.success('AI judged this complete')
+      }
+    } finally {
+      setIsVerifyingCompletion(false)
+    }
+  }, [recheckTicketCompletion, ticket.id, ticket.project_id])
 
   const handleAttach = useCallback((file: AttachmentInput) => {
     setAttachments((prev) => {
@@ -3144,7 +3191,7 @@ function ReviewModeContent({
           if (resolvedBaseBranch && worktree.branch_name !== resolvedBaseBranch) {
             const kanbanStore = useKanbanStore.getState()
             const doneTickets = kanbanStore.getTicketsByColumn(ticket.project_id, 'done')
-            const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
+            const sortOrder = kanbanStore.computeSortOrder(doneTickets, 0)
             kanbanStore.setPendingDoneMove({
               ticketId: ticket.id,
               projectId: ticket.project_id,
@@ -3162,7 +3209,7 @@ function ReviewModeContent({
     try {
       const kanbanStore = useKanbanStore.getState()
       const doneTickets = kanbanStore.getTicketsByColumn(ticket.project_id, 'done')
-      const sortOrder = kanbanStore.computeSortOrder(doneTickets, doneTickets.length)
+      const sortOrder = kanbanStore.computeSortOrder(doneTickets, 0)
       await moveTicket(ticket.id, ticket.project_id, 'done', sortOrder)
       toast.success('Ticket moved to Done')
     } catch {
@@ -3173,9 +3220,11 @@ function ReviewModeContent({
   return (
     <div ref={dropZoneRef} className="relative contents">
       <DialogHeader>
-        <div className="flex items-center justify-between">
-          <DialogTitle>{dualPane ? 'Review' : ticket.title}</DialogTitle>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 pr-6">
+          <DialogTitle className="min-w-0 truncate" title={dualPane ? undefined : ticket.title}>
+            {dualPane ? 'Review' : ticket.title}
+          </DialogTitle>
+          <div className="flex shrink-0 items-center gap-2">
             {lifecycle.hasAttachedPR && lifecycle.attachedPR && (
               <button
                 onClick={() => lifecycle.openPRInBrowser()}
@@ -3243,6 +3292,50 @@ function ReviewModeContent({
             onChange={handleToggleAutoApprove}
             testId="ticket-review-auto-approve-review-toggle"
           />
+        </div>
+      )}
+
+      {/* Manual AI completion check (build tickets only) */}
+      {ticket.mode === 'build' && (
+        <div className="flex-shrink-0 space-y-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={isVerifyingCompletion || !ticket.current_session_id}
+            onClick={handleVerifyCompletion}
+            data-testid="ticket-review-verify-completion-btn"
+          >
+            {isVerifyingCompletion ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FileSearch className="h-3.5 w-3.5" />
+            )}
+            Verify completion with AI
+          </Button>
+          {completionVerdict && (
+            <div
+              data-testid="ticket-review-completion-verdict"
+              className={`rounded-md border px-3 py-2 text-xs ${
+                completionVerdict.complete && !completionVerdict.movedBack
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                  : 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+              }`}
+            >
+              <span className="font-medium">
+                {completionVerdict.needsInput
+                  ? 'Waiting on you'
+                  : completionVerdict.complete && !completionVerdict.movedBack
+                    ? 'Complete'
+                    : 'Not complete'}{' '}
+                ({Math.round(completionVerdict.confidence * 100)}% confident)
+              </span>
+              {completionVerdict.reason && (
+                <span className="ml-1 text-foreground/70">— {completionVerdict.reason}</span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -3546,10 +3639,14 @@ function ErrorModeContent({
   return (
     <div ref={dropZoneRef} className="relative contents">
       <DialogHeader>
-        <div className="flex items-center justify-between">
-          <DialogTitle className="flex items-center gap-2">
-            {!dualPane && ticket.title}
-            <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 border border-red-500/30 px-2 py-0.5 text-[11px] font-medium text-red-500">
+        <div className="flex items-center justify-between gap-2 pr-6">
+          <DialogTitle className="flex min-w-0 items-center gap-2">
+            {!dualPane && (
+              <span className="truncate" title={ticket.title}>
+                {ticket.title}
+              </span>
+            )}
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-red-500/10 border border-red-500/30 px-2 py-0.5 text-[11px] font-medium text-red-500">
               <AlertCircle className="h-3 w-3" />
               Error
             </span>

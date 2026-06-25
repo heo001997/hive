@@ -669,7 +669,7 @@ export function MergeOnDoneDialog() {
               <Button variant="outline" size="sm" onClick={() => completeDoneMove()}>
                 Keep
               </Button>
-              <Button size="sm" onClick={handleArchive} disabled={archiving}>
+              <Button variant="destructive" size="sm" onClick={handleArchive} disabled={archiving}>
                 {archiving ? (
                   <Loader2 className="h-3 w-3 animate-spin mr-1" />
                 ) : (

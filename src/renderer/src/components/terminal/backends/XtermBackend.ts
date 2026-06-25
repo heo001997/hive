@@ -370,12 +370,42 @@ export class XtermBackend implements TerminalBackend {
       this.fitAddon.fit()
       const dims = this.fitAddon.proposeDimensions()
       if (!dims) return
-      if (dims.cols === this.lastSyncedCols && dims.rows === this.lastSyncedRows) return
-      this.lastSyncedCols = dims.cols
-      this.lastSyncedRows = dims.rows
-      terminalApi.resize(this.terminalId, dims.cols, dims.rows).then(unwrapEnvelope)
+      // Only push a new size to the PTY (and trigger its SIGWINCH redraw) when
+      // the dimensions actually changed. Avoids spurious reflows when the
+      // observer fires at an unchanged size (e.g. reparent between two
+      // equal-width targets).
+      if (dims.cols !== this.lastSyncedCols || dims.rows !== this.lastSyncedRows) {
+        this.lastSyncedCols = dims.cols
+        this.lastSyncedRows = dims.rows
+        terminalApi.resize(this.terminalId, dims.cols, dims.rows).then(unwrapEnvelope)
+      }
+      // Force a clean repaint after every settled fit — even when the size is
+      // unchanged. A DOM reparent (e.g. the session view being moved between the
+      // main pane and the ticket modal) detaches and reattaches the WebGL
+      // canvas. xterm.js only repaints dirty cells, so the GPU canvas keeps
+      // showing stale/overlapping glyphs from the pre-reparent layout until
+      // something dirties them. The caller debounces, so this is one repaint per
+      // settled resize, not one per intermediate width.
+      this.forceRepaint()
     } catch {
       // Ignore fit/resize errors during setup or teardown
+    }
+  }
+
+  /**
+   * Force xterm.js to repaint every visible row from the buffer, flushing any
+   * stale pixels the WebGL renderer retained across a DOM reparent. Safe to call
+   * at any time — no-ops if the terminal has been disposed, and
+   * clearTextureAtlas() is itself a no-op when the WebGL renderer isn't active.
+   */
+  private forceRepaint(): void {
+    const terminal = this.terminal
+    if (!terminal) return
+    try {
+      terminal.clearTextureAtlas()
+      terminal.refresh(0, terminal.rows - 1)
+    } catch {
+      // Renderer may be mid-teardown; ignore.
     }
   }
 

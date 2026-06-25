@@ -68,6 +68,7 @@ import {
   hexToRgba
 } from '@/lib/kanban-column-colors'
 import { isBlockerSatisfied } from '@/lib/blocker-utils'
+import { getDownstreamDependentKeys } from '@/lib/chain-utils'
 import type {
   KanbanTicket,
   KanbanTicketColumn as ColumnType,
@@ -173,24 +174,61 @@ function fileNameFromPath(filePath: string): string {
 }
 
 function MarkdownInvalidCardPlaceholder({ placeholder }: { placeholder: MarkdownCardPlaceholder }) {
+  const [isConverting, setIsConverting] = useState(false)
+
+  const handleConvert = useCallback(async () => {
+    setIsConverting(true)
+    try {
+      const ticket = await useKanbanStore
+        .getState()
+        .convertMarkdownPlaceholder(placeholder.projectId, placeholder.filePath)
+      toast.success(`Converted "${ticket.title}" to a kanban card`)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : 'Failed to convert markdown file to kanban card'
+      )
+    } finally {
+      setIsConverting(false)
+    }
+  }, [placeholder.filePath, placeholder.projectId])
+
   return (
-    <div
-      data-testid="kanban-invalid-card-placeholder"
-      className="rounded-md border border-destructive/35 bg-destructive/5 p-2 text-sm shadow-sm"
-      title={`${placeholder.filePath}\n${placeholder.message}`}
-    >
-      <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-1.5 font-medium text-destructive">
-            <FileText className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{fileNameFromPath(placeholder.filePath)}</span>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          data-testid="kanban-invalid-card-placeholder"
+          className="rounded-md border border-destructive/35 bg-destructive/5 p-2 text-sm shadow-sm"
+          title={`${placeholder.filePath}\n${placeholder.message}`}
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5 font-medium text-destructive">
+                <FileText className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{fileNameFromPath(placeholder.filePath)}</span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                {placeholder.message}
+              </p>
+              <p className="mt-1 truncate text-[10px] text-muted-foreground/70">
+                {placeholder.filePath}
+              </p>
+            </div>
           </div>
-          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{placeholder.message}</p>
-          <p className="mt-1 truncate text-[10px] text-muted-foreground/70">{placeholder.filePath}</p>
         </div>
-      </div>
-    </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          data-testid="ctx-convert-markdown-card"
+          disabled={isConverting}
+          onClick={handleConvert}
+          className="gap-2"
+        >
+          <FileText className="h-3.5 w-3.5" />
+          {isConverting ? 'Converting...' : 'Convert to kanban card'}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
@@ -250,6 +288,9 @@ export function KanbanColumn({
     targetIndex: number
   } | null>(null)
   const [showArchiveAllConfirm, setShowArchiveAllConfirm] = useState(false)
+  const [pendingDownstreamMove, setPendingDownstreamMove] = useState<{
+    dependents: Array<{ ticketId: string; projectId: string; title: string }>
+  } | null>(null)
 
   // ── In Progress header title fit mode ───────────────────────────
   // 'centered'    = default; title centered with 50px left spacer
@@ -517,6 +558,30 @@ export function KanbanColumn({
     }
   }, [])
 
+  // ── Downstream dependent cascade (move-back-to-To-Do) ────────────
+  // When a ticket returns to To Do, the tickets that transitively depend on it
+  // can no longer proceed. Collect those still outside To Do (and not archived)
+  // so the user can confirm pulling them back too.
+  const collectDownstreamTodoCandidates = useCallback(
+    (rootTicketId: string, rootProjectId: string) => {
+      const store = useKanbanStore.getState()
+      const keys = getDownstreamDependentKeys(
+        store.dependencyMap,
+        ticketKey(rootProjectId, rootTicketId)
+      )
+      const dependents: Array<{ ticketId: string; projectId: string; title: string }> = []
+      for (const key of keys) {
+        const ref = parseTicketKey(key)
+        const dep = store.tickets.get(ref.projectId)?.find((t) => t.id === ref.ticketId)
+        if (dep && dep.column !== 'todo' && !dep.archived_at) {
+          dependents.push({ ticketId: ref.ticketId, projectId: ref.projectId, title: dep.title })
+        }
+      }
+      return dependents
+    },
+    []
+  )
+
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault()
@@ -669,7 +734,13 @@ export function KanbanColumn({
           projectTicketsForColumn(ticketProjectId),
           projectLocalDropIndex(ticketProjectId, targetIndex)
         )
-        store.moveTicket(ticketId, ticketProjectId, column, sortOrder)
+        store.moveTicket(ticketId, ticketProjectId, column, sortOrder, { userInitiated: true })
+
+        // Backward move into To Do — offer to cascade downstream dependents back too.
+        if (isTodoColumn) {
+          const dependents = collectDownstreamTodoCandidates(ticketId, ticketProjectId)
+          if (dependents.length > 0) setPendingDownstreamMove({ dependents })
+        }
 
         // Trigger usage refresh when simple-mode drops a ticket into In Progress
         if (column === 'in_progress') {
@@ -706,7 +777,8 @@ export function KanbanColumn({
       findTicketProjectId,
       findTicket,
       projectTicketsForColumn,
-      projectLocalDropIndex
+      projectLocalDropIndex,
+      collectDownstreamTodoCandidates
     ]
   )
 
@@ -767,7 +839,70 @@ export function KanbanColumn({
     }
 
     setPendingBackwardDrag(null)
-  }, [pendingBackwardDrag, findTicket])
+
+    // After the ticket lands in To Do, offer to cascade its downstream dependents.
+    const dependents = collectDownstreamTodoCandidates(ticketId, ticketProjectId)
+    if (dependents.length > 0) setPendingDownstreamMove({ dependents })
+  }, [pendingBackwardDrag, findTicket, collectDownstreamTodoCandidates])
+
+  // Stop any running session, reset launch state, and move a ticket to To Do.
+  // Mirrors handleConfirmBackwardDrag's per-ticket cleanup so cascaded dependents
+  // are reset the same way a manual backward drag would reset them.
+  const resetTicketToTodo = useCallback(async (tId: string, pId: string) => {
+    const store = useKanbanStore.getState()
+    const ticket = store.tickets.get(pId)?.find((t) => t.id === tId)
+    if (!ticket) return
+
+    if (ticket.current_session_id) {
+      const session = await dbApi.session.get<Session>(ticket.current_session_id)
+      if (session?.opencode_session_id && session.worktree_id) {
+        const worktree = await dbApi.worktree.get<Worktree>(session.worktree_id)
+        if (worktree?.path) {
+          try {
+            unwrapEnvelope(await opencodeApi.abort(worktree.path, session.opencode_session_id))
+          } catch {
+            // Non-critical — session may already be idle
+          }
+        }
+      }
+      await dbApi.session.update(ticket.current_session_id, {
+        status: 'completed',
+        completed_at: new Date().toISOString()
+      })
+      useWorktreeStatusStore.getState().clearSessionStatus(ticket.current_session_id)
+      lastSendMode.delete(ticket.current_session_id)
+    }
+
+    await store.updateTicket(tId, pId, {
+      current_session_id: null,
+      worktree_id: null,
+      mode: null,
+      plan_ready: false,
+      pending_launch_config: null
+    })
+
+    const todoTickets = store.getTicketsByColumn(pId, 'todo')
+    const sortOrder = store.computeSortOrder(todoTickets, todoTickets.length)
+    await store.moveTicket(tId, pId, 'todo', sortOrder)
+  }, [])
+
+  const handleConfirmDownstreamMove = useCallback(async () => {
+    if (!pendingDownstreamMove) return
+    suppressLayoutAnimation()
+    const { dependents } = pendingDownstreamMove
+    setPendingDownstreamMove(null)
+    try {
+      // Sequential so each move sees the previous one's sort order.
+      for (const dep of dependents) {
+        await resetTicketToTodo(dep.ticketId, dep.projectId)
+      }
+      toast.success(
+        `Moved ${dependents.length} dependent ticket${dependents.length !== 1 ? 's' : ''} to To Do`
+      )
+    } catch {
+      toast.error('Failed to move dependent tickets')
+    }
+  }, [pendingDownstreamMove, resetTicketToTodo])
 
   // ── Drop indicator element ────────────────────────────────────────
   const dropIndicator = (
@@ -815,8 +950,30 @@ export function KanbanColumn({
                 title centered. Every column now has a right cluster (Sort by menu
                 + optional toggle). For In Progress, only rendered in 'centered'
                 mode so 'right'/'abbreviated' modes can reclaim that space. */}
-            {(!isInProgressColumn || titleMode === 'centered') && (
-              <div className="w-[50px] shrink" aria-hidden="true" />
+            {isTodoColumn ? (
+              <div className="flex w-[50px] shrink items-center">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      title="Create ticket"
+                      aria-label="Create ticket"
+                      data-testid="kanban-column-create"
+                      onClick={() => setIsCreateModalOpen(true)}
+                      className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" sideOffset={8}>
+                    New ticket
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+            ) : (
+              (!isInProgressColumn || titleMode === 'centered') && (
+                <div className="w-[50px] shrink" aria-hidden="true" />
+              )
             )}
 
             {/* Title group — centered, or right-aligned when In Progress can't fit centered */}
@@ -1195,6 +1352,40 @@ export function KanbanColumn({
                 onClick={handleConfirmBackwardDrag}
               >
                 Stop &amp; Move
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
+
+      {/* Downstream dependent cascade dialog — To Do column */}
+      {isTodoColumn && (
+        <AlertDialog
+          open={!!pendingDownstreamMove}
+          onOpenChange={(open) => {
+            if (!open) setPendingDownstreamMove(null)
+          }}
+        >
+          <AlertDialogContent data-testid="downstream-move-confirm-dialog">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Move dependent tickets back too?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {pendingDownstreamMove?.dependents.length ?? 0} ticket
+                {(pendingDownstreamMove?.dependents.length ?? 0) !== 1 ? 's' : ''} depend on this
+                one and can no longer proceed. Move{' '}
+                {(pendingDownstreamMove?.dependents.length ?? 0) !== 1 ? 'them' : 'it'} back to To
+                Do as well? Any running sessions will be stopped.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel data-testid="downstream-move-cancel-btn">
+                Just this ticket
+              </AlertDialogCancel>
+              <AlertDialogAction
+                data-testid="downstream-move-confirm-btn"
+                onClick={handleConfirmDownstreamMove}
+              >
+                Move all back
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>

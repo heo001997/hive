@@ -11,11 +11,14 @@ import {
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { cn } from '@/lib/utils'
-import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useKanbanStore, ticketKey, parseTicketKey } from '@/stores/useKanbanStore'
+import { getChainTicketKeys, getChainExecutionOrder } from '@/lib/chain-utils'
+import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -191,6 +194,7 @@ export function WorktreePickerModal({
   const [goalMode, setGoalMode] = useState(false)
   const [goalCriteria, setGoalCriteria] = useState('')
   const [autoApproveReview, setAutoApproveReview] = useState(false)
+  const [moveChain, setMoveChain] = useState(false)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -273,6 +277,35 @@ export function WorktreePickerModal({
     return counts
   }, [ticketsForProject])
 
+  // ── Resolve the rest of this ticket's dependency chain ──────────
+  // Only meaningful when actually starting a session in a worktree (not in
+  // pre-assign / save-config / connection modes — those have no concrete
+  // worktree to share). Limited to tickets still in To Do, since the chain
+  // members already started shouldn't be touched.
+  const dependencyMap = useKanbanStore((state) => state.dependencyMap)
+  const chainTodoTickets = useMemo(() => {
+    if (preAssignOnly || saveConfigOnly || isConnectionMode) return [] as KanbanTicket[]
+    const rootKey = ticketKey(ticket.project_id, ticket.id)
+    const keys = getChainTicketKeys(dependencyMap, rootKey)
+    const result: KanbanTicket[] = []
+    for (const key of keys) {
+      const ref = parseTicketKey(key)
+      if (ref.projectId !== ticket.project_id) continue
+      const chainTicket = ticketsForProject.find((t) => t.id === ref.ticketId)
+      if (chainTicket && chainTicket.column === 'todo') result.push(chainTicket)
+    }
+    return result
+  }, [
+    dependencyMap,
+    ticketsForProject,
+    ticket.project_id,
+    ticket.id,
+    preAssignOnly,
+    saveConfigOnly,
+    isConnectionMode
+  ])
+  const showChainOption = chainTodoTickets.length > 0
+
   // ── Lazy branch loading ────────────────────────────────────────
   useEffect(() => {
     // branches.length guard: only fetch once per modal-open cycle (reset clears branches on close)
@@ -308,6 +341,7 @@ export function WorktreePickerModal({
       setGoalMode(false)
       setGoalCriteria('')
       setAutoApproveReview(ticket.auto_approve_review)
+      setMoveChain(false)
       setSelectedModel(null)
       setSelectedSdk(null)
       setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
@@ -530,26 +564,34 @@ export function WorktreePickerModal({
         toast.success('Session started')
 
         if (sessionAgentSdk === 'claude-code-cli') {
-          const outboundPrompt =
-            cliPendingPrompt ??
-            composePromptForSdk(mode, sessionAgentSdk, promptText, goalMode, goalCriteria, {
-              claudeCli: true
-            })
-
           if (mode === 'super-plan') {
             // Await so the persisted mode is committed before the main process
             // reads it in buildClaudeCliPtySpawn (createClaudeCli).
             await useSessionStore.getState().setSessionMode(sessionId, 'plan')
           }
 
+          // Atomically claim the queued prompt before spawning — same single-queue
+          // ownership the worktree path below relies on. Sending a private copy
+          // here while the queue still holds the prompt lets the session view's
+          // mount path (ClaudeCliSessionView.createClaudeTerminal) also deliver it,
+          // entering the prompt twice (spawn arg + paste on the live PTY).
+          const outboundPrompt = useSessionStore.getState().dequeuePendingMessage(sessionId)
+
           bumpWorktreeLastMessage({ connectionId })
-          const result = unwrapEnvelope(
-            await terminalApi.createClaudeCli(sessionId, {
-              pendingPrompt: outboundPrompt
-            })
-          )
-          if (result.success && outboundPrompt) {
-            useSessionStore.getState().dequeuePendingMessage(sessionId)
+          try {
+            const result = unwrapEnvelope(
+              await terminalApi.createClaudeCli(sessionId, {
+                pendingPrompt: outboundPrompt
+              })
+            )
+            if (!result.success && outboundPrompt) {
+              useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
+            }
+          } catch (error) {
+            if (outboundPrompt) {
+              useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
+            }
+            throw error
           }
           return
         }
@@ -694,7 +736,19 @@ export function WorktreePickerModal({
         // so the ticket tracks session lifecycle (progress bar, auto-advance).
         const existingSessions = useSessionStore.getState().sessionsByWorktree.get(worktreeId) || []
         const activeSession = existingSessions[0]
-        if (activeSession) {
+        // ...but only if no OTHER ticket already owns that session. Binding two
+        // tickets to one current_session_id makes session events (completed/error)
+        // drive both at once — e.g. a blocked sibling rides the running ticket into
+        // Review. When the session is already owned, attach the worktree only; this
+        // ticket gets its own session when it launches.
+        const sessionAlreadyOwned =
+          !!activeSession &&
+          isSessionOwnedByAnotherTicket(
+            useKanbanStore.getState().tickets,
+            activeSession.id,
+            ticket.id
+          )
+        if (activeSession && !sessionAlreadyOwned) {
           await updateTicket(ticket.id, projectId, {
             worktree_id: worktreeId,
             current_session_id: activeSession.id,
@@ -784,22 +838,80 @@ export function WorktreePickerModal({
         await useSessionStore.getState().setSessionModel(sessionId, selectedModel)
       }
 
-      // Update the ticket with session info and move to in_progress
-      const sortOrder = useKanbanStore
+      // ── Resolve where the head + chain land in In Progress ──────
+      // When the whole chain comes along it should read top-to-bottom as
+      // "first task (this head) → last task", as one contiguous block sitting
+      // above the tickets already in the column. Order the remaining chain
+      // tickets by execution order (blockers before dependents) and assign a
+      // monotonically increasing block of sort_order values starting at the head.
+      const willMoveChain = moveChain && chainTodoTickets.length > 0
+      const rootKey = ticketKey(ticket.project_id, ticket.id)
+      const orderedChainTickets = willMoveChain
+        ? (() => {
+            // NOTE: `Map` is shadowed by the lucide-react icon import in this
+            // file, so index into the execution-order array directly.
+            const execOrder = getChainExecutionOrder(dependencyMap, rootKey)
+            const execRank = (id: string): number => {
+              const idx = execOrder.indexOf(ticketKey(ticket.project_id, id))
+              return idx === -1 ? Number.MAX_SAFE_INTEGER : idx
+            }
+            return [...chainTodoTickets].sort((a, b) => execRank(a.id) - execRank(b.id))
+          })()
+        : []
+      // Top-of-column anchor (the value a single ticket would get at index 0),
+      // computed before the head moves so it reflects only the pre-existing
+      // tickets. The block ends at this anchor and grows upward from the head.
+      const anchorTop = useKanbanStore
         .getState()
         .computeSortOrder(useKanbanStore.getState().getTicketsByColumn(projectId, 'in_progress'), 0)
+      const headSortOrder = anchorTop - orderedChainTickets.length
 
+      // Update the ticket with session info and move to in_progress
       await updateTicket(ticket.id, projectId, {
         current_session_id: sessionId,
         worktree_id: worktreeId,
         mode,
         column: 'in_progress',
-        sort_order: sortOrder,
+        sort_order: headSortOrder,
         plan_ready: false,
         goal_mode: goalMode,
         goal_success_criteria: goalMode ? goalCriteria.trim() : null,
         auto_approve_review: autoApproveReview
       })
+
+      // ── Bring the whole dependency chain into In Progress on the same worktree ──
+      // Each remaining chain ticket is moved to In Progress, pinned to this worktree,
+      // and queued with a pending launch config that reuses the worktree — so it
+      // auto-launches here (instead of spawning its own) once its blockers resolve.
+      if (willMoveChain) {
+        await Promise.all(
+          orderedChainTickets.map((chainTicket, index) => {
+            const chainConfig = {
+              worktree: { type: 'existing' as const, worktreeId: worktreeId! },
+              prompt: buildPrompt(mode, chainTicket),
+              mode,
+              model: selectedModel ?? null,
+              sdk: agentSdk,
+              codexFastMode,
+              goalMode: false,
+              goalSuccessCriteria: null
+            }
+            return updateTicket(chainTicket.id, projectId, {
+              pending_launch_config: JSON.stringify(chainConfig),
+              column: 'in_progress',
+              // Head sits at headSortOrder; chain members follow in execution
+              // order directly below it, all still above the pre-existing tickets.
+              sort_order: headSortOrder + (index + 1),
+              worktree_id: worktreeId!,
+              mode,
+              // Mirror the head ticket's Auto/Bypass Review Approve choice onto the
+              // whole chain so each member auto-advances out of Review and the next
+              // one launches automatically — keeping the chain running unattended.
+              auto_approve_review: autoApproveReview
+            })
+          })
+        )
+      }
 
       // Trigger usage refresh so the board shows up-to-date usage (debounced in store)
       useUsageStore.getState().fetchUsageForProvider(resolveDefaultUsageProvider(agentSdk))
@@ -943,7 +1055,10 @@ export function WorktreePickerModal({
     goalCriteria,
     autoApproveReview,
     isConnectionMode,
-    connectionId
+    connectionId,
+    moveChain,
+    chainTodoTickets,
+    dependencyMap
   ])
 
   // ── Mode toggle chip ────────────────────────────────────────────
@@ -1170,6 +1285,29 @@ export function WorktreePickerModal({
                   )
                 })}
               </div>
+            </div>
+          )}
+
+          {/* ── Bring whole dependency chain along (same worktree) ── */}
+          {showChainOption && (
+            <div
+              className="flex items-start gap-2.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5"
+              data-testid="move-chain-row"
+            >
+              <Checkbox
+                checked={moveChain}
+                onCheckedChange={setMoveChain}
+                data-testid="move-chain-checkbox"
+                className="mt-0.5"
+                aria-label="Move all chain tickets to In Progress on the same worktree"
+              />
+              <span
+                className="text-sm text-foreground cursor-pointer select-none"
+                onClick={() => setMoveChain((v) => !v)}
+              >
+                Move all chain tickets to In Progress too, running within the same worktree{' '}
+                <span className="text-muted-foreground">({chainTodoTickets.length})</span>
+              </span>
             </div>
           )}
 

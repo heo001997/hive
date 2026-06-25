@@ -74,6 +74,30 @@ describe('desktop backend config', () => {
     expect(config.env.KEEP_ME).toBe('yes')
   })
 
+  it('passes instance identity through to the backend env', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'hive-desktop-backend-'))
+    const config = await makeDesktopBackendSpawnConfig({
+      baseDir,
+      port: 0,
+      instanceKind: 'production',
+      appVersion: '1.2.3',
+      instanceLabel: 'production'
+    })
+
+    expect(config.env.HIVE_INSTANCE_KIND).toBe('production')
+    expect(config.env.HIVE_APP_VERSION).toBe('1.2.3')
+    expect(config.env.HIVE_INSTANCE_LABEL).toBe('production')
+  })
+
+  it('defaults instance identity to development when unset', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'hive-desktop-backend-'))
+    const config = await makeDesktopBackendSpawnConfig({ baseDir, port: 0 })
+
+    expect(config.env.HIVE_INSTANCE_KIND).toBe('development')
+    expect(config.env.HIVE_APP_VERSION).toBe('')
+    expect(config.env.HIVE_INSTANCE_LABEL).toBe('')
+  })
+
   it('uses BIND_IP as the default backend host when set', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'hive-desktop-backend-'))
     const config = await makeDesktopBackendSpawnConfig({
