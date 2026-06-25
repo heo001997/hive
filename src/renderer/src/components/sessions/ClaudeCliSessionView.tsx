@@ -84,16 +84,20 @@ async function startTicketModalHandoffSession(opts: {
       worktreeId: opts.worktreeId,
       connectionId: opts.connectionId
     })
+    // Claim the queued prompt before spawning so the new session view's own
+    // mount path (createClaudeTerminal) doesn't also deliver it — sending a
+    // private copy here enters the prompt twice (spawn arg + paste on the PTY).
+    const outboundPrompt = useSessionStore.getState().dequeuePendingMessage(opts.sessionId)
     const result = unwrapEnvelope(
       await terminalApi.createClaudeCli(opts.sessionId, {
-        pendingPrompt: opts.handoffPrompt
+        pendingPrompt: outboundPrompt
       })
     )
     if (!result.success) {
+      if (outboundPrompt) {
+        useSessionStore.getState().requeuePendingMessage(opts.sessionId, outboundPrompt)
+      }
       throw new Error(result.error ?? 'Failed to start Claude CLI handoff')
-    }
-    if (opts.handoffPrompt) {
-      useSessionStore.getState().dequeuePendingMessage(opts.sessionId)
     }
     return
   }

@@ -170,32 +170,35 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     toast.success(`Auto-launched: ${ticket.title}`)
 
     if (sessionAgentSdk === 'claude-code-cli') {
-      const outboundPrompt =
-        cliPendingPrompt ??
-        composeAutoLaunchPrompt(
-          config,
-          sessionAgentSdk,
-          configGoalMode,
-          configGoalSuccessCriteria,
-          {
-            claudeCli: true
-          }
-        )
-
       if (config.mode === 'super-plan') {
         // Await so the persisted mode is committed before the main process
         // reads it in buildClaudeCliPtySpawn (createClaudeCli).
         await useSessionStore.getState().setSessionMode(sessionId, 'plan')
       }
 
+      // Atomically claim the queued prompt before spawning. The session view's
+      // own mount path (ClaudeCliSessionView.createClaudeTerminal) races to send
+      // the same prompt; both read this single queue, so whichever dequeues first
+      // owns delivery and the other issues a promptless create. Passing a private
+      // copy here (instead of consuming the queue) delivers the prompt twice —
+      // once as a spawn arg and once as a paste injection on the already-live PTY.
+      const outboundPrompt = useSessionStore.getState().dequeuePendingMessage(sessionId)
+
       bumpWorktreeLastMessage({ worktreeId })
-      const result = unwrapEnvelope(
-        await terminalApi.createClaudeCli(sessionId, {
-          pendingPrompt: outboundPrompt
-        })
-      )
-      if (result.success && outboundPrompt) {
-        useSessionStore.getState().dequeuePendingMessage(sessionId)
+      try {
+        const result = unwrapEnvelope(
+          await terminalApi.createClaudeCli(sessionId, {
+            pendingPrompt: outboundPrompt
+          })
+        )
+        if (!result.success && outboundPrompt) {
+          useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
+        }
+      } catch (error) {
+        if (outboundPrompt) {
+          useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
+        }
+        throw error
       }
       return
     }

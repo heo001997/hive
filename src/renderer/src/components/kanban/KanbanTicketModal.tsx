@@ -2207,16 +2207,20 @@ function PlanReviewModeContent({
             await setModePromise
             if (newSession.agent_sdk === 'claude-code-cli') {
               bumpWorktreeLastMessage({ connectionId: sessionRecord.connection_id })
+              // Claim the queued prompt before spawning so the new session view's
+              // mount path (ClaudeCliSessionView.createClaudeTerminal) doesn't also
+              // deliver it — sending a private copy here enters the prompt twice.
+              const outboundPrompt = sessionStore.dequeuePendingMessage(newSessionId)
               const cliResult = unwrapEnvelope(
                 await terminalApi.createClaudeCli(newSessionId, {
-                  pendingPrompt: handoffPrompt
+                  pendingPrompt: outboundPrompt
                 })
               )
               if (!cliResult.success) {
+                if (outboundPrompt) {
+                  sessionStore.requeuePendingMessage(newSessionId, outboundPrompt)
+                }
                 throw new Error(cliResult.error ?? 'Failed to start Claude CLI handoff')
-              }
-              if (handoffPrompt) {
-                sessionStore.dequeuePendingMessage(newSessionId)
               }
               startHivePromptTelemetry({
                 sessionId: newSessionId,
@@ -2290,16 +2294,20 @@ function PlanReviewModeContent({
           await setModePromise
           if (newSession.agent_sdk === 'claude-code-cli') {
             bumpWorktreeLastMessage({ worktreeId })
+            // Claim the queued prompt before spawning so the new session view's
+            // mount path (ClaudeCliSessionView.createClaudeTerminal) doesn't also
+            // deliver it — sending a private copy here enters the prompt twice.
+            const outboundPrompt = sessionStore.dequeuePendingMessage(newSessionId)
             const cliResult = unwrapEnvelope(
               await terminalApi.createClaudeCli(newSessionId, {
-                pendingPrompt: handoffPrompt
+                pendingPrompt: outboundPrompt
               })
             )
             if (!cliResult.success) {
+              if (outboundPrompt) {
+                sessionStore.requeuePendingMessage(newSessionId, outboundPrompt)
+              }
               throw new Error(cliResult.error ?? 'Failed to start Claude CLI handoff')
-            }
-            if (handoffPrompt) {
-              sessionStore.dequeuePendingMessage(newSessionId)
             }
             startHivePromptTelemetry({
               sessionId: newSessionId,
