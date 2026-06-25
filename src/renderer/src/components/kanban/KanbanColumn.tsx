@@ -603,6 +603,18 @@ export function KanbanColumn({
 
       const store = useKanbanStore.getState()
 
+      // ── Multi-select drag: move the whole selection together ───────
+      // When the grabbed card is part of a marquee multi-selection, every
+      // selected ticket moves to the dropped column (appended in order),
+      // skipping the per-ticket single-drag modals.
+      const selectedKeys = store.selectedTicketKeys
+      const draggedKey = ticketKey(draggedProjectId, ticketId)
+      if (selectedKeys.size > 1 && selectedKeys.has(draggedKey)) {
+        const refs = Array.from(selectedKeys, parseTicketKey)
+        void store.moveTicketsToColumn(refs, column)
+        return
+      }
+
       if (sourceColumn !== column) {
         // ── Cross-column move ─────────────────────────────────
         const ticketProjectId = findTicketProjectId(ticketId, draggedProjectId)

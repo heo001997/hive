@@ -12,6 +12,8 @@ import { useSessionStore } from '@/stores/useSessionStore'
 import { KanbanColumn } from '@/components/kanban/KanbanColumn'
 import { KanbanTicketModal } from '@/components/kanban/KanbanTicketModal'
 import { BoardChatLauncher } from '@/components/kanban/BoardChatLauncher'
+import { KanbanSelectionBar } from '@/components/kanban/KanbanSelectionBar'
+import { useMarqueeSelection } from '@/components/kanban/useMarqueeSelection'
 import { MergeOnDoneDialog } from './MergeOnDoneDialog'
 import { toast } from '@/lib/toast'
 import { useMarkdownKanbanWatcher } from '@/hooks/useMarkdownKanbanWatcher'
@@ -90,6 +92,12 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
 
   // Ref for board container (SVG line rendering)
   const boardRef = useRef<HTMLDivElement>(null)
+
+  // Marquee (click-and-drag) multi-select. Disabled while dependency mode owns
+  // the board click/drag gestures.
+  const { marqueeRect, onMouseDown: onMarqueeMouseDown } = useMarqueeSelection(boardRef, {
+    disabled: !!dependencyMode?.active
+  })
 
   // ── Search filter (driven by the find bar in the top bar) ──────────
   const searchIsOpen = useBoardSearchStore((s) => s.isOpen)
@@ -417,6 +425,7 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
             data-testid="kanban-board"
             className="flex flex-1 min-h-0 gap-3 overflow-x-auto p-3"
             onClick={handleBoardClick}
+            onMouseDown={onMarqueeMouseDown}
           >
             {(() => {
               const occurrenceCounts = new Map<string, number>()
@@ -489,6 +498,20 @@ export function KanbanBoard({ projectId, connectionId, isPinnedMode }: KanbanBoa
             )}
           </motion.div>
         )}
+        {/* Marquee (rubber-band) selection rectangle — viewport coords */}
+        {marqueeRect && (
+          <div
+            data-testid="kanban-marquee"
+            className="pointer-events-none fixed z-40 rounded-sm border border-primary bg-primary/10"
+            style={{
+              left: marqueeRect.left,
+              top: marqueeRect.top,
+              width: marqueeRect.width,
+              height: marqueeRect.height
+            }}
+          />
+        )}
+        <KanbanSelectionBar />
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-end p-4">
           <BoardChatLauncher
             disabled={Boolean(isPinnedMode) || !projectId}

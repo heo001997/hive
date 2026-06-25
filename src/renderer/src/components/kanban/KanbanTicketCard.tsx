@@ -216,6 +216,14 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
   const currentTicketKey = ticketKey(ticket.project_id, ticket.id)
   const domTicketKey = cardIdentityKey ?? currentTicketKey
 
+  // Multi-select (marquee) membership — selector returns a stable boolean so the
+  // card only re-renders when its own selection state flips.
+  const isSelected = useKanbanStore((s) => s.selectedTicketKeys.has(domTicketKey))
+
+  // True while a multi-selection drag is in flight; every selected card hides so
+  // the stacked drag image reads as the whole group lifting off the board.
+  const isMultiDragging = useKanbanStore((s) => s.isMultiDragging)
+
   // ── Dependency selectors ────────────────────────────────────────
   // useShallow prevents infinite re-render loops by doing shallow equality
   // comparison on the returned array instead of Object.is reference check.
@@ -660,19 +668,84 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
       e.dataTransfer.setData('text/plain', ticket.id)
       e.dataTransfer.effectAllowed = 'move'
 
-      // Create rotated clone for drag image
       const el = e.currentTarget as HTMLElement
-      const clone = el.cloneNode(true) as HTMLElement
-      clone.style.width = `${el.offsetWidth}px`
-      clone.style.transform = 'rotate(3deg)'
-      clone.style.position = 'fixed'
-      clone.style.top = '-9999px'
-      clone.style.left = '-9999px'
-      clone.style.pointerEvents = 'none'
-      clone.style.zIndex = '9999'
-      document.body.appendChild(clone)
-      e.dataTransfer.setDragImage(clone, el.offsetWidth / 2, el.offsetHeight / 2)
-      dragCloneRef.current = clone
+      const cardW = el.offsetWidth
+      const cardH = el.offsetHeight
+
+      // Build the drag image. For a multi-selection, stack a clone of EVERY
+      // selected card so the user sees the whole group lift off and fly with the
+      // cursor (the originals are hidden below). Clone while still visible, then
+      // flip the hide flag after setDragImage so the capture is clean.
+      const selection = useKanbanStore.getState().selectedTicketKeys
+      const isMultiDrag = selection.size > 1 && selection.has(domTicketKey)
+
+      let dragImage: HTMLElement
+      if (isMultiDrag) {
+        const boardEl = el.closest('[data-testid="kanban-board"]') as HTMLElement | null
+        const scope: ParentNode = boardEl ?? document
+        const selectedEls = Array.from(
+          scope.querySelectorAll<HTMLElement>('[data-ticket-key]')
+        ).filter((c) => {
+          const k = c.getAttribute('data-ticket-key')
+          return !!k && selection.has(k)
+        })
+        // Grabbed card sits on top of the stack.
+        selectedEls.sort((a, b) => (a === el ? -1 : b === el ? 1 : 0))
+
+        const STACK_OFFSET = 8
+        const MAX_VISIBLE = 6
+        const visible = selectedEls.slice(0, MAX_VISIBLE)
+        const depth = Math.max(visible.length, 1)
+
+        const stack = document.createElement('div')
+        stack.style.cssText =
+          'position:fixed;top:-9999px;left:-9999px;pointer-events:none;z-index:9999;' +
+          `width:${cardW + STACK_OFFSET * (depth - 1)}px;` +
+          `height:${cardH + STACK_OFFSET * (depth - 1)}px;`
+
+        // Append back-to-front so the grabbed card (index 0) ends up on top.
+        for (let i = depth - 1; i >= 0; i--) {
+          const layer = visible[i].cloneNode(true) as HTMLElement
+          layer.style.position = 'absolute'
+          layer.style.left = `${i * STACK_OFFSET}px`
+          layer.style.top = `${i * STACK_OFFSET}px`
+          layer.style.width = `${cardW}px`
+          layer.style.margin = '0'
+          layer.style.transform = 'rotate(3deg)'
+          layer.style.boxShadow = '0 6px 16px rgba(0,0,0,0.25)'
+          stack.appendChild(layer)
+        }
+
+        // Count badge (also covers cards beyond MAX_VISIBLE).
+        const badge = document.createElement('div')
+        badge.textContent = String(selection.size)
+        badge.style.cssText =
+          'position:absolute;top:-10px;right:-10px;min-width:24px;height:24px;padding:0 7px;' +
+          'display:flex;align-items:center;justify-content:center;border-radius:9999px;' +
+          'background:hsl(var(--primary));color:hsl(var(--primary-foreground));' +
+          'font-size:12px;font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.3);z-index:1;'
+        stack.appendChild(badge)
+
+        dragImage = stack
+      } else {
+        const clone = el.cloneNode(true) as HTMLElement
+        clone.style.width = `${cardW}px`
+        clone.style.transform = 'rotate(3deg)'
+        clone.style.position = 'fixed'
+        clone.style.top = '-9999px'
+        clone.style.left = '-9999px'
+        clone.style.pointerEvents = 'none'
+        clone.style.zIndex = '9999'
+        dragImage = clone
+      }
+
+      document.body.appendChild(dragImage)
+      e.dataTransfer.setDragImage(dragImage, cardW / 2, 20)
+      dragCloneRef.current = dragImage
+
+      // Hide every selected card now that the drag image is captured, so the
+      // whole group appears to leave the board together.
+      if (isMultiDrag) useKanbanStore.setState({ isMultiDragging: true })
 
       // Clean up clone after browser captures it — double-rAF ensures
       // Chromium/Electron has finished reading the drag image before removal
@@ -687,7 +760,7 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
 
       setIsDragging(true)
     },
-    [ticket.project_id, ticket.id, ticket.column, index]
+    [ticket.project_id, ticket.id, ticket.column, index, domTicketKey]
   )
 
   const handleDragEnd = useCallback(() => {
@@ -723,23 +796,23 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
         return
       }
 
-      // Cmd+click (Mac) / Ctrl+click (Win/Linux) — select attached worktree
-      if ((e.metaKey || e.ctrlKey) && ticket.worktree_id && !isArchived) {
+      // Cmd+click (Mac) / Ctrl+click (Win/Linux) — toggle this card in/out of
+      // the multi-selection (matches the marquee's additive modifier).
+      if (e.metaKey || e.ctrlKey) {
         e.preventDefault()
-        recordBoardTelegramTarget()
-        const selectionOptions = isPinnedMode ? { preservePinnedBoard: true } : undefined
-        useWorktreeStore.getState().selectWorktree(ticket.worktree_id, selectionOptions)
-        useProjectStore.getState().selectProject(ticket.project_id, selectionOptions)
-        useWorktreeStatusStore.getState().clearWorktreeUnread(ticket.worktree_id)
+        e.stopPropagation()
+        useKanbanStore.getState().toggleSelectedTicketKey(domTicketKey)
         return
       }
 
+      // Opening a single ticket supersedes any marquee multi-selection.
+      useKanbanStore.getState().clearSelectedTicketKeys()
       useKanbanStore.getState().setSelectedTicketRef({
         projectId: ticket.project_id,
         ticketId: ticket.id
       })
     },
-    [ticket.id, ticket.worktree_id, ticket.project_id, isArchived, isPinnedMode, recordBoardTelegramTarget, blockingDiagnostic]
+    [ticket.id, ticket.project_id, domTicketKey, blockingDiagnostic]
   )
 
   // ── Middle-click — select attached worktree (same as sidebar) ─
@@ -994,9 +1067,13 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                 className={cn(
                   'group cursor-pointer rounded-md border bg-card shadow-sm p-2 transition-all duration-200',
                   'hover:bg-muted/40',
-                  isDragging && 'invisible',
+                  (isDragging || (isMultiDragging && isSelected)) && 'invisible',
                   isArchived && 'opacity-50 cursor-default',
                   (isBlocked || blockingDiagnostic) && 'opacity-60',
+                  // Marquee multi-select highlight. ring-inset so the ring draws
+                  // INSIDE the card box — the column's overflow-y-auto scroll
+                  // container would otherwise clip an outset ring at the top edge.
+                  isSelected && 'ring-2 ring-inset ring-primary',
                   // Glow when this card's worktree is selected in the left sidebar
                   isSelectedWorktree && !isArchived && 'worktree-selected-glow',
                   // Highlighted as a blocker of the currently hovered ticket

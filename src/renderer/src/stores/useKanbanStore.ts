@@ -98,8 +98,10 @@ export function setKanbanDragData(data: KanbanDragData | null): void {
       useKanbanStore.setState({ draggingTicketKey: ticketKey(data.projectId, data.ticketId) })
     })
   } else {
-    // Clear everything immediately on drag end / drop
-    useKanbanStore.setState({ isDragging: false, draggingTicketKey: null })
+    // Clear everything immediately on drag end / drop. Clearing isMultiDragging
+    // here (called by both handleDrop and handleDragEnd) un-hides the moved cards
+    // in their new column before the optimistic re-render, avoiding a flicker.
+    useKanbanStore.setState({ isDragging: false, draggingTicketKey: null, isMultiDragging: false })
   }
 }
 
@@ -212,9 +214,13 @@ interface KanbanState {
   /** Currently selected ticket ID for the detail modal (null = closed) */
   selectedTicketId: string | null
   selectedTicketRef: TicketRef | null
+  /** Multi-select: ticket keys selected via marquee drag / modifier-click */
+  selectedTicketKeys: Set<TicketKey>
   /** Whether a ticket is currently being dragged (reactive, for column styling) */
   isDragging: boolean
   draggingTicketKey: TicketKey | null
+  /** True while a multi-selection drag is in flight — hides every selected card so the stacked drag image reads as the whole group lifting off. */
+  isMultiDragging: boolean
   /** Per-project archive visibility toggle — NOT persisted to localStorage */
   showArchivedByProject: Record<string, boolean>
   markdownDiagnostics: Map<string, MarkdownCardDiagnostic[]>
@@ -231,6 +237,10 @@ interface KanbanState {
   // ── Actions ────────────────────────────────────────────────────────
   setSelectedTicketId: (id: null) => void
   setSelectedTicketRef: (ref: TicketRef | null) => void
+  setSelectedTicketKeys: (keys: Iterable<TicketKey>) => void
+  /** Add the key if absent, remove it if present (Cmd/Ctrl-click toggle). */
+  toggleSelectedTicketKey: (key: TicketKey) => void
+  clearSelectedTicketKeys: () => void
   setBoardTelegramTarget: (target: BoardTelegramTarget | null) => void
   clearBoardTelegramTarget: () => void
   loadTickets: (projectId: string) => Promise<void>
@@ -252,6 +262,8 @@ interface KanbanState {
     opts?: MoveTicketOptions
   ) => Promise<void>
   reorderTicket: (ticketId: string, projectId: string, newSortOrder: number) => Promise<void>
+  /** Move several tickets to a column at once (multi-select drag), appended in order. */
+  moveTicketsToColumn: (refs: TicketRef[], column: KanbanTicketColumn) => Promise<void>
   applyColumnSort: (tickets: KanbanTicket[], field: SortField, dir: SortDir) => Promise<void>
   toggleBoardView: () => void
   setSimpleMode: (projectId: string, enabled: boolean) => Promise<void>
@@ -1050,8 +1062,10 @@ export const useKanbanStore = create<KanbanState>()(
       simpleModeByProject: {} as Record<string, boolean>,
       selectedTicketId: null,
       selectedTicketRef: null,
+      selectedTicketKeys: new Set<TicketKey>(),
       isDragging: false,
       draggingTicketKey: null,
+      isMultiDragging: false,
       showArchivedByProject: {} as Record<string, boolean>,
       markdownDiagnostics: new Map(),
       markdownPlaceholders: new Map(),
@@ -1070,6 +1084,24 @@ export const useKanbanStore = create<KanbanState>()(
 
       setSelectedTicketRef: (ref: TicketRef | null) => {
         set({ selectedTicketId: ref?.ticketId ?? null, selectedTicketRef: ref })
+      },
+
+      setSelectedTicketKeys: (keys: Iterable<TicketKey>) => {
+        set({ selectedTicketKeys: new Set(keys) })
+      },
+
+      toggleSelectedTicketKey: (key: TicketKey) => {
+        const next = new Set(get().selectedTicketKeys)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        set({ selectedTicketKeys: next })
+      },
+
+      clearSelectedTicketKeys: () => {
+        // Avoid churning a fresh empty Set (and re-running every card selector)
+        // when nothing is selected.
+        if (get().selectedTicketKeys.size === 0) return
+        set({ selectedTicketKeys: new Set<TicketKey>() })
       },
 
       setBoardTelegramTarget: (target: BoardTelegramTarget | null) => {
@@ -1654,6 +1686,33 @@ export const useKanbanStore = create<KanbanState>()(
             return { tickets: next }
           })
           throw err
+        }
+      },
+
+      // ── moveTicketsToColumn (multi-select drag) ──────────────────
+      // Append every ref to the end of `column`, one project at a time, in a
+      // stable order (current column, then sort_order) so the dragged group keeps
+      // its relative arrangement. Reuses moveTicket so per-ticket side effects
+      // (auto-launch / auto-approve) still fire. Bypasses the single-drag modals
+      // (worktree picker, merge-on-done) by design — N modals would be unusable.
+      moveTicketsToColumn: async (refs: TicketRef[], column: KanbanTicketColumn) => {
+        const resolved = refs
+          .map((ref) => ({ ref, ticket: findTicketByRef(get().tickets, ref) }))
+          .filter((entry): entry is { ref: TicketRef; ticket: KanbanTicket } => !!entry.ticket)
+          .sort(
+            (a, b) =>
+              COLUMN_ORDER[a.ticket.column] - COLUMN_ORDER[b.ticket.column] ||
+              a.ticket.sort_order - b.ticket.sort_order
+          )
+
+        for (const { ref } of resolved) {
+          // Recompute against the latest state so each append lands after the
+          // previous one (moveTicket updates state optimistically and synchronously).
+          const rest = get()
+            .getTicketsByColumn(ref.projectId, column)
+            .filter((t) => t.id !== ref.ticketId)
+          const sortOrder = get().computeSortOrder(rest, rest.length)
+          await get().moveTicket(ref.ticketId, ref.projectId, column, sortOrder)
         }
       },
 
