@@ -111,3 +111,26 @@ describe('moveTicketsToColumn (multi-select drag)', () => {
     expect(kanbanApi.ticket.move).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('toggleSelectedTicketKey (Cmd/Ctrl-click)', () => {
+  it('adds a key when absent and removes it when present', () => {
+    const { toggleSelectedTicketKey } = useKanbanStore.getState()
+
+    toggleSelectedTicketKey('a')
+    expect([...useKanbanStore.getState().selectedTicketKeys]).toEqual(['a'])
+
+    toggleSelectedTicketKey('b')
+    expect(useKanbanStore.getState().selectedTicketKeys.has('b')).toBe(true)
+    expect(useKanbanStore.getState().selectedTicketKeys.size).toBe(2)
+
+    toggleSelectedTicketKey('a')
+    expect(useKanbanStore.getState().selectedTicketKeys.has('a')).toBe(false)
+    expect([...useKanbanStore.getState().selectedTicketKeys]).toEqual(['b'])
+  })
+
+  it('produces a new Set reference each toggle (so card selectors re-run)', () => {
+    const before = useKanbanStore.getState().selectedTicketKeys
+    useKanbanStore.getState().toggleSelectedTicketKey('x')
+    expect(useKanbanStore.getState().selectedTicketKeys).not.toBe(before)
+  })
+})

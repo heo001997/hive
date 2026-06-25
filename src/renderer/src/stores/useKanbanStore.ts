@@ -92,8 +92,10 @@ export function setKanbanDragData(data: KanbanDragData | null): void {
       useKanbanStore.setState({ draggingTicketKey: ticketKey(data.projectId, data.ticketId) })
     })
   } else {
-    // Clear everything immediately on drag end / drop
-    useKanbanStore.setState({ isDragging: false, draggingTicketKey: null })
+    // Clear everything immediately on drag end / drop. Clearing isMultiDragging
+    // here (called by both handleDrop and handleDragEnd) un-hides the moved cards
+    // in their new column before the optimistic re-render, avoiding a flicker.
+    useKanbanStore.setState({ isDragging: false, draggingTicketKey: null, isMultiDragging: false })
   }
 }
 
@@ -188,6 +190,8 @@ interface KanbanState {
   /** Whether a ticket is currently being dragged (reactive, for column styling) */
   isDragging: boolean
   draggingTicketKey: TicketKey | null
+  /** True while a multi-selection drag is in flight — hides every selected card so the stacked drag image reads as the whole group lifting off. */
+  isMultiDragging: boolean
   /** Per-project archive visibility toggle — NOT persisted to localStorage */
   showArchivedByProject: Record<string, boolean>
   markdownDiagnostics: Map<string, MarkdownCardDiagnostic[]>
@@ -205,6 +209,8 @@ interface KanbanState {
   setSelectedTicketId: (id: null) => void
   setSelectedTicketRef: (ref: TicketRef | null) => void
   setSelectedTicketKeys: (keys: Iterable<TicketKey>) => void
+  /** Add the key if absent, remove it if present (Cmd/Ctrl-click toggle). */
+  toggleSelectedTicketKey: (key: TicketKey) => void
   clearSelectedTicketKeys: () => void
   setBoardTelegramTarget: (target: BoardTelegramTarget | null) => void
   clearBoardTelegramTarget: () => void
@@ -452,6 +458,7 @@ export const useKanbanStore = create<KanbanState>()(
       selectedTicketKeys: new Set<TicketKey>(),
       isDragging: false,
       draggingTicketKey: null,
+      isMultiDragging: false,
       showArchivedByProject: {} as Record<string, boolean>,
       markdownDiagnostics: new Map(),
       markdownPlaceholders: new Map(),
@@ -472,6 +479,13 @@ export const useKanbanStore = create<KanbanState>()(
 
       setSelectedTicketKeys: (keys: Iterable<TicketKey>) => {
         set({ selectedTicketKeys: new Set(keys) })
+      },
+
+      toggleSelectedTicketKey: (key: TicketKey) => {
+        const next = new Set(get().selectedTicketKeys)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        set({ selectedTicketKeys: next })
       },
 
       clearSelectedTicketKeys: () => {
