@@ -1,8 +1,13 @@
 import { memo } from 'react'
 import Ansi from 'ansi-to-react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { containsAnsi } from '@/lib/ansi-utils'
+import {
+  HIVE_TICKET_LINK_PREFIX,
+  openTicketDetail,
+  parseTicketLinkHref
+} from '@/lib/navigate-to-ticket'
 import { CodeBlock } from './CodeBlock'
 import type { Components } from 'react-markdown'
 
@@ -36,16 +41,32 @@ const components: Components = {
     </th>
   ),
   td: ({ children }) => <td className="border border-border px-3 py-1.5">{children}</td>,
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-blue-500 hover:text-blue-400 underline underline-offset-2"
-    >
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) => {
+    const ticketRef = parseTicketLinkHref(href)
+    if (ticketRef) {
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void openTicketDetail(ticketRef.projectId, ticketRef.ticketId)
+          }}
+          className="text-blue-500 hover:text-blue-400 underline underline-offset-2 text-left"
+        >
+          {children}
+        </button>
+      )
+    }
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-500 hover:text-blue-400 underline underline-offset-2"
+      >
+        {children}
+      </a>
+    )
+  },
   hr: () => <hr className="my-4 border-border" />,
   strong: ({ children }) => <strong className="font-bold">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
@@ -66,6 +87,14 @@ const components: Components = {
 
 const remarkPluginsConfig = [remarkGfm]
 
+// react-markdown sanitizes unknown URL schemes to empty by default, which would
+// strip our `hive-ticket:` links. Pass those through untouched; defer everything
+// else to the default (safe) transform.
+function urlTransform(url: string): string {
+  if (url.startsWith(HIVE_TICKET_LINK_PREFIX)) return url
+  return defaultUrlTransform(url)
+}
+
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: MarkdownRendererProps): React.JSX.Element {
   if (containsAnsi(content)) {
     return (
@@ -76,7 +105,11 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: Mark
   }
 
   return (
-    <ReactMarkdown remarkPlugins={remarkPluginsConfig} components={components}>
+    <ReactMarkdown
+      remarkPlugins={remarkPluginsConfig}
+      components={components}
+      urlTransform={urlTransform}
+    >
       {content}
     </ReactMarkdown>
   )

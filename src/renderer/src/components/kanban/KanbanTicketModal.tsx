@@ -1462,7 +1462,7 @@ function EditModeContent({
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={cn(isDragOver && 'ring-2 ring-primary ring-offset-2 rounded-lg')}
+      className={cn('min-w-0', isDragOver && 'ring-2 ring-primary ring-offset-2 rounded-lg')}
     >
       <DialogHeader>
         <div className="flex items-center justify-between">
@@ -1530,7 +1530,7 @@ function EditModeContent({
           {showPreview ? (
             <div
               data-testid="ticket-edit-description-preview"
-              className="min-h-[120px] rounded-md border border-input bg-muted/30 px-3 py-2 text-sm prose prose-sm dark:prose-invert max-w-none"
+              className="min-h-[120px] rounded-md border border-input bg-muted/30 px-3 py-2 text-sm prose prose-sm dark:prose-invert max-w-none break-words"
             >
               {description.trim() ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{description}</ReactMarkdown>

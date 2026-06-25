@@ -18,6 +18,7 @@ import { AttachmentButton } from '@/components/sessions/AttachmentButton'
 import { AttachmentPreview } from '@/components/sessions/AttachmentPreview'
 import { buildMessageParts, escapeXmlAttr, isImageMime } from '@/lib/file-attachment-utils'
 import { parseUserMessageAttachments } from '@/lib/parse-user-message-attachments'
+import { buildTicketLinkHref } from '@/lib/navigate-to-ticket'
 import { cn } from '@/lib/utils'
 import { fileApi } from '@/api/file-api'
 import { QuestionPrompt } from '@/components/sessions/QuestionPrompt'
@@ -96,7 +97,8 @@ const BOARD_ASSISTANT_RULES = [
   'For project boards, the JSON schema is {"drafts":[{"draftKey":"string","title":"string","description":"string|null","projectId":"string","dependsOn":["draftKey"],"warnings":["string"]}]}.',
   'For other board scopes, the JSON schema is {"drafts":[{"title":"string","description":"string|null","warnings":["string"]}]}.',
   'When revising drafts, output a full replacement draft set in that code block.',
-  'Keep titles short, specific, and implementation-ready.'
+  'Keep titles short, specific, and implementation-ready.',
+  'Whenever you reference an existing ticket from existingTickets, render its title as a markdown link [title](hive-ticket:projectId/ticketId) using that ticket\'s exact id and projectId so the user can click through to it. Only use ids that appear in existingTickets.'
 ].join('\n')
 
 function buildScopeKey(scope: BoardChatScope | null): string {
@@ -262,6 +264,8 @@ function buildBoardPrompt(input: string, scope: BoardChatScope, targetProjectId:
     .getTicketsForProject(targetProjectId)
     .filter((ticket) => !ticket.archived_at)
     .map((ticket) => ({
+      id: ticket.id,
+      projectId: ticket.project_id,
       title: ticket.title,
       description: truncateDescription(ticket.description),
       column: ticket.column
@@ -883,7 +887,7 @@ function BoardChatMessageList({
               key={message.id}
               className="rounded-2xl border border-border/70 bg-muted/35 px-3 py-2 text-xs text-muted-foreground"
             >
-              {message.content}
+              <MarkdownRenderer content={message.content} />
             </div>
           )
         }
@@ -1708,6 +1712,7 @@ export function BoardAssistantView({
         let dependencyCount = 0
         const createdDraftIds: string[] = []
         const successfulProjectIds: string[] = []
+        const createdTickets: { id: string; title: string; projectId: string }[] = []
         const failures: string[] = []
 
         settled.forEach((result, index) => {
@@ -1716,6 +1721,13 @@ export function BoardAssistantView({
             ticketCount += result.value.tickets.length
             dependencyCount += result.value.dependencies.length
             createdDraftIds.push(...batch.projectDrafts.map((draft) => draft.id))
+            createdTickets.push(
+              ...result.value.tickets.map((ticket) => ({
+                id: ticket.id,
+                title: ticket.title,
+                projectId: ticket.project_id
+              }))
+            )
             successfulProjectIds.push(batch.projectId)
             return
           }
@@ -1741,9 +1753,15 @@ export function BoardAssistantView({
           )
         }
 
-        addLocalSystemMessage(
-          `Created ${ticketCount} ticket${ticketCount === 1 ? '' : 's'} and ${dependencyCount} dependenc${dependencyCount === 1 ? 'y' : 'ies'}.`
-        )
+        const summaryLine = `Created ${ticketCount} ticket${ticketCount === 1 ? '' : 's'} and ${dependencyCount} dependenc${dependencyCount === 1 ? 'y' : 'ies'}.`
+        const ticketLinks = createdTickets
+          .map((ticket) => {
+            // Escape markdown link-text delimiters so titles render verbatim.
+            const label = ticket.title.replace(/[[\]]/g, '\\$&')
+            return `- [${label}](${buildTicketLinkHref(ticket.projectId, ticket.id)})`
+          })
+          .join('\n')
+        addLocalSystemMessage(ticketLinks ? `${summaryLine}\n\n${ticketLinks}` : summaryLine)
         navigateToBoard()
         toast.success(`Created ${ticketCount} ticket${ticketCount === 1 ? '' : 's'}.`)
         return true
