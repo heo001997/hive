@@ -2859,6 +2859,35 @@ function ReviewModeContent({
     [ticket.id, ticket.project_id, updateTicket]
   )
 
+  // ── Manual "Verify completion" ────────────────────────────────────
+  const recheckTicketCompletion = useKanbanStore((s) => s.recheckTicketCompletion)
+  const completionVerdict = useKanbanStore(
+    useCallback(
+      (s) => s.completionVerdicts.get(ticketKey(ticket.project_id, ticket.id)) ?? null,
+      [ticket.project_id, ticket.id]
+    )
+  )
+  const [isVerifyingCompletion, setIsVerifyingCompletion] = useState(false)
+  const handleVerifyCompletion = useCallback(async () => {
+    setIsVerifyingCompletion(true)
+    try {
+      const verdict = await recheckTicketCompletion(ticket.id, ticket.project_id)
+      if (!verdict) {
+        toast.error('Completion check unavailable — no session transcript or provider error')
+        return
+      }
+      if (verdict.needsInput) {
+        toast.warning('Agent is waiting on you — moved back to In Progress')
+      } else if (verdict.movedBack) {
+        toast.warning('AI judged this incomplete — moved back to In Progress')
+      } else {
+        toast.success('AI judged this complete')
+      }
+    } finally {
+      setIsVerifyingCompletion(false)
+    }
+  }, [recheckTicketCompletion, ticket.id, ticket.project_id])
+
   const handleAttach = useCallback((file: AttachmentInput) => {
     setAttachments((prev) => {
       if (prev.length >= MAX_ATTACHMENTS) {
@@ -3255,6 +3284,50 @@ function ReviewModeContent({
             onChange={handleToggleAutoApprove}
             testId="ticket-review-auto-approve-review-toggle"
           />
+        </div>
+      )}
+
+      {/* Manual AI completion check (build tickets only) */}
+      {ticket.mode === 'build' && (
+        <div className="flex-shrink-0 space-y-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={isVerifyingCompletion || !ticket.current_session_id}
+            onClick={handleVerifyCompletion}
+            data-testid="ticket-review-verify-completion-btn"
+          >
+            {isVerifyingCompletion ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <FileSearch className="h-3.5 w-3.5" />
+            )}
+            Verify completion with AI
+          </Button>
+          {completionVerdict && (
+            <div
+              data-testid="ticket-review-completion-verdict"
+              className={`rounded-md border px-3 py-2 text-xs ${
+                completionVerdict.complete && !completionVerdict.movedBack
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                  : 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400'
+              }`}
+            >
+              <span className="font-medium">
+                {completionVerdict.needsInput
+                  ? 'Waiting on you'
+                  : completionVerdict.complete && !completionVerdict.movedBack
+                    ? 'Complete'
+                    : 'Not complete'}{' '}
+                ({Math.round(completionVerdict.confidence * 100)}% confident)
+              </span>
+              {completionVerdict.reason && (
+                <span className="ml-1 text-foreground/70">— {completionVerdict.reason}</span>
+              )}
+            </div>
+          )}
         </div>
       )}
 

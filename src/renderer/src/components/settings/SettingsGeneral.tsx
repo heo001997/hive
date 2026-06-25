@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { DEFAULT_THEME_ID } from '@/lib/themes'
 import { useSettingsStore } from '@/stores/useSettingsStore'
-import { RotateCcw, Trash2 } from 'lucide-react'
+import { RotateCcw, Trash2, Loader2, CheckCircle2, XCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,9 +12,15 @@ import { useShortcutStore } from '@/stores/useShortcutStore'
 import { useAccountStore, useUsageStore } from '@/stores'
 import { toast } from '@/lib/toast'
 import type { UsageProvider } from '@shared/types/usage'
+import {
+  COMPLETION_CHECK_PROVIDERS,
+  COMPLETION_PROVIDER_LABELS,
+  DEFAULT_STRICT_VERIFY_PROMPT
+} from '@shared/types/completion'
 import claudeIcon from '@/assets/model-icons/claude.svg'
 import openaiIcon from '@/assets/model-icons/openai.svg'
 import { isAgentSdkAvailable } from '@/lib/agent-sdk-availability'
+import { completionApi } from '@/api/completion-api'
 
 const SAVED_ACCOUNT_PROVIDERS: UsageProvider[] = ['anthropic', 'openai']
 
@@ -128,6 +134,16 @@ export function SettingsGeneral(): React.JSX.Element {
     kanbanAutoApproveReview,
     kanbanAutoCommitOnReview,
     kanbanAutoApproveDelaySeconds,
+    kanbanStrictVerifyEnabled,
+    kanbanStrictVerifySnapshotEnabled,
+    kanbanStrictVerifyReviewerEnabled,
+    kanbanStrictVerifyPrompt,
+    kanbanStrictVerifyDelaySeconds,
+    kanbanStrictVerifyProvider,
+    kanbanStrictVerifyModel,
+    kanbanStrictVerifyChars,
+    kanbanStrictVerifyConfidenceThreshold,
+    kanbanInProgressRescueEnabled,
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
@@ -157,6 +173,33 @@ export function SettingsGeneral(): React.JSX.Element {
   useEffect(() => {
     setAutoResolvePromptDraft(autoResolveConflictPrompt)
   }, [autoResolveConflictPrompt])
+
+  // Strict Verify "Test" button — probes whether the configured provider + model
+  // can actually be called (CLI installed, model id valid, authenticated).
+  const [verifyTest, setVerifyTest] = useState<{
+    status: 'idle' | 'running' | 'ok' | 'fail'
+    message?: string
+  }>({ status: 'idle' })
+
+  const handleTestStrictVerifyProvider = async (): Promise<void> => {
+    setVerifyTest({ status: 'running' })
+    try {
+      const res = await completionApi.testStrictVerifyProvider({
+        provider: kanbanStrictVerifyProvider,
+        model: kanbanStrictVerifyModel || undefined,
+        systemPrompt: kanbanStrictVerifyPrompt || undefined
+      })
+      if (res.success && res.verdict) {
+        const label = COMPLETION_PROVIDER_LABELS[kanbanStrictVerifyProvider]
+        const modelNote = kanbanStrictVerifyModel ? ` · ${kanbanStrictVerifyModel}` : ''
+        setVerifyTest({ status: 'ok', message: `${label}${modelNote} reachable` })
+      } else {
+        setVerifyTest({ status: 'fail', message: res.error ?? 'Provider returned no verdict' })
+      }
+    } catch (err) {
+      setVerifyTest({ status: 'fail', message: err instanceof Error ? err.message : String(err) })
+    }
+  }
 
   const handleResetAll = (): void => {
     resetToDefaults()
@@ -391,6 +434,357 @@ export function SettingsGeneral(): React.JSX.Element {
         </button>
       </div>
 
+      {/* Kanban — Strict Verify Ticket Review State (Feature A) */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <label className="text-sm font-medium">Strict Verify Ticket Review State</label>
+            <p className="text-xs text-muted-foreground">
+              When a <strong>build</strong> ticket settles in Review, first run a deterministic{' '}
+              <em>frozen check</em> (is the session still emitting output?), then an AI{' '}
+              <em>Watcher</em> that judges complete / asking-a-question / incomplete. If the session
+              is still streaming, the agent is waiting on you, or the work isn&apos;t convincingly
+              done, the ticket goes back to <strong>In Progress</strong> (with a
+              &quot;Questions&quot; badge when it&apos;s waiting on you). Runs for every build
+              ticket that settles in Review, independent of Auto-approve.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={kanbanStrictVerifyEnabled}
+            onClick={() => updateSetting('kanbanStrictVerifyEnabled', !kanbanStrictVerifyEnabled)}
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              kanbanStrictVerifyEnabled ? 'bg-primary' : 'bg-muted'
+            )}
+            data-testid="strict-verify-toggle"
+          >
+            <span
+              className={cn(
+                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                kanbanStrictVerifyEnabled ? 'translate-x-4' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
+
+        {kanbanStrictVerifyEnabled && (
+          <div className="ml-2 space-y-5 border-l-2 border-border pl-4">
+            {/* Shared settle window — gates when BOTH sub-gates run. */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Verify after</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={kanbanStrictVerifyDelaySeconds}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10)
+                    if (!isNaN(val) && val >= 0 && val <= 600) {
+                      updateSetting('kanbanStrictVerifyDelaySeconds', val)
+                    }
+                  }}
+                  className="w-20 font-mono text-sm"
+                  data-testid="strict-verify-delay"
+                />
+                <span className="text-xs text-muted-foreground">seconds (0-600)</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                The ticket must sit idle in Review this long before the gates below run. The timer
+                resets if the session resumes working.
+              </p>
+            </div>
+
+            {/* ── Gate 1 · Snapshot (frozen check) ───────────────────────────── */}
+            <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <label className="text-sm font-medium">1 · Snapshot (frozen check)</label>
+                  <p className="text-xs text-muted-foreground">
+                    Deterministic, no model call. Fingerprints the session when the timer arms and
+                    again when it fires; if the session is <em>still emitting output</em> the agent
+                    hasn&apos;t really stopped, so the ticket goes back to <strong>In Progress</strong>{' '}
+                    and the Reviewer never runs. Turn off to skip straight to the Reviewer.
+                  </p>
+                </div>
+                <button
+                  role="switch"
+                  aria-checked={kanbanStrictVerifySnapshotEnabled}
+                  onClick={() =>
+                    updateSetting(
+                      'kanbanStrictVerifySnapshotEnabled',
+                      !kanbanStrictVerifySnapshotEnabled
+                    )
+                  }
+                  className={cn(
+                    'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                    kanbanStrictVerifySnapshotEnabled ? 'bg-primary' : 'bg-muted'
+                  )}
+                  data-testid="strict-verify-snapshot-toggle"
+                >
+                  <span
+                    className={cn(
+                      'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                      kanbanStrictVerifySnapshotEnabled ? 'translate-x-4' : 'translate-x-0'
+                    )}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* ── Gate 2 · Ticket Reviewer (LLM) ─────────────────────────────── */}
+            <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <label className="text-sm font-medium">2 · Ticket Reviewer (LLM)</label>
+                  <p className="text-xs text-muted-foreground">
+                    An AI reads the transcript tail and judges complete / asking-a-question /
+                    incomplete. If it&apos;s waiting on you, not done, or below the confidence
+                    threshold, the ticket goes back to <strong>In Progress</strong> (with a
+                    &quot;Questions&quot; badge when it&apos;s waiting on you). Turn off to treat a
+                    ticket that clears the snapshot as verified.
+                  </p>
+                </div>
+                <button
+                  role="switch"
+                  aria-checked={kanbanStrictVerifyReviewerEnabled}
+                  onClick={() =>
+                    updateSetting(
+                      'kanbanStrictVerifyReviewerEnabled',
+                      !kanbanStrictVerifyReviewerEnabled
+                    )
+                  }
+                  className={cn(
+                    'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                    kanbanStrictVerifyReviewerEnabled ? 'bg-primary' : 'bg-muted'
+                  )}
+                  data-testid="strict-verify-reviewer-toggle"
+                >
+                  <span
+                    className={cn(
+                      'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                      kanbanStrictVerifyReviewerEnabled ? 'translate-x-4' : 'translate-x-0'
+                    )}
+                  />
+                </button>
+              </div>
+
+              {kanbanStrictVerifyReviewerEnabled && (
+                <div className="space-y-3 border-t border-border pt-3">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">AI provider</label>
+                    <select
+                      value={kanbanStrictVerifyProvider}
+                      onChange={(e) =>
+                        updateSetting(
+                          'kanbanStrictVerifyProvider',
+                          e.target.value as typeof kanbanStrictVerifyProvider
+                        )
+                      }
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      data-testid="strict-verify-provider"
+                    >
+                      {COMPLETION_CHECK_PROVIDERS.map((provider) => (
+                        <option key={provider} value={provider}>
+                          {COMPLETION_PROVIDER_LABELS[provider]}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground">
+                      Which CLI runs the Reviewer. Falls back to another installed provider if this
+                      one isn&apos;t available.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Model</label>
+                    <Input
+                      type="text"
+                      value={kanbanStrictVerifyModel}
+                      placeholder="default"
+                      onChange={(e) => updateSetting('kanbanStrictVerifyModel', e.target.value)}
+                      className="w-full font-mono text-sm"
+                      data-testid="strict-verify-model"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Optional model id passed to the provider (e.g. a stronger judge model). Leave
+                      blank for the provider&apos;s default.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Transcript characters</label>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        type="number"
+                        min={500}
+                        max={24000}
+                        step={500}
+                        value={kanbanStrictVerifyChars}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10)
+                          if (!isNaN(val) && val >= 500 && val <= 24000) {
+                            updateSetting('kanbanStrictVerifyChars', val)
+                          }
+                        }}
+                        className="w-24 font-mono text-sm"
+                        data-testid="strict-verify-chars"
+                      />
+                      <span className="text-xs text-muted-foreground">characters (500–24000)</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      How many trailing characters of the session to send. The end of a session is
+                      where completion signals live.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Confidence threshold</label>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={kanbanStrictVerifyConfidenceThreshold}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value)
+                          if (!isNaN(val) && val >= 0 && val <= 1) {
+                            updateSetting('kanbanStrictVerifyConfidenceThreshold', val)
+                          }
+                        }}
+                        className="w-24 font-mono text-sm"
+                        data-testid="strict-verify-confidence-threshold"
+                      />
+                      <span className="text-xs text-muted-foreground">0–1 (default 0.6)</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      A &quot;complete&quot; verdict is only trusted at or above this confidence.
+                      Higher = stricter (more tickets bounced back to In Progress).
+                    </p>
+                  </div>
+
+                  {/* Reviewer system prompt — editable, with reset-to-default. */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-sm font-medium">Reviewer prompt</label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          updateSetting('kanbanStrictVerifyPrompt', DEFAULT_STRICT_VERIFY_PROMPT)
+                        }
+                        disabled={kanbanStrictVerifyPrompt === DEFAULT_STRICT_VERIFY_PROMPT}
+                        data-testid="strict-verify-prompt-reset"
+                      >
+                        <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                        Reset to default
+                      </Button>
+                    </div>
+                    <Textarea
+                      value={kanbanStrictVerifyPrompt}
+                      onChange={(e) => updateSetting('kanbanStrictVerifyPrompt', e.target.value)}
+                      rows={10}
+                      spellCheck={false}
+                      className="w-full font-mono text-xs leading-relaxed"
+                      data-testid="strict-verify-prompt"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      The system prompt injected ahead of the transcript. Edit to tune what counts as
+                      done. It <strong>must</strong> still ask for the JSON verdict (
+                      <code>complete</code>, <code>needsInput</code>, <code>confidence</code>,{' '}
+                      <code>reason</code>) or the Reviewer can&apos;t be parsed.
+                    </p>
+                  </div>
+
+                  {/* Connection test — prove the chosen provider + model actually answer. */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Test connection</label>
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleTestStrictVerifyProvider}
+                        disabled={verifyTest.status === 'running'}
+                        data-testid="strict-verify-test"
+                      >
+                        {verifyTest.status === 'running' ? (
+                          <>
+                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                            Testing…
+                          </>
+                        ) : (
+                          'Run test'
+                        )}
+                      </Button>
+                      {verifyTest.status === 'ok' && (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-green-600 dark:text-green-500">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          {verifyTest.message}
+                        </span>
+                      )}
+                      {verifyTest.status === 'fail' && (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 dark:text-red-500">
+                          <XCircle className="h-3.5 w-3.5" />
+                          {verifyTest.message}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Runs the Reviewer against a sample transcript using the provider, model, and
+                      prompt above. Confirms the CLI is installed, the model id is valid, and the call
+                      succeeds — no ticket is touched.
+                    </p>
+                  </div>
+
+                  {/* ── Recover stuck In Progress tickets ──────────────────────────── */}
+                  <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <label className="text-sm font-medium">Recover stuck In Progress tickets</label>
+                        <p className="text-xs text-muted-foreground">
+                          The reverse of the frozen check. After a ticket is bounced back to{' '}
+                          <strong>In Progress</strong> as &quot;Not done&quot;, watch its session: if it
+                          goes <em>frozen</em> (stopped emitting) while still stuck, the bounce was
+                          likely premature, so re-promote it to <strong>Review</strong> once for a fresh
+                          judgment. If it still isn&apos;t done it&apos;s left in In Progress with a
+                          &quot;Re-checked&quot; label (max 1 retry, so no loop).
+                        </p>
+                      </div>
+                      <button
+                        role="switch"
+                        aria-checked={kanbanInProgressRescueEnabled}
+                        onClick={() =>
+                          updateSetting(
+                            'kanbanInProgressRescueEnabled',
+                            !kanbanInProgressRescueEnabled
+                          )
+                        }
+                        className={cn(
+                          'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                          kanbanInProgressRescueEnabled ? 'bg-primary' : 'bg-muted'
+                        )}
+                        data-testid="strict-verify-rescue-toggle"
+                      >
+                        <span
+                          className={cn(
+                            'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                            kanbanInProgressRescueEnabled ? 'translate-x-4' : 'translate-x-0'
+                          )}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Kanban — Auto approve Review */}
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-4">
@@ -400,11 +794,12 @@ export function SettingsGeneral(): React.JSX.Element {
               The real switch lives <strong>per ticket</strong> — each ticket has its own
               &quot;Auto-approve Review&quot; checkbox in its detail view. This setting is just the
               default: new tickets get that checkbox pre-set to this value. Changing it here only
-              affects future tickets, never existing ones. When a ticket&apos;s checkbox is on and it
-              settles in Review, it auto-commits; if another ticket depends on it (a chain) it
+              affects future tickets, never existing ones. When a ticket&apos;s checkbox is on and
+              it settles in Review, it auto-commits; if another ticket depends on it (a chain) it
               advances to Done so the next ticket auto-starts (using its own configured worktree).
               The last ticket in a chain — or a standalone ticket — stays in Review for you to PR
-              &amp; merge.
+              &amp; merge. When <strong>Strict Verify</strong> is on, this runs only after a ticket
+              is verified complete (the frozen check + Watcher pass first).
             </p>
           </div>
           <button
@@ -427,63 +822,66 @@ export function SettingsGeneral(): React.JSX.Element {
         </div>
 
         {/* Global behavior — applies to ANY ticket whose own checkbox is on,
-            regardless of the default above. */}
-        <div className="ml-2 space-y-3 border-l-2 border-border pl-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Auto approve after</label>
-            <div className="flex items-center gap-3">
-              <Input
-                type="number"
-                min={0}
-                max={600}
-                value={kanbanAutoApproveDelaySeconds}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value, 10)
-                  if (!isNaN(val) && val >= 0 && val <= 600) {
-                    updateSetting('kanbanAutoApproveDelaySeconds', val)
-                  }
-                }}
-                className="w-20 font-mono text-sm"
-                data-testid="kanban-auto-approve-delay"
-              />
-              <span className="text-xs text-muted-foreground">seconds (0-600)</span>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Applies to every ticket that has Auto-approve Review on. This is the trigger for
-              everything below — nothing happens until it fires. The ticket must sit idle in Review
-              this long before the series runs (auto-commit, then advance). The timer resets if the
-              session resumes working, so transient completion (multi-turn agents, queued
-              follow-ups, app relaunch) won't fire prematurely.
-            </p>
-          </div>
-
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <label className="text-sm font-medium">Auto commit before advancing</label>
+            regardless of the default above. Collapsed with the default toggle for parity
+            with the Strict Verify block. */}
+        {kanbanAutoApproveReview && (
+          <div className="ml-2 space-y-3 border-l-2 border-border pl-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Auto approve after</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={kanbanAutoApproveDelaySeconds}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10)
+                    if (!isNaN(val) && val >= 0 && val <= 600) {
+                      updateSetting('kanbanAutoApproveDelaySeconds', val)
+                    }
+                  }}
+                  className="w-20 font-mono text-sm"
+                  data-testid="kanban-auto-approve-delay"
+                />
+                <span className="text-xs text-muted-foreground">seconds (0-600)</span>
+              </div>
               <p className="text-xs text-muted-foreground">
-                Runs after the wait above fires: stage and commit the ticket worktree's changes.
-                Each chain step is committed before it advances.
+                Applies to every ticket that has Auto-approve Review on. This is the trigger for
+                everything below — nothing happens until it fires. The ticket must sit idle in
+                Review this long before the series runs (auto-commit, then advance). The timer
+                resets if the session resumes working, so transient completion (multi-turn agents,
+                queued follow-ups, app relaunch) won't fire prematurely.
               </p>
             </div>
-            <button
-              role="switch"
-              aria-checked={kanbanAutoCommitOnReview}
-              onClick={() => updateSetting('kanbanAutoCommitOnReview', !kanbanAutoCommitOnReview)}
-              className={cn(
-                'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-                kanbanAutoCommitOnReview ? 'bg-primary' : 'bg-muted'
-              )}
-              data-testid="kanban-auto-commit-on-review-toggle"
-            >
-              <span
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <label className="text-sm font-medium">Auto commit before advancing</label>
+                <p className="text-xs text-muted-foreground">
+                  Runs after the wait above fires: stage and commit the ticket worktree's changes.
+                  Each chain step is committed before it advances.
+                </p>
+              </div>
+              <button
+                role="switch"
+                aria-checked={kanbanAutoCommitOnReview}
+                onClick={() => updateSetting('kanbanAutoCommitOnReview', !kanbanAutoCommitOnReview)}
                 className={cn(
-                  'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
-                  kanbanAutoCommitOnReview ? 'translate-x-4' : 'translate-x-0'
+                  'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                  kanbanAutoCommitOnReview ? 'bg-primary' : 'bg-muted'
                 )}
-              />
-            </button>
+                data-testid="kanban-auto-commit-on-review-toggle"
+              >
+                <span
+                  className={cn(
+                    'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                    kanbanAutoCommitOnReview ? 'translate-x-4' : 'translate-x-0'
+                  )}
+                />
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Vim mode */}
@@ -629,9 +1027,8 @@ export function SettingsGeneral(): React.JSX.Element {
       <div className="space-y-1">
         <label className="text-sm font-medium">Protected branches</label>
         <p className="text-xs text-muted-foreground">
-          Comma-separated branch names. When a ticket moves to Done, Hive won&apos;t suggest
-          merging into any branch listed here — it just moves the ticket to Done. Leave empty to
-          disable.
+          Comma-separated branch names. When a ticket moves to Done, Hive won&apos;t suggest merging
+          into any branch listed here — it just moves the ticket to Done. Leave empty to disable.
         </p>
         <Input
           value={protectedBranchesDraft}

@@ -685,7 +685,7 @@ export function KanbanColumn({
           projectTicketsForColumn(ticketProjectId),
           projectLocalDropIndex(ticketProjectId, targetIndex)
         )
-        store.moveTicket(ticketId, ticketProjectId, column, sortOrder)
+        store.moveTicket(ticketId, ticketProjectId, column, sortOrder, { userInitiated: true })
 
         // Backward move into To Do — offer to cascade downstream dependents back too.
         if (isTodoColumn) {

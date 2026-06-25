@@ -30,7 +30,9 @@ import {
   Hammer,
   Map as MapIcon,
   FolderInput,
-  Code
+  Code,
+  MessageCircleQuestion,
+  Clock
 } from 'lucide-react'
 import { CheckeredFlagIcon } from './CheckeredFlagIcon'
 import { UpdateStatusModal } from './UpdateStatusModal'
@@ -84,6 +86,7 @@ import { useSessionStore } from '@/stores/useSessionStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { parseTicketKey, setKanbanDragData, ticketKey, useKanbanStore } from '@/stores/useKanbanStore'
 import type { TicketKey } from '@/stores/useKanbanStore'
+import type { VerifyProgress } from '@shared/types/completion'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { isBlockerSatisfied } from '@/lib/blocker-utils'
 import { useConnectionStore } from '@/stores/useConnectionStore'
@@ -121,6 +124,59 @@ function getProjectColor(projectId: string, connectionProjectIds: string[]): str
 }
 
 const EMPTY_ARRAY: readonly never[] = []
+
+/** Seconds remaining until `deadline` (epoch ms), floored at 0. */
+function secondsLeft(deadline: number): number {
+  return Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+}
+
+/**
+ * Live status pill for the Strict Verify → Auto Review Bypass pipeline. For the
+ * countdown phases it ticks once a second off the phase `deadline`; for the
+ * working phases it shows a spinner. Amber to match the other settle badges.
+ */
+function VerifyProgressBadge({ progress }: { progress: VerifyProgress }) {
+  const { phase, deadline } = progress
+  const isCountdown = phase === 'verify-countdown' || phase === 'bypass-countdown'
+
+  // Re-render every second while a countdown is active so the number ticks down.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!isCountdown || deadline === undefined) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [isCountdown, deadline])
+  void now // `now` exists only to force the interval re-render
+
+  let label: string
+  let spinning = false
+  if (phase === 'verify-countdown') {
+    label = `Verifying in ${deadline !== undefined ? secondsLeft(deadline) : 0}s`
+  } else if (phase === 'bypass-countdown') {
+    label = `Auto-approving in ${deadline !== undefined ? secondsLeft(deadline) : 0}s`
+  } else if (phase === 'checking') {
+    label = 'Verifying…'
+    spinning = true
+  } else {
+    label = 'Committing…'
+    spinning = true
+  }
+
+  return (
+    <span
+      data-testid="kanban-ticket-verify-progress"
+      data-phase={phase}
+      className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-[11px] font-medium text-amber-500"
+    >
+      {spinning ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <Clock className="h-3 w-3" />
+      )}
+      {label}
+    </span>
+  )
+}
 
 interface KanbanTicketCardProps {
   ticket: KanbanTicket
@@ -199,6 +255,16 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
 
   const isSimpleMode = useKanbanStore(
     useCallback((state) => state.simpleModeByProject[ticket.project_id] ?? false, [ticket.project_id])
+  )
+  // Latest AI completion verdict for this ticket (transient). Surfaced as a badge
+  // only when the check judged the work NOT done (and thus bounced it back).
+  const completionVerdict = useKanbanStore(
+    useCallback((state) => state.completionVerdicts.get(currentTicketKey) ?? null, [currentTicketKey])
+  )
+  // Live Strict Verify / Auto Review Bypass pipeline status (countdown + work),
+  // surfaced on the card so the user can watch the settle → verify → bypass run.
+  const verifyProgress = useKanbanStore(
+    useCallback((state) => state.verifyProgress.get(currentTicketKey) ?? null, [currentTicketKey])
   )
   const blockingDiagnostic = useKanbanStore(
     useCallback(
@@ -1013,6 +1079,67 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                     <Lock className="h-3 w-3" />
                     {unresolvedBlockerCount}
                   </span>
+                )}
+                {/* Live Strict Verify / Auto Review Bypass progress — countdown +
+                    work status while the ticket settles in Review. */}
+                {verifyProgress && <VerifyProgressBadge progress={verifyProgress} />}
+                {/* Strict Verify verdict badge — shown when the Watcher bounced the
+                    ticket back to In Progress. "Questions" when the agent is waiting
+                    on the user, otherwise "Not done". */}
+                {completionVerdict?.needsInput ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        data-testid="kanban-ticket-completion-questions"
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-[11px] font-medium text-amber-500 cursor-help"
+                      >
+                        <MessageCircleQuestion className="h-3 w-3" />
+                        Questions
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+                      Agent is waiting on you: {completionVerdict.reason}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  completionVerdict?.movedBack &&
+                  !completionVerdict.rescueExhausted && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span
+                          data-testid="kanban-ticket-completion-incomplete"
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-[11px] font-medium text-amber-500 cursor-help"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          Not done
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+                        AI judged this incomplete ({Math.round(completionVerdict.confidence * 100)}%
+                        confident): {completionVerdict.reason}
+                      </TooltipContent>
+                    </Tooltip>
+                  )
+                )}
+                {/* In Progress rescue exhausted — the watcher re-promoted this
+                    ticket to Review the max number of times and it still judged
+                    not-done, so it was left here. Distinct "Re-checked" label. */}
+                {completionVerdict?.rescueExhausted && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span
+                        data-testid="kanban-ticket-rescue-exhausted"
+                        className="inline-flex items-center gap-1 rounded-full bg-muted/40 border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground cursor-help"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        Re-checked
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
+                      Auto re-promoted to Review but still judged not done — left in In
+                      Progress to avoid a loop. Verify manually or continue the work.
+                    </TooltipContent>
+                  </Tooltip>
                 )}
                 {/* Attachment badge */}
                 {hasAttachments && (
