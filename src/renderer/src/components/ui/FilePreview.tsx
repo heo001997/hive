@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, FileText, Loader2, FolderOpen } from 'lucide-react'
+import Lightbox from 'yet-another-react-lightbox'
+import Zoom from 'yet-another-react-lightbox/plugins/zoom'
+import Captions from 'yet-another-react-lightbox/plugins/captions'
+import 'yet-another-react-lightbox/styles.css'
+import 'yet-another-react-lightbox/plugins/captions.css'
 import { useGhosttySuppression } from '@/hooks'
 import { fileApi } from '@/api/file-api'
 import { projectApi } from '@/api/project-api'
@@ -121,6 +126,26 @@ export function FilePreview({
     if (source.kind === 'path') projectApi.showInFolder(source.path).catch(() => {})
   }
 
+  // Images use yet-another-react-lightbox: wheel/pinch zoom, drag-pan and a
+  // double-click zoom, with the filename as a caption. It portals itself and
+  // owns Escape + backdrop-close, so route its close back to our onClose.
+  if (state.status === 'ready' && state.previewKind === 'image' && state.dataUrl) {
+    return (
+      <Lightbox
+        open
+        close={onClose}
+        slides={[{ src: state.dataUrl, alt: name, description: name }]}
+        plugins={[Zoom, Captions]}
+        carousel={{ finite: true }}
+        controller={{ closeOnBackdropClick: true }}
+        zoom={{ maxZoomPixelRatio: 5, scrollToZoom: true }}
+        captions={{ descriptionTextAlign: 'center', showToggle: false }}
+        styles={{ root: { zIndex: 9999 } }}
+        render={{ buttonPrev: () => null, buttonNext: () => null }}
+      />
+    )
+  }
+
   return createPortal(
     <div
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm"
@@ -176,14 +201,8 @@ function PreviewBody({
   }
 
   switch (state.previewKind) {
-    case 'image':
-      return (
-        <img
-          src={state.dataUrl}
-          alt={name}
-          className="max-h-[85vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
-        />
-      )
+    // 'image' is handled by the yet-another-react-lightbox branch in FilePreview
+    // before PreviewBody is reached, so it never lands here.
     case 'pdf':
       return (
         <iframe
