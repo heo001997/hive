@@ -352,6 +352,23 @@ interface KanbanState {
     ticketId: string,
     projectId: string
   ) => Promise<StoredCompletionVerdict | null>
+  /**
+   * Queue prompts (claude-code-cli only). Immediately enter `prompt` into the
+   * ticket's CLI session and move it to In Progress — the "send now" path used
+   * for the first prompt when the session is idle and nothing is queued.
+   */
+  startClaudeCliFollowup: (
+    projectId: string,
+    ticketId: string,
+    prompt: string
+  ) => Promise<boolean>
+  /**
+   * Queue prompts (claude-code-cli only). Enter the next queued follow-up IFF
+   * the feature is active, the ticket is a verified-complete build ticket idle
+   * in Review, and its CLI session is idle. No-op (returns false) otherwise —
+   * the queue then waits for the next Strict Verify pass to drain it.
+   */
+  dispatchClaudeCliQueueIfReady: (projectId: string, ticketId: string) => Promise<boolean>
 }
 
 // Pending settle timers, keyed by ticketKey. Kept at module scope (not in the
@@ -894,10 +911,15 @@ async function runStrictVerify(
  * ticket in Review, and its session has been idle (`completed`) for the full
  * settle window with no queued follow-ups. Returns `false` (abort silently,
  * leaving the ticket in Review) when any condition fails.
+ *
+ * `allowQueued` keeps the settle alive when the session has queued follow-ups —
+ * required by the Queue prompts feature, where Strict Verify must still run on a
+ * Review ticket so a verified-complete verdict can drain the next queued prompt.
  */
 async function passesSettleGuards(
   current: KanbanTicket,
-  settleMs: number
+  settleMs: number,
+  allowQueued = false
 ): Promise<boolean> {
   if (current.column !== 'review' || current.mode !== 'build') return false
   const sessionId = current.current_session_id
@@ -906,8 +928,68 @@ async function passesSettleGuards(
   const statusEntry = useWorktreeStatusStore.getState().sessionStatuses[sessionId]
   if (!statusEntry || statusEntry.status !== 'completed') return false
   if (Date.now() - statusEntry.timestamp < settleMs) return false
+  if (!allowQueued) {
+    const queued = useSessionStore.getState().pendingFollowUpMessages.get(sessionId)
+    if (queued && queued.length > 0) return false
+  }
+  return true
+}
+
+/**
+ * True when the Queue prompts feature is active for `sessionId`: Strict Verify +
+ * its Reviewer sub-gate are on (the verified-complete verdict the queue drains on
+ * comes from the Reviewer), the global toggle is on, and the session is a Claude
+ * Code CLI session (the only kind the queue manages — SDK sessions queue natively).
+ */
+async function isClaudeCliQueueFeatureActive(sessionId: string | null): Promise<boolean> {
+  if (!sessionId) return false
+  const { useSettingsStore } = await import('./useSettingsStore')
+  const s = useSettingsStore.getState()
+  if (!s.kanbanStrictVerifyEnabled || !s.kanbanQueuePromptsEnabled) return false
+  if (!(s.kanbanStrictVerifyReviewerEnabled ?? true)) return false
+  const { useSessionStore } = await import('./useSessionStore')
+  return useSessionStore.getState().getSessionById(sessionId)?.agent_sdk === 'claude-code-cli'
+}
+
+/**
+ * Queue prompts drain step. When the feature is active and `ticket` is a
+ * verified-complete build ticket idle in Review with its CLI session idle, pop
+ * the next queued follow-up and enter it (which moves the ticket back to In
+ * Progress via the resulting `session_working` event). Returns `true` when a
+ * prompt was dispatched. On a delivery failure the prompt is requeued at the
+ * front and `false` is returned so the ticket stays put.
+ */
+async function maybeDispatchClaudeCliQueue(
+  get: () => KanbanState,
+  projectId: string,
+  ticketId: string
+): Promise<boolean> {
+  const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  if (!current || current.column !== 'review' || current.mode !== 'build') return false
+  const sessionId = current.current_session_id
+  if (!sessionId) return false
+  if (!(await isClaudeCliQueueFeatureActive(sessionId))) return false
+
+  // The verified-complete gate: only advance the queue once the ticket has a
+  // Reviewer verdict for THIS session that says complete and wasn't bounced.
+  const verdict = get().completionVerdicts.get(ticketKey(projectId, ticketId))
+  const verified =
+    !!verdict && verdict.sessionId === sessionId && verdict.complete && !verdict.movedBack
+  if (!verified) return false
+
+  const { useSessionStore } = await import('./useSessionStore')
   const queued = useSessionStore.getState().pendingFollowUpMessages.get(sessionId)
-  if (queued && queued.length > 0) return false
+  if (!queued || queued.length === 0) return false
+
+  const next = useSessionStore.getState().dequeueFollowUpMessage(sessionId)
+  if (!next) return false
+
+  const { dispatchClaudeCliFollowup } = await import('@/lib/claude-cli-followup')
+  const delivered = await dispatchClaudeCliFollowup(sessionId, next)
+  if (!delivered) {
+    useSessionStore.getState().requeueFollowUpMessageFront(sessionId, next)
+    return false
+  }
   return true
 }
 
@@ -940,7 +1022,10 @@ async function onStrictVerifySettled(
   const { useSettingsStore } = await import('./useSettingsStore')
   const settings = useSettingsStore.getState()
   const settleMs = Math.max(0, (settings.kanbanStrictVerifyDelaySeconds ?? 8) * 1000)
-  if (!(await passesSettleGuards(current, settleMs))) {
+  // Queue prompts: a Review ticket with queued follow-ups must still settle so it
+  // gets verified — the verdict is what drains the queue. Allow the queued state.
+  const queueFeatureActive = await isClaudeCliQueueFeatureActive(current.current_session_id)
+  if (!(await passesSettleGuards(current, settleMs, queueFeatureActive))) {
     frozenSnapshots.delete(key)
     get().setVerifyProgress(key, null)
     return
@@ -979,6 +1064,14 @@ async function onStrictVerifySettled(
   if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
     const incomplete = await runStrictVerify(get, ticketId, projectId, current, settings)
     if (incomplete) return // verdict stored + moved back (the move clears progress)
+  }
+
+  // Verified complete. Queue prompts takes precedence over Done/auto-approve: if
+  // a follow-up is queued, enter it now (moves the ticket back to In Progress)
+  // and stop — the next verified-complete will drain the prompt after it.
+  if (queueFeatureActive && (await maybeDispatchClaudeCliQueue(get, projectId, ticketId))) {
+    get().setVerifyProgress(key, null)
+    return
   }
 
   // Verified complete — the ticket stays in Review. Hand off to Feature B if this
@@ -2540,8 +2633,41 @@ export const useKanbanStore = create<KanbanState>()(
             verdict.needsInput,
             settings
           )
+        } else if (!incomplete) {
+          // Verified complete via a manual check — drain the next queued prompt
+          // (Queue prompts feature, claude-code-cli only). No-op otherwise.
+          await maybeDispatchClaudeCliQueue(get, projectId, ticketId)
         }
         return stored
+      },
+
+      startClaudeCliFollowup: async (
+        projectId: string,
+        ticketId: string,
+        prompt: string
+      ): Promise<boolean> => {
+        const text = prompt.trim()
+        if (!text) return false
+        const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+        const sessionId = current?.current_session_id
+        if (!current || !sessionId) return false
+
+        // Move to In Progress (top) immediately for responsive UI; the resulting
+        // `session_working` event would do this too, but only after the async send.
+        if (current.column !== 'in_progress') {
+          const inProgress = get().getTicketsByColumn(projectId, 'in_progress')
+          const sortOrder = get().computeSortOrder(inProgress, 0)
+          await get().moveTicket(ticketId, projectId, 'in_progress', sortOrder).catch(() => {})
+        }
+        const { dispatchClaudeCliFollowup } = await import('@/lib/claude-cli-followup')
+        return dispatchClaudeCliFollowup(sessionId, text)
+      },
+
+      dispatchClaudeCliQueueIfReady: async (
+        projectId: string,
+        ticketId: string
+      ): Promise<boolean> => {
+        return maybeDispatchClaudeCliQueue(get, projectId, ticketId)
       }
     }),
     {
