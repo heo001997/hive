@@ -370,6 +370,9 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
             ? `PR merged successfully · Pulled latest ${pull.baseBranch} locally`
             : 'PR merged successfully'
         )
+        if (result.warning) {
+          toast.warning(result.warning)
+        }
         if (pull?.warning) {
           toast.warning(pull.warning)
         }

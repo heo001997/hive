@@ -387,6 +387,9 @@ export function MergeOnDoneDialog() {
         const result = await gitApi.prMerge(resolved.featureWorktreePath, prNumber)
 
         if (result.success) {
+          if (result.warning) {
+            toast.warning(result.warning)
+          }
           if (result.localBasePull?.warning) {
             toast.warning(result.localBasePull.warning)
           }

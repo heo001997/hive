@@ -519,6 +519,43 @@ describe('git ops RPC domain', () => {
     })
   })
 
+  it('reports nothing ahead after the branch has been squash-merged into the base', async () => {
+    const dir = makeTempDir()
+    git(dir, ['init'])
+    git(dir, ['config', 'user.email', 'hive@example.test'])
+    git(dir, ['config', 'user.name', 'Hive Test'])
+    writeFileSync(join(dir, 'tracked.txt'), 'original\n')
+    git(dir, ['add', 'tracked.txt'])
+    git(dir, ['commit', '-m', 'initial'])
+    git(dir, ['branch', '-M', 'main'])
+    git(dir, ['checkout', '-b', 'feature'])
+    writeFileSync(join(dir, 'feature.txt'), 'feature\n')
+    git(dir, ['add', 'feature.txt'])
+    git(dir, ['commit', '-m', 'c1'])
+    writeFileSync(join(dir, 'feature.txt'), 'feature\nmore\n')
+    git(dir, ['add', 'feature.txt'])
+    git(dir, ['commit', '-m', 'c2'])
+    // Squash-merge feature into main: the base gets one new commit, feature's
+    // originals stay around with their old SHAs (still "ahead" by ancestry).
+    git(dir, ['checkout', 'main'])
+    git(dir, ['merge', '--squash', 'feature'])
+    git(dir, ['commit', '-m', 'squash feature'])
+    git(dir, ['checkout', 'feature'])
+
+    const service = makeLiveGitOpsRpcService()
+    const result = await Effect.runPromise(service.branchDiffShortStat(dir, 'main'))
+
+    // Trees are identical after the squash, so there is genuinely nothing left to
+    // merge — the phantom "2 commits ahead" must be reported as zero.
+    expect(result).toEqual({
+      success: true,
+      filesChanged: 0,
+      insertions: 0,
+      deletions: 0,
+      commitsAhead: 0
+    })
+  })
+
   it('returns tracked and untracked file diffs from a git worktree', async () => {
     const dir = makeTempDir()
     git(dir, ['init'])
@@ -1270,7 +1307,7 @@ describe('git ops RPC domain', () => {
       },
       {
         file: 'gh',
-        args: ['pr', 'merge', '123', '--merge'],
+        args: ['pr', 'merge', '123', '--squash'],
         cwd: '/tmp/hive-feature'
       },
       {
@@ -1333,7 +1370,7 @@ describe('git ops RPC domain', () => {
       }
       if (file === 'gh' && args[1] === 'merge') {
         throw new Error(
-          'Command failed: gh pr merge 24 --merge\nPull request heo001997/hive#24 is not mergeable: the merge commit cannot be cleanly created.'
+          'Command failed: gh pr merge 24 --squash\nPull request heo001997/hive#24 is not mergeable: the merge commit cannot be cleanly created.'
         )
       }
       return { stdout: '', stderr: '' }
@@ -1345,6 +1382,34 @@ describe('git ops RPC domain', () => {
     expect(result.success).toBe(false)
     expect(result.conflicted).toBe(true)
     expect(result.error).toContain('PR #24 has conflicts')
+  })
+
+  it('falls back to a merge commit when the repo disallows squash merges', async () => {
+    const mergeMethods: string[] = []
+    const runCommand = vi.fn(async (file: string, args: ReadonlyArray<string>) => {
+      if (file === 'gh' && args[1] === 'view' && args.includes('mergeable,baseRefName,state')) {
+        return { stdout: '{"mergeable":"MERGEABLE","baseRefName":"main","state":"OPEN"}', stderr: '' }
+      }
+      if (file === 'gh' && args[1] === 'merge') {
+        const method = args[args.length - 1]
+        mergeMethods.push(method)
+        if (method === '--squash') {
+          throw new Error(
+            'Command failed: gh pr merge 7 --squash\nSquash merges are not allowed on this repository.'
+          )
+        }
+        return { stdout: '', stderr: '' }
+      }
+      return { stdout: '', stderr: '' }
+    })
+
+    const service = makeLiveGitOpsRpcService({ runCommand })
+    const result = await Effect.runPromise(service.prMerge('/tmp/hive-feature', 7))
+
+    expect(result.success).toBe(true)
+    expect(result.warning).toMatch(/squash merging is disabled/i)
+    // It tried squash first, then retried with a standard merge commit.
+    expect(mergeMethods).toEqual(['--squash', '--merge'])
   })
 
   it('stashes a dirty base branch around the post-merge pull', async () => {
@@ -1611,6 +1676,35 @@ describe('git ops RPC domain', () => {
     await expect(Effect.runPromise(service.isBranchMerged(dir, 'missing'))).resolves.toEqual({
       success: true,
       isMerged: false
+    })
+  })
+
+  it('treats a squash-merged branch as merged even though its commits are not ancestors', async () => {
+    const dir = makeTempDir()
+    git(dir, ['init'])
+    git(dir, ['config', 'user.email', 'hive@example.test'])
+    git(dir, ['config', 'user.name', 'Hive Test'])
+    writeFileSync(join(dir, 'tracked.txt'), 'initial\n')
+    git(dir, ['add', 'tracked.txt'])
+    git(dir, ['commit', '-m', 'initial'])
+    git(dir, ['branch', '-M', 'main'])
+    git(dir, ['checkout', '-b', 'feature'])
+    writeFileSync(join(dir, 'feature.txt'), 'feature\n')
+    git(dir, ['add', 'feature.txt'])
+    git(dir, ['commit', '-m', 'c1'])
+    writeFileSync(join(dir, 'feature.txt'), 'feature\nmore\n')
+    git(dir, ['add', 'feature.txt'])
+    git(dir, ['commit', '-m', 'c2'])
+    git(dir, ['checkout', 'main'])
+    git(dir, ['merge', '--squash', 'feature'])
+    git(dir, ['commit', '-m', 'squash feature'])
+
+    const service = makeLiveGitOpsRpcService()
+    // `rev-list HEAD..feature` is still > 0 (the originals are not ancestors), but the
+    // tree-equality fallback recognises the work is fully present in main.
+    await expect(Effect.runPromise(service.isBranchMerged(dir, 'feature'))).resolves.toEqual({
+      success: true,
+      isMerged: true
     })
   })
 
