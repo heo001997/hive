@@ -115,6 +115,9 @@ interface SessionState {
   activeWorktreeId: string | null
   // Persisted: last active session per worktree
   activeSessionByWorktree: Record<string, string>
+  // Persisted: which session a ticket detail's terminal tab strip last had active.
+  // View-only — does NOT change the ticket's primary current_session_id.
+  activeViewByTicket: Record<string, string>
 
   // Connection session state
   sessionsByConnection: Map<string, Session[]>
@@ -158,7 +161,15 @@ interface SessionState {
     projectId: string,
     agentSdkOverride?: AgentSdk,
     initialMode?: SessionMode,
-    options?: { autoFocus?: boolean; modelOverride?: SelectedModel; pendingMessage?: string | null }
+    options?: {
+      autoFocus?: boolean
+      modelOverride?: SelectedModel
+      pendingMessage?: string | null
+      /** Skip kanban auto-attach — used when a ticket detail spawns a secondary terminal. */
+      skipKanbanAutoAttach?: boolean
+      /** Override the auto-generated "Session N" / "Terminal N" name. */
+      nameOverride?: string
+    }
   ) => Promise<{ success: boolean; session?: Session; error?: string }>
   closeSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>
   reopenSession: (
@@ -170,6 +181,8 @@ interface SessionState {
     connectionId: string
   ) => Promise<{ success: boolean; error?: string }>
   setActiveSession: (sessionId: string | null) => void
+  /** Remember which session a ticket detail's tab strip is viewing (view-only). */
+  setTicketActiveView: (ticketId: string, sessionId: string | null) => void
   setActiveWorktree: (worktreeId: string | null) => void
   updateSessionName: (sessionId: string, name: string) => Promise<boolean>
   reorderTabs: (worktreeId: string, fromIndex: number, toIndex: number) => void
@@ -236,7 +249,12 @@ interface SessionState {
     connectionId: string,
     agentSdkOverride?: AgentSdk,
     initialMode?: SessionMode,
-    opts?: { autoFocus?: boolean; modelOverride?: SelectedModel; pendingMessage?: string | null }
+    opts?: {
+      autoFocus?: boolean
+      modelOverride?: SelectedModel
+      pendingMessage?: string | null
+      nameOverride?: string
+    }
   ) => Promise<{ success: boolean; session?: Session; error?: string }>
   setActiveConnectionSession: (sessionId: string | null) => void
   setActiveConnection: (connectionId: string | null) => void
@@ -321,6 +339,7 @@ export const useSessionStore = create<SessionState>()(
       activeSessionId: null,
       activeWorktreeId: null,
       activeSessionByWorktree: {},
+      activeViewByTicket: {},
 
       // Connection session state
       sessionsByConnection: new Map(),
@@ -492,7 +511,13 @@ export const useSessionStore = create<SessionState>()(
         projectId: string,
         agentSdkOverride?: AgentSdk,
         initialMode?: SessionMode,
-        options?: { autoFocus?: boolean; modelOverride?: SelectedModel }
+        options?: {
+          autoFocus?: boolean
+          modelOverride?: SelectedModel
+          pendingMessage?: string | null
+          skipKanbanAutoAttach?: boolean
+          nameOverride?: string
+        }
       ) => {
         try {
           const autoFocus = options?.autoFocus !== false
@@ -516,7 +541,9 @@ export const useSessionStore = create<SessionState>()(
           const session = await dbApi.session.create<Session>({
             worktree_id: worktreeId,
             project_id: projectId,
-            name: isTerminal ? `Terminal ${sessionNumber}` : `Session ${sessionNumber}`,
+            name:
+              options?.nameOverride ??
+              (isTerminal ? `Terminal ${sessionNumber}` : `Session ${sessionNumber}`),
             agent_sdk: defaultAgentSdk,
             mode: initialMode || 'build',
             ...(defaultModel
@@ -581,10 +608,14 @@ export const useSessionStore = create<SessionState>()(
 
           // Notify kanban store — auto-attaches pre-assigned tickets to this session.
           // Wrapped in its own try-catch so a handler error can never break session creation.
-          try {
-            notifyKanbanNewSession(session.id, worktreeId, projectId, session.mode || 'build')
-          } catch {
-            // Non-critical — session was created successfully regardless
+          // Skipped when a ticket detail spawns a *secondary* terminal: that session must
+          // not get bound as some other orphan ticket's primary current_session_id.
+          if (!options?.skipKanbanAutoAttach) {
+            try {
+              notifyKanbanNewSession(session.id, worktreeId, projectId, session.mode || 'build')
+            } catch {
+              // Non-critical — session was created successfully regardless
+            }
           }
 
           // Auto-attach non-outdated diff comments so the new session starts with context.
@@ -785,6 +816,18 @@ export const useSessionStore = create<SessionState>()(
             const newPinnedIds = new Set(state.pinnedSessionIds)
             newPinnedIds.delete(sessionId)
 
+            // Drop any ticket-detail tab view that pointed at the closed session,
+            // so a reopened ticket doesn't seed onto a dead session id.
+            let newActiveViewByTicket = state.activeViewByTicket
+            for (const [ticketId, viewedId] of Object.entries(state.activeViewByTicket)) {
+              if (viewedId === sessionId) {
+                if (newActiveViewByTicket === state.activeViewByTicket) {
+                  newActiveViewByTicket = { ...state.activeViewByTicket }
+                }
+                delete newActiveViewByTicket[ticketId]
+              }
+            }
+
             return {
               sessionsByWorktree: newWorktreeSessionsMap,
               tabOrderByWorktree: newWorktreeTabOrderMap,
@@ -793,6 +836,7 @@ export const useSessionStore = create<SessionState>()(
               activeSessionId: newActiveSessionId,
               activeSessionByWorktree: newActiveByWorktree,
               activeSessionByConnection: newActiveByConnection,
+              activeViewByTicket: newActiveViewByTicket,
               closedTerminalSessionIds: newClosedTerminals,
               pinnedSessionIds: newPinnedIds,
               pendingFollowUpMessages: newPendingFollowUps,
@@ -968,6 +1012,20 @@ export const useSessionStore = create<SessionState>()(
             error: error instanceof Error ? error.message : 'Failed to reopen connection session'
           }
         }
+      },
+
+      // Remember which session a ticket detail's terminal tab strip is viewing.
+      // View-only: never touches activeSessionId / current_session_id.
+      setTicketActiveView: (ticketId: string, sessionId: string | null) => {
+        set((state) => {
+          const next = { ...state.activeViewByTicket }
+          if (sessionId) {
+            next[ticketId] = sessionId
+          } else {
+            delete next[ticketId]
+          }
+          return { activeViewByTicket: next }
+        })
       },
 
       // Set active session
@@ -2108,7 +2166,12 @@ export const useSessionStore = create<SessionState>()(
         connectionId: string,
         agentSdkOverride?: AgentSdk,
         initialMode?: SessionMode,
-        opts?: { autoFocus?: boolean; modelOverride?: SelectedModel }
+        opts?: {
+          autoFocus?: boolean
+          modelOverride?: SelectedModel
+          pendingMessage?: string | null
+          nameOverride?: string
+        }
       ) => {
         try {
           const autoFocus = opts?.autoFocus ?? true
@@ -2139,7 +2202,9 @@ export const useSessionStore = create<SessionState>()(
             worktree_id: null,
             project_id: projectId,
             connection_id: connectionId,
-            name: isTerminal ? `Terminal ${sessionNumber}` : `Session ${sessionNumber}`,
+            name:
+              opts?.nameOverride ??
+              (isTerminal ? `Terminal ${sessionNumber}` : `Session ${sessionNumber}`),
             agent_sdk: defaultAgentSdk,
             mode: initialMode || 'build',
             ...(defaultModel
@@ -2447,7 +2512,8 @@ export const useSessionStore = create<SessionState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         activeSessionByWorktree: state.activeSessionByWorktree,
-        activeSessionByConnection: state.activeSessionByConnection
+        activeSessionByConnection: state.activeSessionByConnection,
+        activeViewByTicket: state.activeViewByTicket
       })
     }
   )

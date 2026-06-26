@@ -80,6 +80,8 @@ import type { Attachment, AttachmentInput } from '@/components/sessions/Attachme
 import { buildMessageParts, isImageMime, MAX_ATTACHMENTS } from '@/lib/file-attachment-utils'
 import { useDropZone } from '@/hooks/useDropZone'
 import { SessionStreamPanel } from './SessionStreamPanel'
+import { TicketSessionTabs } from './TicketSessionTabs'
+import { TicketSessionPane } from './TicketSessionPane'
 import { ReviewTicketDiffSummary, type ReviewTicketDiffFile } from './ReviewTicketDiffSummary'
 import { ProviderIcon, getProviderLabel } from '@/components/ui/provider-icon'
 import { useLifecycleActions } from '@/hooks/useLifecycleActions'
@@ -90,6 +92,7 @@ import { TicketDiscardChangesDialog } from './TicketDiscardChangesDialog'
 import { useImagePaste } from '@/hooks/useImagePaste'
 import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoffSelection'
 import { canonicalizeTicketTitle, extractPlanTitle } from '@shared/types/branch-utils'
+import { isTerminalBacked } from '@shared/types/agent-sdk'
 import type { KanbanTicket, KanbanTicketUpdate, Session, Worktree } from '../../../../main/db/types'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { autoPinBaseWorktree } from '@/lib/auto-pin'
@@ -1041,11 +1044,14 @@ function KanbanTicketModalContent({
   )
   const conflictBanner = <MergeConflictBanner ticket={ticket} />
 
-  // Commit to dual-pane layout as soon as we know the ticket has a session,
-  // even before the async DB lookups resolve.  This prevents the user from
-  // seeing a narrow "empty" modal while session data loads.
-  // Falls back to standard layout only when the DB lookup definitively fails.
-  const wantsDualPane = !!ticket.current_session_id && !sessionLoadFailed
+  // Show the wide session layout (tab strip + session pane) whenever the ticket
+  // has a workspace — even a session-less TODO with a worktree gets the strip so
+  // the first terminal/agent can be spawned. Commits as soon as a session is
+  // known (before async DB lookups resolve) to avoid a flash of the narrow modal;
+  // falls back to the standard layout only when there's neither a worktree nor a
+  // (still-loading) linked session.
+  const wantsDualPane =
+    !!ticket.worktree_id || (!!ticket.current_session_id && !sessionLoadFailed)
 
   const [sessionReady, setSessionReady] = useState(false)
 
@@ -1121,6 +1127,62 @@ function KanbanTicketModalContent({
       cancelled = true
     }
   }, [isClaudeCli, worktreePath, opcSessionId, ticket.current_session_id])
+
+  // ── Active-viewed session (ticket detail tab strip) ─────────────────
+  // The strip lets the user view any session in the ticket's worktree. This is
+  // VIEW-ONLY: switching tabs never changes the ticket's primary
+  // current_session_id (which drives status) nor the board's global
+  // activeSessionId. The last-viewed tab is persisted per ticket.
+  const persistedTicketView = useSessionStore(
+    useCallback((s) => s.activeViewByTicket[ticket.id] ?? null, [ticket.id])
+  )
+  const setTicketActiveView = useSessionStore((s) => s.setTicketActiveView)
+  const [activeViewSessionId, setActiveViewSessionId] = useState<string | null>(
+    () => persistedTicketView ?? ticket.current_session_id ?? null
+  )
+  // Re-seed once when the modal is reused for a different ticket. Guarded by a
+  // ref so the persisted/primary deps can't clobber a tab the user just picked.
+  const seededTicketRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (seededTicketRef.current === ticket.id) return
+    seededTicketRef.current = ticket.id
+    setActiveViewSessionId(persistedTicketView ?? ticket.current_session_id ?? null)
+  }, [ticket.id, persistedTicketView, ticket.current_session_id])
+
+  const selectTicketView = useCallback(
+    (sessionId: string | null) => {
+      setActiveViewSessionId(sessionId)
+      setTicketActiveView(ticket.id, sessionId)
+    },
+    [setTicketActiveView, ticket.id]
+  )
+
+  // Clamp the viewed tab back to the primary if the session it points at has
+  // disappeared (e.g. closed from the board while this modal is open). Gated on
+  // the worktree's session list actually being loaded so we never reset a valid
+  // view during the brief window before sessions hydrate.
+  const activeViewMissing = useSessionStore(
+    useCallback(
+      (s) => {
+        const id = activeViewSessionId
+        if (!id || id === ticket.current_session_id) return false
+        const wtId = ticket.worktree_id
+        if (!wtId || !s.sessionsByWorktree.has(wtId)) return false // not loaded yet
+        return !(s.sessionsByWorktree.get(wtId) ?? []).some((x) => x.id === id)
+      },
+      [activeViewSessionId, ticket.current_session_id, ticket.worktree_id]
+    )
+  )
+  useEffect(() => {
+    if (activeViewMissing) selectTicketView(ticket.current_session_id ?? null)
+  }, [activeViewMissing, selectTicketView, ticket.current_session_id])
+
+  const isPrimaryTerminalBacked = isTerminalBacked(effectiveSession?.agent_sdk)
+  const viewingPrimary = !activeViewSessionId || activeViewSessionId === ticket.current_session_id
+  // Render the primary session's battle-tested native path only when the user is
+  // actually viewing the primary; other tabs (and the session-less empty state)
+  // go through TicketSessionPane.
+  const showPrimaryNative = viewingPrimary && !!ticket.current_session_id
 
   // Render the mode-specific inner content (without DialogContent wrapper)
   let modeContent: React.ReactNode
@@ -1201,56 +1263,76 @@ function KanbanTicketModalContent({
           <DialogTitle>{ticket.title}</DialogTitle>
         </DialogHeader>
         {conflictBanner}
+        <TicketSessionTabs
+          ticket={ticket}
+          activeViewSessionId={activeViewSessionId}
+          onSelectView={selectTicketView}
+          onSpawned={selectTicketView}
+        />
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          {isClaudeCli && ticket.current_session_id ? (
-            <div className="flex flex-col h-full bg-background flex-1 min-w-0">
-              <div className="shrink-0 px-4 py-3 border-b border-border/60 flex items-center gap-2">
-                <span className="text-sm font-medium text-foreground truncate min-w-0">
-                  {ticket.title}
-                </span>
-                <div className="ml-auto shrink-0 flex items-center gap-2">
-                  <TicketRunButton
-                    state={runScriptState}
-                    testId="full-width-run-btn"
-                    className="h-7 px-2 text-xs"
-                  />
-                  <JumpToSessionButton
-                    ticket={ticket}
-                    onClose={forceClose}
-                    label="Go to session"
-                    testId="go-to-session-btn"
-                  />
+          {showPrimaryNative ? (
+            isPrimaryTerminalBacked && ticket.current_session_id ? (
+              <div className="flex flex-col h-full bg-background flex-1 min-w-0">
+                <div className="shrink-0 px-4 py-3 border-b border-border/60 flex items-center gap-2">
+                  <span className="text-sm font-medium text-foreground truncate min-w-0">
+                    {ticket.title}
+                  </span>
+                  <div className="ml-auto shrink-0 flex items-center gap-2">
+                    <TicketRunButton
+                      state={runScriptState}
+                      testId="full-width-run-btn"
+                      className="h-7 px-2 text-xs"
+                    />
+                    <JumpToSessionButton
+                      ticket={ticket}
+                      onClose={forceClose}
+                      label="Go to session"
+                      testId="go-to-session-btn"
+                    />
+                  </div>
                 </div>
+                <ClaudeCliPortalSlot sessionId={ticket.current_session_id} />
               </div>
-              <ClaudeCliPortalSlot sessionId={ticket.current_session_id} />
-            </div>
-          ) : hasSession && sessionReady ? (
-            <SessionStreamPanel
-              sessionId={ticket.current_session_id!}
-              worktreePath={worktreePath!}
-              opencodeSessionId={opcSessionId!}
-              title={ticket.title}
-              headerAction={
-                <div className="flex items-center gap-2">
-                  <TicketRunButton
-                    state={runScriptState}
-                    testId="full-width-run-btn"
-                    className="h-7 px-2 text-xs"
-                  />
-                  <JumpToSessionButton
-                    ticket={ticket}
-                    onClose={forceClose}
-                    label="Go to session"
-                    testId="go-to-session-btn"
-                  />
-                </div>
-              }
-              fullWidth
-            />
+            ) : hasSession && sessionReady ? (
+              <SessionStreamPanel
+                sessionId={ticket.current_session_id!}
+                worktreePath={worktreePath!}
+                opencodeSessionId={opcSessionId!}
+                title={ticket.title}
+                headerAction={
+                  <div className="flex items-center gap-2">
+                    <TicketRunButton
+                      state={runScriptState}
+                      testId="full-width-run-btn"
+                      className="h-7 px-2 text-xs"
+                    />
+                    <JumpToSessionButton
+                      ticket={ticket}
+                      onClose={forceClose}
+                      label="Go to session"
+                      testId="go-to-session-btn"
+                    />
+                  </div>
+                }
+                fullWidth
+              />
+            ) : (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                <div className="animate-spin rounded-full h-6 w-6 border-2 border-current border-t-transparent" />
+              </div>
+            )
           ) : (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="animate-spin rounded-full h-6 w-6 border-2 border-current border-t-transparent" />
-            </div>
+            <TicketSessionPane
+              sessionId={activeViewSessionId}
+              fullWidth
+              headerAction={
+                <TicketRunButton
+                  state={runScriptState}
+                  testId="full-width-run-btn"
+                  className="h-7 px-2 text-xs"
+                />
+              }
+            />
           )}
         </div>
       </DialogContent>
@@ -1282,22 +1364,47 @@ function KanbanTicketModalContent({
             )}
             {modeContent}
           </div>
-          {/* Right: session stream (or loading spinner while DB lookup resolves) */}
-          {isClaudeCli && ticket.current_session_id ? (
-            <div className="flex flex-col h-full bg-background flex-1 min-w-0 border-l border-border/60">
-              <ClaudeCliPortalSlot sessionId={ticket.current_session_id} />
-            </div>
-          ) : hasSession && sessionReady ? (
-            <SessionStreamPanel
-              sessionId={ticket.current_session_id!}
-              worktreePath={worktreePath!}
-              opencodeSessionId={opcSessionId!}
+          {/* Right: tab strip + session pane (or loading spinner while DB lookup resolves) */}
+          <div className="flex-1 min-w-0 h-full flex flex-col border-l border-border/60">
+            <TicketSessionTabs
+              ticket={ticket}
+              activeViewSessionId={activeViewSessionId}
+              onSelectView={selectTicketView}
+              onSpawned={selectTicketView}
             />
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="animate-spin rounded-full h-6 w-6 border-2 border-current border-t-transparent" />
+            <div className="flex-1 min-h-0 flex flex-col">
+              {showPrimaryNative ? (
+                isPrimaryTerminalBacked && ticket.current_session_id ? (
+                  <div className="flex flex-col h-full bg-background flex-1 min-w-0">
+                    <ClaudeCliPortalSlot sessionId={ticket.current_session_id} />
+                  </div>
+                ) : hasSession && sessionReady ? (
+                  <SessionStreamPanel
+                    sessionId={ticket.current_session_id!}
+                    worktreePath={worktreePath!}
+                    opencodeSessionId={opcSessionId!}
+                    fullWidth
+                  />
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                    <div className="animate-spin rounded-full h-6 w-6 border-2 border-current border-t-transparent" />
+                  </div>
+                )
+              ) : (
+                <TicketSessionPane
+                  sessionId={activeViewSessionId}
+                  fullWidth
+                  headerAction={
+                    <TicketRunButton
+                      state={runScriptState}
+                      testId="dual-pane-run-btn"
+                      className="h-7 px-2 text-xs"
+                    />
+                  }
+                />
+              )}
             </div>
-          )}
+          </div>
         </div>
       </DialogContent>
     )
