@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 36
+export const CURRENT_SCHEMA_VERSION = 37
 
 export const SCHEMA_SQL = `
 -- Projects table
@@ -634,6 +634,12 @@ DROP TABLE IF EXISTS diff_comments;`
     version: 36,
     name: 'add_ticket_auto_approve_review',
     up: `ALTER TABLE kanban_tickets ADD COLUMN auto_approve_review INTEGER NOT NULL DEFAULT 0`,
+    down: `-- SQLite cannot drop columns; this is a no-op for safety`
+  },
+  {
+    version: 37,
+    name: 'add_ticket_review_seen_at',
+    up: `ALTER TABLE kanban_tickets ADD COLUMN review_seen_at TEXT DEFAULT NULL`,
     down: `-- SQLite cannot drop columns; this is a no-op for safety`
   }
 ]

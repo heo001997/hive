@@ -1514,7 +1514,10 @@ class MarkdownKanbanBackend implements KanbanBackend {
       goal_success_criteria: nullableString(frontmatter.goal_success_criteria),
       note: runtime.note,
       created_from_session: false,
-      auto_approve_review: asBoolean(frontmatter.auto_approve_review) ?? false
+      auto_approve_review: asBoolean(frontmatter.auto_approve_review) ?? false,
+      // Markdown-backed boards don't track an unviewed-Review state, so mark
+      // cards as always "seen" (non-null) to keep the glow off for them.
+      review_seen_at: updatedAt
     }
 
     return { ticket, filePath, frontmatter }
