@@ -848,6 +848,12 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
 
   const isDone = ticket.column === 'done'
 
+  // Ticket reached Review but hasn't been opened since — glow to flag it.
+  // review_seen_at is reset on every transition into Review and set when the
+  // ticket detail opens.
+  const isReviewUnviewed =
+    ticket.column === 'review' && !ticket.review_seen_at && !isArchived
+
   // ── Context menu handlers ─────────────────────────────────────
   const handleDelete = useCallback(async () => {
     try {
@@ -1076,6 +1082,9 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                   isSelected && 'ring-2 ring-inset ring-primary',
                   // Glow when this card's worktree is selected in the left sidebar
                   isSelectedWorktree && !isArchived && 'worktree-selected-glow',
+                  // Amber glow for a Review ticket that hasn't been opened yet.
+                  // Yields to the worktree-selected glow (both drive box-shadow).
+                  !isSelectedWorktree && isReviewUnviewed && 'review-unviewed-glow',
                   // Highlighted as a blocker of the currently hovered ticket
                   isHighlightedAsBlocker && 'border-dashed !border-amber-500/70 ring-1 ring-amber-500/30',
                   !isHighlightedAsBlocker && borderState === 'default' && 'border-border/60',

@@ -367,7 +367,8 @@ export class DatabaseService {
       goal_success_criteria: (row.goal_success_criteria as string) ?? null,
       note: (row.note as string) ?? null,
       created_from_session: row.created_from_session === 1,
-      auto_approve_review: row.auto_approve_review === 1
+      auto_approve_review: row.auto_approve_review === 1,
+      review_seen_at: (row.review_seen_at as string) ?? null
     }
   }
 
@@ -668,6 +669,7 @@ export class DatabaseService {
     this.safeAddColumn('kanban_tickets', 'goal_mode', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('kanban_tickets', 'goal_success_criteria', 'TEXT DEFAULT NULL')
     this.safeAddColumn('kanban_tickets', 'created_from_session', 'INTEGER NOT NULL DEFAULT 0')
+    this.safeAddColumn('kanban_tickets', 'review_seen_at', 'TEXT DEFAULT NULL')
     this.safeAddColumn('sessions', 'session_type', "TEXT NOT NULL DEFAULT 'default'")
     this.safeAddColumn(
       'discord_resources',
@@ -2742,6 +2744,22 @@ export class DatabaseService {
       updates.push('auto_approve_review = ?')
       values.push(data.auto_approve_review ? 1 : 0)
     }
+    if (data.review_seen_at !== undefined) {
+      updates.push('review_seen_at = ?')
+      values.push(data.review_seen_at)
+    }
+    // Moving INTO Review resets the "seen" flag so the board card glows until
+    // the ticket is opened again. Skip when the caller set review_seen_at
+    // explicitly (avoids a duplicate SET assignment) or when it's an in-place
+    // reorder within Review (existing column already 'review').
+    if (
+      data.column === 'review' &&
+      existing.column !== 'review' &&
+      data.review_seen_at === undefined
+    ) {
+      updates.push('review_seen_at = ?')
+      values.push(null)
+    }
 
     if (updates.length === 1) return existing // Only updated_at, nothing meaningful changed
 
@@ -2811,9 +2829,17 @@ export class DatabaseService {
     if (!existing) return null
 
     const now = new Date().toISOString()
-    db.prepare(
-      'UPDATE kanban_tickets SET "column" = ?, sort_order = ?, updated_at = ? WHERE id = ?'
-    ).run(column, sortOrder, now, id)
+    // A transition INTO Review clears review_seen_at so the board card glows
+    // until the ticket is opened. Intra-Review reorders keep the seen state.
+    if (column === 'review' && existing.column !== 'review') {
+      db.prepare(
+        'UPDATE kanban_tickets SET "column" = ?, sort_order = ?, review_seen_at = NULL, updated_at = ? WHERE id = ?'
+      ).run(column, sortOrder, now, id)
+    } else {
+      db.prepare(
+        'UPDATE kanban_tickets SET "column" = ?, sort_order = ?, updated_at = ? WHERE id = ?'
+      ).run(column, sortOrder, now, id)
+    }
 
     return this.getKanbanTicket(id)
   }

@@ -264,7 +264,8 @@ const kanbanTicketUpdateSchema = z
     goal_success_criteria: z.string().nullable().optional(),
     note: z.string().nullable().optional(),
     archived_at: z.string().nullable().optional(),
-    auto_approve_review: z.boolean().optional()
+    auto_approve_review: z.boolean().optional(),
+    review_seen_at: z.string().nullable().optional()
   })
   .strict() satisfies z.ZodType<KanbanTicketUpdate>
 const ticketIdProjectParamsSchema = z

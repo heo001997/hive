@@ -696,6 +696,20 @@ function KanbanTicketModalContent({
   const [editDraftDirty, setEditDraftDirty] = useState(false)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
+  // ── Mark a Review ticket "seen" the moment its detail opens ─────────
+  // Opening the modal IS the "click in" the board glow flags. Covers every
+  // open path (card click, navigate-to-ticket, notifications). Fire-and-forget:
+  // updateTicket's optimistic write clears the card glow immediately.
+  const reviewSeenMarkedRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (ticket.column !== 'review' || ticket.review_seen_at) return
+    if (reviewSeenMarkedRef.current === ticket.id) return
+    reviewSeenMarkedRef.current = ticket.id
+    void updateTicket(ticket.id, ticket.project_id, {
+      review_seen_at: new Date().toISOString()
+    }).catch(() => {})
+  }, [ticket.id, ticket.column, ticket.review_seen_at, ticket.project_id, updateTicket])
+
   // ── Run script state (shared across all modal modes) ─────────────
   // Hoisted here so the Cmd+R hotkey registers exactly once, and so each
   // mode receives the same state object via props.
