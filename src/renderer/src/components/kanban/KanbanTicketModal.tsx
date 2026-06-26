@@ -3567,7 +3567,8 @@ function ReviewModeContent({
                 if (worktreePath) {
                   useGitStore.getState().setCreatePRModalOpen(true, {
                     worktreeId: ticket.worktree_id!,
-                    worktreePath
+                    worktreePath,
+                    ticketId: ticket.id
                   })
                 } else {
                   toast.error('Could not find worktree path')

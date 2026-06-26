@@ -55,7 +55,8 @@ function PRNotificationCard({
   prTitle,
   prUrl,
   prNumber,
-  worktreeId
+  worktreeId,
+  ticketId
 }: {
   id: string
   status: string
@@ -65,6 +66,7 @@ function PRNotificationCard({
   prUrl?: string
   prNumber?: number
   worktreeId?: string
+  ticketId?: string
 }): React.JSX.Element {
   const dismiss = usePRNotificationStore((s) => s.dismiss)
   const isDone =
@@ -80,8 +82,10 @@ function PRNotificationCard({
     dismiss(id)
   }, [id, dismiss])
 
-  // Resolve the worktree's owning project + linked ticket, then navigate to the
-  // board and open its detail modal (mirrors the move-to-Done resolution).
+  // Resolve the worktree's owning project, then navigate to the board and open the
+  // originating ticket's detail modal. Prefer the explicit ticketId carried by the
+  // notification — chained tickets share one worktree, so resolving by worktree_id
+  // alone is ambiguous and would open the wrong ticket.
   const handleOpenTicket = useCallback(async () => {
     if (!worktreeId) return
 
@@ -98,17 +102,21 @@ function PRNotificationCard({
       return
     }
 
-    const ticket = useKanbanStore
-      .getState()
-      .getTicketsForProject(projectId)
-      .find((t) => t.worktree_id === worktreeId)
-    if (!ticket) {
+    // Fall back to the first ticket on the worktree only when no explicit ticket was
+    // captured (e.g. PR created from the worktree header rather than a ticket).
+    const targetTicketId =
+      ticketId ??
+      useKanbanStore
+        .getState()
+        .getTicketsForProject(projectId)
+        .find((t) => t.worktree_id === worktreeId)?.id
+    if (!targetTicketId) {
       toast.error('Linked ticket not found')
       return
     }
 
-    await openTicketDetail(projectId, ticket.id)
-  }, [worktreeId])
+    await openTicketDetail(projectId, targetTicketId)
+  }, [worktreeId, ticketId])
 
   const handleMerge = useCallback(async () => {
     if (!prNumber || !worktreeId) return
@@ -438,6 +446,7 @@ export function PRNotificationStack(): React.JSX.Element | null {
           prUrl={n.prUrl}
           prNumber={n.prNumber}
           worktreeId={n.worktreeId}
+          ticketId={n.ticketId}
         />
       ))}
     </div>

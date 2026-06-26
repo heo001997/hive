@@ -83,6 +83,9 @@ interface GitStoreState {
   createPRModalOpen: boolean
   createPRWorktreeId: string | null
   createPRWorktreePath: string | null
+  // Ticket that initiated PR creation. Disambiguates chained tickets (which share
+  // one worktree) so the PR notification can reopen the exact originating ticket.
+  createPRTicketId: string | null
 
   // Actions
   loadFileStatuses: (worktreePath: string, opts?: { force?: boolean }) => Promise<void>
@@ -124,7 +127,7 @@ interface GitStoreState {
   // Create PR modal actions
   setCreatePRModalOpen: (
     open: boolean,
-    context?: { worktreeId: string; worktreePath: string }
+    context?: { worktreeId: string; worktreePath: string; ticketId?: string }
   ) => void
 
   // Commit, Push, Pull actions
@@ -182,6 +185,7 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
   createPRModalOpen: false,
   createPRWorktreeId: null,
   createPRWorktreePath: null,
+  createPRTicketId: null,
 
   // Load file statuses for a worktree
   loadFileStatuses: async (worktreePath: string, opts?: { force?: boolean }) => {
@@ -618,18 +622,23 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
   },
 
   // Open/close create PR modal
-  setCreatePRModalOpen: (open: boolean, context?: { worktreeId: string; worktreePath: string }) => {
+  setCreatePRModalOpen: (
+    open: boolean,
+    context?: { worktreeId: string; worktreePath: string; ticketId?: string }
+  ) => {
     if (open && context) {
       set({
         createPRModalOpen: true,
         createPRWorktreeId: context.worktreeId,
-        createPRWorktreePath: context.worktreePath
+        createPRWorktreePath: context.worktreePath,
+        createPRTicketId: context.ticketId ?? null
       })
     } else if (!open) {
       set({
         createPRModalOpen: false,
         createPRWorktreeId: null,
-        createPRWorktreePath: null
+        createPRWorktreePath: null,
+        createPRTicketId: null
       })
     }
     // Opening without context is a no-op (all callers must provide context)
