@@ -55,6 +55,9 @@ export function PetSprite({
   state,
   settings,
   workingSessionCount,
+  hitPadding = 36,
+  title,
+  countBadge,
   onPointerDown,
   onMouseEnter,
   onMouseLeave,
@@ -65,6 +68,12 @@ export function PetSprite({
   state: PetState
   settings: PetSettings
   workingSessionCount: number
+  /** Extra px around the sprite that count as the draggable/clickable target. */
+  hitPadding?: number
+  /** Ticket title for the accessible label / native tooltip when ticket-bound. */
+  title?: string
+  /** When set, render a `×N` overflow badge — this pet stands for N tickets. */
+  countBadge?: number
   onPointerDown: (event: React.PointerEvent<HTMLElement>) => void
   onMouseEnter: () => void
   onMouseLeave: () => void
@@ -82,13 +91,14 @@ export function PetSprite({
     <button
       type="button"
       className="pet-hit-target"
-      style={{ width: size + 36, height: size + 36, opacity: settings.opacity }}
+      style={{ width: size + hitPadding, height: size + hitPadding, opacity: settings.opacity }}
       onPointerDown={onPointerDown}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onClick={onClick}
       onContextMenu={onContextMenu}
-      aria-label="Hive pet"
+      aria-label={title ? `Hive pet — ${title}` : 'Hive pet'}
+      title={title}
     >
       <motion.span
         className={`pet-sprite pet-sprite-${state}`}
@@ -109,6 +119,9 @@ export function PetSprite({
           <img src={pet.resolvedAssets[state]} alt="" draggable={false} />
         )}
         {overlay && <span className={overlay.className}>{overlay.symbol}</span>}
+        {typeof countBadge === 'number' && countBadge > 1 && (
+          <span className="pet-count">{`×${countBadge}`}</span>
+        )}
       </motion.span>
     </button>
   )

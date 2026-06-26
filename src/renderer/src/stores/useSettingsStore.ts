@@ -4,6 +4,7 @@ import { APP_SETTINGS_DB_KEY, DEFAULT_HIVE_ENTERPRISE_SERVER_URL } from '@shared
 import type { TeleportSettings } from '@shared/types/settings'
 import type { TelegramConfig } from '@shared/types/telegram'
 import type { UsageProvider } from '@shared/types/usage'
+import { DEFAULT_MAX_VISIBLE_PETS } from '@shared/types/pet'
 import type { PetSettings } from '@shared/types/pet'
 import type { AgentSdk, HandoffAgentSdk } from '@shared/types/agent-sdk'
 import {
@@ -321,7 +322,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     opacity: 1,
     animationSpeedEnabled: false,
     animationSpeed: 5,
-    hasHatched: false
+    hasHatched: false,
+    maxVisiblePets: DEFAULT_MAX_VISIBLE_PETS
   },
   environmentVariables: [],
   customProjectCommands: [],

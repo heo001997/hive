@@ -8,12 +8,16 @@ import {
   encodeLocalEnvironmentBootstrapArg,
   type LocalEnvironmentBootstrap
 } from '../../shared/desktop-bridge'
-import type {
-  PetManifest,
-  PetPosition,
-  PetSettings,
-  PetSize,
-  PetStatusPayload
+import {
+  clampMaxVisiblePets,
+  DEFAULT_MAX_VISIBLE_PETS,
+  MAX_PET_TICKETS,
+  PET_COLUMN_GAP,
+  type PetManifest,
+  type PetPosition,
+  type PetSettings,
+  type PetSize,
+  type PetStatusPayload
 } from '../../shared/types/pet'
 import { emitPetJumpToWorktree, emitPetSettingsUpdated, emitPetStatus } from './pet-events'
 
@@ -32,7 +36,8 @@ export const DEFAULT_PET_SETTINGS: PetSettings = {
   opacity: 1,
   animationSpeedEnabled: false,
   animationSpeed: 5,
-  hasHatched: false
+  hasHatched: false,
+  maxVisiblePets: DEFAULT_MAX_VISIBLE_PETS
 }
 
 const BEE_MANIFEST: PetManifest = {
@@ -93,7 +98,8 @@ let getMainWindow: (() => BrowserWindow | null) | null = null
 let latestStatus: PetStatusPayload = {
   state: 'idle',
   sourceWorktreeId: null,
-  workingSessionCount: 0
+  workingSessionCount: 0,
+  pets: []
 }
 let latestSettings: PetSettings = DEFAULT_PET_SETTINGS
 let petPointerInteractionActive = false
@@ -109,6 +115,55 @@ function ensureRegularMacAppActivation(): void {
 
 function petWindowSize(settings = latestSettings): number {
   return PET_SIZE_PX[settings.size] + PET_PADDING
+}
+
+/**
+ * Number of pets actually rendered (drives window height). The idle fallback
+ * counts as one; active pets beyond `maxVisiblePets` collapse into a single
+ * overflow pet, so the rendered count is capped at the user's visible limit —
+ * mirrors PetApp's display math so the window fits the column exactly.
+ */
+function currentPetCount(status = latestStatus, settings = latestSettings): number {
+  const active = status.pets?.length ?? 0
+  if (active === 0) return 1
+  return Math.min(active, clampMaxVisiblePets(settings.maxVisiblePets))
+}
+
+function petWindowWidth(settings = latestSettings): number {
+  return PET_SIZE_PX[settings.size] + PET_PADDING
+}
+
+/**
+ * Window height for a vertical column of `count` pets. count === 1 yields the
+ * original square size so the idle/single-pet case is unchanged. Mirrors the
+ * `.pet-column` layout (per-pet height + `PET_COLUMN_GAP` between pets +
+ * `PET_PADDING` breathing room split top/bottom).
+ */
+function petColumnHeight(count: number, settings = latestSettings): number {
+  const clamped = Math.min(Math.max(count, 1), MAX_PET_TICKETS)
+  const petSize = PET_SIZE_PX[settings.size]
+  return clamped * petSize + (clamped - 1) * PET_COLUMN_GAP + PET_PADDING
+}
+
+/**
+ * Resize the pet window to fit the current pet column, keeping its bottom edge
+ * anchored so the stack grows upward. Position is not persisted here — only
+ * explicit user drags (movePetWindow) and shutdown persist the position.
+ */
+function applyPetWindowBounds(): void {
+  if (!petWindow || petWindow.isDestroyed()) return
+  const width = petWindowWidth()
+  const height = petColumnHeight(currentPetCount())
+  const bounds = petWindow.getBounds()
+  if (bounds.width === width && bounds.height === height) return
+
+  // Anchor the bottom edge: keep where the stack rests, extend upward.
+  const targetY = bounds.y + bounds.height - height
+  const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y })
+  const { x: ax, y: ay, width: aw, height: ah } = display.workArea
+  const x = Math.min(Math.max(bounds.x, ax), ax + aw - width)
+  const y = Math.min(Math.max(targetY, ay), ay + ah - height)
+  petWindow.setBounds({ x, y, width, height })
 }
 
 function constrainPosition(position: PetPosition, size = petWindowSize()): PetPosition {
@@ -311,6 +366,7 @@ export function setPetIgnoreMouseEvents(ignore: boolean): void {
 
 export function forwardStatusToPet(payload: PetStatusPayload): void {
   latestStatus = payload
+  applyPetWindowBounds()
   emitPetStatus(payload)
 }
 
@@ -318,10 +374,7 @@ export function updatePetSettings(partial: Partial<PetSettings>): void {
   latestSettings = { ...latestSettings, ...partial }
 
   if (petWindow && !petWindow.isDestroyed()) {
-    const size = petWindowSize()
-    const [x, y] = petWindow.getPosition()
-    const constrained = constrainPosition({ x, y }, size)
-    petWindow.setBounds({ ...constrained, width: size, height: size })
+    applyPetWindowBounds()
     petWindow.setIgnoreMouseEvents(true, { forward: true })
   }
 

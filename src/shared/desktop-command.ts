@@ -223,6 +223,9 @@ export type MovePetPayload = PetPosition
 
 export interface FocusMainFromPetPayload {
   readonly worktreeId: string | null
+  /** When set with `ticketId`, the click opens this ticket's detail instead of jumping to a worktree. */
+  readonly projectId?: string | null
+  readonly ticketId?: string | null
 }
 
 export interface GetPetConfigResult {
@@ -3537,7 +3540,9 @@ const isUpdatePetSettingsPayload = (value: unknown): value is UpdatePetSettingsP
   (value.size === undefined || value.size === 'S' || value.size === 'M' || value.size === 'L') &&
   (value.opacity === undefined ||
     (typeof value.opacity === 'number' && Number.isFinite(value.opacity))) &&
-  (value.hasHatched === undefined || typeof value.hasHatched === 'boolean')
+  (value.hasHatched === undefined || typeof value.hasHatched === 'boolean') &&
+  (value.maxVisiblePets === undefined ||
+    (typeof value.maxVisiblePets === 'number' && Number.isFinite(value.maxVisiblePets)))
 
 const isUpdateMenuStatePayload = (value: unknown): value is UpdateMenuStatePayload =>
   isRecord(value) &&
