@@ -73,6 +73,8 @@ import {
   type TicketRunScriptState
 } from '@/hooks/useTicketRunScript'
 import { TicketRunButton } from './TicketRunButton'
+import { ClaudeCliQueueSection } from './ClaudeCliQueueSection'
+import { useClaudeCliQueueFeatureActive } from './use-claude-cli-queue-feature'
 import { useQuestionStore, type QuestionRequest } from '@/stores/useQuestionStore'
 import { QuestionPrompt } from '@/components/sessions/QuestionPrompt'
 import { FollowupInput } from './FollowupInput'
@@ -1278,6 +1280,7 @@ function KanbanTicketModalContent({
                     {ticket.title}
                   </span>
                   <div className="ml-auto shrink-0 flex items-center gap-2">
+                    <ClaudeCliQueueSection ticket={ticket} />
                     <TicketRunButton
                       state={runScriptState}
                       testId="full-width-run-btn"
@@ -1687,6 +1690,10 @@ function EditModeContent({
           onChange={setAutoApproveReview}
           testId="ticket-edit-auto-approve-review-toggle"
         />
+
+        {/* Prompt queue (Claude CLI) — author a batch of follow-ups up front.
+            Hidden on Done; renders nothing unless the feature is active. */}
+        {ticket.column !== 'done' && <ClaudeCliQueueSection ticket={ticket} />}
 
         {/* Dependencies section */}
         <div className="space-y-1.5">
@@ -2988,6 +2995,10 @@ function ReviewModeContent({
     [ticket.id, ticket.project_id, updateTicket]
   )
 
+  // Queue prompts (claude-code-cli): when active, a followup sent while work is
+  // still in flight (or with prompts already queued) is queued instead of sent.
+  const queueFeatureActive = useClaudeCliQueueFeatureActive(ticket)
+
   // ── Manual "Verify completion" ────────────────────────────────────
   const recheckTicketCompletion = useKanbanStore((s) => s.recheckTicketCompletion)
   const completionVerdict = useKanbanStore(
@@ -3230,6 +3241,32 @@ function ReviewModeContent({
       isSending
     )
       return
+
+    // Queue prompts (claude-code-cli): if the session is still busy, or prompts
+    // are already lined up, enqueue this one instead of racing — it runs after
+    // the ticket reaches Review and verifies complete. An idle session with an
+    // empty queue falls through to the normal immediate send below (first prompt).
+    if (queueFeatureActive) {
+      const sessionId = ticket.current_session_id
+      const status = useWorktreeStatusStore.getState().sessionStatuses[sessionId]?.status ?? null
+      const queued =
+        useKanbanStore.getState().promptQueues[ticketKey(ticket.project_id, ticket.id)] ?? []
+      const busy = status === 'working' || status === 'planning'
+      if (busy || queued.length > 0) {
+        const value = followUpText.trim()
+        if (!value) return
+        if (attachments.length > 0) {
+          toast.warning('Attachments are not supported for queued prompts — queuing text only')
+        }
+        useKanbanStore.getState().addQueuedPrompt(ticket.project_id, ticket.id, value)
+        setFollowUpText('')
+        setAttachments([])
+        toast.success('Prompt queued — runs after this step verifies complete')
+        void useKanbanStore.getState().dispatchClaudeCliQueueIfReady(ticket.project_id, ticket.id)
+        return
+      }
+    }
+
     setIsSending(true)
 
     try {
@@ -3293,7 +3330,8 @@ function ReviewModeContent({
     moveTicket,
     updateTicket,
     onClose,
-    attachments
+    attachments,
+    queueFeatureActive
   ])
 
   // ── Move to Done ──────────────────────────────────────────────────
@@ -3460,6 +3498,9 @@ function ReviewModeContent({
         </div>
       )}
 
+      {/* Prompt queue (Claude CLI) — pending follow-ups waiting on verification */}
+      <ClaudeCliQueueSection ticket={ticket} />
+
       {/* Followup input area */}
       <FollowupInput
         text={followUpText}
@@ -3471,7 +3512,11 @@ function ReviewModeContent({
         onToggleMode={toggleMode}
         onSend={handleSendFollowup}
         isSending={isSending}
-        placeholder="Provide followup instructions... (Enter to send)"
+        placeholder={
+          queueFeatureActive
+            ? 'Provide followup instructions... (queues while busy; Enter to send)'
+            : 'Provide followup instructions... (Enter to send)'
+        }
         testIdPrefix="review"
         textareaRef={textareaRef}
       />

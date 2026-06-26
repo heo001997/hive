@@ -144,6 +144,7 @@ export function SettingsGeneral(): React.JSX.Element {
     kanbanStrictVerifyChars,
     kanbanStrictVerifyConfidenceThreshold,
     kanbanInProgressRescueEnabled,
+    kanbanQueuePromptsEnabled,
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
@@ -773,6 +774,43 @@ export function SettingsGeneral(): React.JSX.Element {
                           className={cn(
                             'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
                             kanbanInProgressRescueEnabled ? 'translate-x-4' : 'translate-x-0'
+                          )}
+                        />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* ── Queue prompts (claude-code-cli) ────────────────────────────── */}
+                  <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <label className="text-sm font-medium">Queue prompts (Claude CLI)</label>
+                        <p className="text-xs text-muted-foreground">
+                          <strong>Claude Code CLI tickets only.</strong> Follow-ups you send while a
+                          ticket is still working are <em>queued</em> instead of racing the running
+                          turn. The next queued prompt is entered automatically only once the ticket
+                          reaches <strong>Review</strong> and is <strong>verified complete</strong> by
+                          the gates above — so each prompt runs in order, one finished-and-verified
+                          step at a time. Manage the queue (count + remove) from the ticket&apos;s
+                          detail view. Auto-disabled while Strict Verify is off.
+                        </p>
+                      </div>
+                      <button
+                        role="switch"
+                        aria-checked={kanbanQueuePromptsEnabled}
+                        onClick={() =>
+                          updateSetting('kanbanQueuePromptsEnabled', !kanbanQueuePromptsEnabled)
+                        }
+                        className={cn(
+                          'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+                          kanbanQueuePromptsEnabled ? 'bg-primary' : 'bg-muted'
+                        )}
+                        data-testid="kanban-queue-prompts-toggle"
+                      >
+                        <span
+                          className={cn(
+                            'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                            kanbanQueuePromptsEnabled ? 'translate-x-4' : 'translate-x-0'
                           )}
                         />
                       </button>

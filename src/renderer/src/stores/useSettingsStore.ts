@@ -120,6 +120,8 @@ export interface AppSettings {
   kanbanStrictVerifyConfidenceThreshold: number
   /** Kanban: In Progress rescue — when on, a build ticket that Strict Verify bounced to In Progress as "Not done" is watched; if its session goes frozen (stopped emitting) it is re-promoted to Review once for a fresh judgment, then left alone (with a "Re-checked" label) if it still isn't done. Only acts while Strict Verify is enabled. */
   kanbanInProgressRescueEnabled: boolean
+  /** Kanban: Queue prompts (claude-code-cli only) — when on, follow-ups typed while a claude-cli ticket is busy are queued; the next queued prompt is entered automatically once the ticket reaches Review AND is verified complete by Strict Verify. Gated by (and auto-disabled without) Strict Verify. */
+  kanbanQueuePromptsEnabled: boolean
 
   // Editor
   defaultEditor: EditorOption
@@ -255,6 +257,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanStrictVerifyChars: 6000,
   kanbanStrictVerifyConfidenceThreshold: 0.6,
   kanbanInProgressRescueEnabled: true,
+  kanbanQueuePromptsEnabled: false,
   defaultEditor: 'vscode',
   customEditorCommand: '',
   defaultTerminal: 'terminal',
@@ -500,6 +503,7 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
     kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
     kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
+    kanbanQueuePromptsEnabled: state.kanbanQueuePromptsEnabled,
     defaultEditor: state.defaultEditor,
     customEditorCommand: state.customEditorCommand,
     defaultTerminal: state.defaultTerminal,
@@ -889,6 +893,7 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
         kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
         kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
+        kanbanQueuePromptsEnabled: state.kanbanQueuePromptsEnabled,
         defaultEditor: state.defaultEditor,
         customEditorCommand: state.customEditorCommand,
         defaultTerminal: state.defaultTerminal,
