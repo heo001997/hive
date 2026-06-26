@@ -2,7 +2,7 @@ import { memo, useState } from 'react'
 import { X, FileText } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ImageLightbox } from '@/components/ui/ImageLightbox'
-import { projectApi } from '@/api/project-api'
+import { FilePreview } from '@/components/ui/FilePreview'
 
 export type Attachment =
   | { kind: 'data'; id: string; name: string; mime: string; dataUrl: string }
@@ -42,6 +42,7 @@ export const AttachmentPreview = memo(function AttachmentPreview(
 ): React.JSX.Element | null {
   const { onRemove } = props
   const [expandedImage, setExpandedImage] = useState<{ dataUrl: string; name: string } | null>(null)
+  const [previewFile, setPreviewFile] = useState<{ path: string; name: string } | null>(null)
   const fileAttachments =
     props.fileAttachments ??
     props.attachments.filter(
@@ -77,7 +78,7 @@ export const AttachmentPreview = memo(function AttachmentPreview(
               }`}
               onClick={
                 attachment.kind === 'path'
-                  ? () => projectApi.openPath(attachment.filePath).catch(() => {})
+                  ? () => setPreviewFile({ path: attachment.filePath, name: attachment.name })
                   : undefined
               }
             >
@@ -107,6 +108,13 @@ export const AttachmentPreview = memo(function AttachmentPreview(
           src={expandedImage.dataUrl}
           name={expandedImage.name}
           onClose={() => setExpandedImage(null)}
+        />
+      )}
+      {previewFile && (
+        <FilePreview
+          source={{ kind: 'path', path: previewFile.path }}
+          name={previewFile.name}
+          onClose={() => setPreviewFile(null)}
         />
       )}
     </div>

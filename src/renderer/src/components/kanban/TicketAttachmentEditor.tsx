@@ -17,11 +17,10 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { ImageLightbox } from '@/components/ui/ImageLightbox'
+import { FilePreview } from '@/components/ui/FilePreview'
 import { parseAttachmentUrl } from '@/lib/attachment-utils'
 import type { AttachmentInfo } from '@/lib/attachment-utils'
 import { fileApi } from '@/api/file-api'
-import { projectApi } from '@/api/project-api'
 import { systemApi } from '@/api/system-api'
 import { attachmentApi } from '@/api/attachment-api'
 
@@ -194,7 +193,7 @@ function AttachmentChip({
   testIdPrefix: string
 }) {
   const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null)
-  const [expanded, setExpanded] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
 
   useEffect(() => {
     if (attachment.type !== 'image') return
@@ -212,15 +211,14 @@ function AttachmentChip({
   }, [attachment.type, attachment.url])
 
   const handleActivate = useCallback(() => {
-    if (attachment.type === 'image') {
-      if (thumbnailSrc) setExpanded(true)
-    } else if (attachment.type === 'file') {
-      projectApi.openPath(attachment.url).catch(() => {})
+    if (attachment.type === 'image' || attachment.type === 'file') {
+      // Preview the file in-app (image / pdf / text / media, with a fallback card).
+      setPreviewing(true)
     } else {
       // jira / figma / generic link
       systemApi.openInChrome(attachment.url).catch(() => {})
     }
-  }, [attachment.type, attachment.url, thumbnailSrc])
+  }, [attachment.type, attachment.url])
 
   return (
     <span
@@ -258,11 +256,11 @@ function AttachmentChip({
       >
         <X className="h-3 w-3 text-muted-foreground hover:text-foreground" />
       </button>
-      {expanded && thumbnailSrc && (
-        <ImageLightbox
-          src={thumbnailSrc}
+      {previewing && (
+        <FilePreview
+          source={{ kind: 'path', path: attachment.url }}
           name={attachment.label}
-          onClose={() => setExpanded(false)}
+          onClose={() => setPreviewing(false)}
         />
       )}
     </span>
