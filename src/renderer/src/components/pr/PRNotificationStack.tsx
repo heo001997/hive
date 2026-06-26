@@ -8,13 +8,15 @@ import {
   X,
   ExternalLink,
   GitMerge,
-  Archive
+  Archive,
+  Ticket
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { usePRNotificationStore } from '@/stores/usePRNotificationStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useProjectStore } from '@/stores/useProjectStore'
-import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useKanbanStore, ticketKey } from '@/stores/useKanbanStore'
+import { openTicketDetail } from '@/lib/navigate-to-ticket'
 import { toast } from '@/lib/toast'
 import { gitApi } from '@/api/git-api'
 
@@ -53,7 +55,8 @@ function PRNotificationCard({
   prTitle,
   prUrl,
   prNumber,
-  worktreeId
+  worktreeId,
+  ticketId
 }: {
   id: string
   status: string
@@ -63,17 +66,104 @@ function PRNotificationCard({
   prUrl?: string
   prNumber?: number
   worktreeId?: string
+  ticketId?: string
 }): React.JSX.Element {
   const dismiss = usePRNotificationStore((s) => s.dismiss)
   const isDone =
     status === 'success' || status === 'error' || status === 'info' || status === 'warning'
 
   const [mergePhase, setMergePhase] = useState<MergePhase>('idle')
-  const showMergeButton = !!(prNumber && worktreeId && (status === 'success' || status === 'info'))
+  // Reveal the "Open Ticket" shortcut whenever the card is settled and linked to
+  // a worktree — the linked ticket is resolved lazily on click.
+  const showOpenTicketButton = !!(worktreeId && isDone)
+
+  // Resolve the owning project reactively so the chain/terminal check can run at
+  // render time (the Merge/Archive button visibility depends on it).
+  const projectId = useWorktreeStore((s) => {
+    if (!worktreeId) return null
+    for (const [pid, worktrees] of s.worktreesByProject) {
+      if (worktrees.some((w) => w.id === worktreeId)) return pid
+    }
+    return null
+  })
+
+  // A ticket is the chain's last step ("terminal") when no other ticket depends on
+  // it. Archiving deletes the shared worktree/branch, so only the terminal ticket
+  // may archive — otherwise the next chain ticket loses its branch out from under
+  // it. Standalone tickets (and the no-ticket fallback) are terminal.
+  const isTerminalTicket = useKanbanStore((s) => {
+    if (!ticketId || !projectId) return true
+    const myKey = ticketKey(projectId, ticketId)
+    for (const blockers of s.dependencyMap.values()) {
+      if (blockers.has(myKey)) return false
+    }
+    return true
+  })
+
+  // Merge merges the whole shared branch/PR, so it's only valid on the chain's
+  // terminal ticket — merging from an earlier step would ship the chain before
+  // the later steps finish their work on the same branch.
+  const showMergeButton = !!(
+    prNumber &&
+    worktreeId &&
+    isTerminalTicket &&
+    (status === 'success' || status === 'info')
+  )
+
+  // True while the originating ticket still needs completing (not yet in Done).
+  const ticketNeedsDone = useKanbanStore((s) => {
+    if (!projectId) return false
+    const list = s.tickets.get(projectId) ?? []
+    const t = ticketId
+      ? list.find((x) => x.id === ticketId)
+      : list.find((x) => x.worktree_id === worktreeId)
+    return !!t && t.column !== 'done'
+  })
+
+  // Completing a ticket is its own state, independent of merging the shared PR —
+  // any not-yet-done ticket (standalone, terminal, or mid-chain) can move to Done.
+  // Only Merge/Archive are terminal-gated (they act on the shared branch).
+  const showMoveToDoneButton = !!(worktreeId && isDone && ticketNeedsDone && mergePhase === 'idle')
 
   const handleClose = useCallback(() => {
     dismiss(id)
   }, [id, dismiss])
+
+  // Resolve the worktree's owning project, then navigate to the board and open the
+  // originating ticket's detail modal. Prefer the explicit ticketId carried by the
+  // notification — chained tickets share one worktree, so resolving by worktree_id
+  // alone is ambiguous and would open the wrong ticket.
+  const handleOpenTicket = useCallback(async () => {
+    if (!worktreeId) return
+
+    const worktreeStore = useWorktreeStore.getState()
+    let projectId: string | null = null
+    for (const [projId, worktrees] of worktreeStore.worktreesByProject) {
+      if (worktrees.some((w) => w.id === worktreeId)) {
+        projectId = projId
+        break
+      }
+    }
+    if (!projectId) {
+      toast.error('Worktree not found')
+      return
+    }
+
+    // Fall back to the first ticket on the worktree only when no explicit ticket was
+    // captured (e.g. PR created from the worktree header rather than a ticket).
+    const targetTicketId =
+      ticketId ??
+      useKanbanStore
+        .getState()
+        .getTicketsForProject(projectId)
+        .find((t) => t.worktree_id === worktreeId)?.id
+    if (!targetTicketId) {
+      toast.error('Linked ticket not found')
+      return
+    }
+
+    await openTicketDetail(projectId, targetTicketId)
+  }, [worktreeId, ticketId])
 
   const handleMerge = useCallback(async () => {
     if (!prNumber || !worktreeId) return
@@ -138,10 +228,15 @@ function PRNotificationCard({
       return
     }
 
+    // Move the ticket that initiated this PR — not just the first ticket on the
+    // worktree. Chained tickets share one worktree, so a worktree_id match would
+    // advance the wrong ticket. Fall back to the worktree match only when no
+    // explicit ticketId was captured.
+    const projectTickets = useKanbanStore.getState().getTicketsForProject(projectId)
+    const ticket = ticketId
+      ? projectTickets.find((t) => t.id === ticketId)
+      : projectTickets.find((t) => t.worktree_id === worktreeId)
     const kanbanStore = useKanbanStore.getState()
-    const ticket = kanbanStore
-      .getTicketsForProject(projectId)
-      .find((t) => t.worktree_id === worktreeId)
 
     setMergePhase('moving')
     try {
@@ -158,11 +253,14 @@ function PRNotificationCard({
       toast.error('Failed to move ticket to Done')
       setMergePhase('merged')
     }
-  }, [worktreeId])
+  }, [worktreeId, ticketId])
 
   // Step 2 (after Move to Done): archive the worktree.
   const handleArchive = useCallback(async () => {
     if (!worktreeId) return
+    // Guard: archiving wipes the shared worktree/branch. Refuse on a non-terminal
+    // chain ticket (the button is hidden in that case, but defend in depth).
+    if (!isTerminalTicket) return
 
     // Resolve worktree and project path from stores
     const worktreeStore = useWorktreeStore.getState()
@@ -206,7 +304,7 @@ function PRNotificationCard({
       toast.error('Failed to archive worktree')
       setMergePhase('moved')
     }
-  }, [worktreeId, id, dismiss])
+  }, [worktreeId, id, dismiss, isTerminalTicket])
 
   return (
     <div
@@ -256,9 +354,39 @@ function PRNotificationCard({
             Open on GitHub
           </a>
         )}
-        {showMergeButton && (
-          <div className="mt-1.5">
-            {mergePhase === 'idle' && (
+        {(showOpenTicketButton || showMergeButton || showMoveToDoneButton) && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {showOpenTicketButton && (
+              <button
+                type="button"
+                onClick={handleOpenTicket}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
+                  'bg-blue-500/10 border border-blue-500/30 text-blue-400',
+                  'hover:bg-blue-500/20 transition-colors'
+                )}
+              >
+                <Ticket className="h-3 w-3" />
+                Open Ticket
+              </button>
+            )}
+            {/* Move to Done — completing a ticket is independent of merging its PR,
+                so any not-yet-done ticket gets it. Reuses the 'moving' spinner below. */}
+            {showMoveToDoneButton && (
+              <button
+                type="button"
+                onClick={handleMoveToDone}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
+                  'bg-emerald-600/10 border border-emerald-600/30 text-emerald-500',
+                  'hover:bg-emerald-600/20 transition-colors'
+                )}
+              >
+                <Check className="h-3 w-3" />
+                Move to Done
+              </button>
+            )}
+            {showMergeButton && mergePhase === 'idle' && (
               <button
                 type="button"
                 onClick={handleMerge}
@@ -314,7 +442,9 @@ function PRNotificationCard({
                 Moving to Done...
               </button>
             )}
-            {mergePhase === 'moved' && (
+            {/* Archive deletes the shared worktree/branch — only offer it on the
+                chain's terminal ticket so earlier chain steps keep their branch. */}
+            {mergePhase === 'moved' && isTerminalTicket && (
               <button
                 type="button"
                 onClick={handleArchive}
@@ -389,6 +519,7 @@ export function PRNotificationStack(): React.JSX.Element | null {
           prUrl={n.prUrl}
           prNumber={n.prNumber}
           worktreeId={n.worktreeId}
+          ticketId={n.ticketId}
         />
       ))}
     </div>

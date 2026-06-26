@@ -15,6 +15,8 @@ interface PRNotification {
   prNumber?: number
   prTitle?: string
   worktreeId?: string
+  /** Ticket that initiated the PR — lets "Open Ticket" target the exact ticket even in a chain. */
+  ticketId?: string
 }
 
 interface PRNotificationState {

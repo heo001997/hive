@@ -1516,6 +1516,12 @@ function EditModeContent({
     })
   )
 
+  // Chained tickets share one branch/PR/worktree. A ticket is the chain's terminal
+  // (last) step when nothing depends on it. Merge ships the shared branch and
+  // Archive deletes it, so both are valid only on the terminal ticket — completing
+  // the ticket (Move to Done) stays per-ticket. Mirrors PRNotificationStack.
+  const isTerminalTicket = dependentTickets.length === 0
+
   // Load live PR state so merge-button guard works (hide if already merged/closed)
   useEffect(() => {
     if (lifecycle.hasAttachedPR) lifecycle.loadPRState()
@@ -1832,6 +1838,7 @@ function EditModeContent({
           )}
           {ticket.column === 'done' &&
             ticket.worktree_id &&
+            isTerminalTicket &&
             lifecycle.isGitHub &&
             lifecycle.hasAttachedPR &&
             lifecycle.prLiveState?.state !== 'MERGED' &&
@@ -1872,7 +1879,10 @@ function EditModeContent({
                 {lifecycle.isRebasingPR ? 'Rebasing...' : 'Rebase PR'}
               </Button>
             )}
-          {ticket.column === 'done' && ticket.worktree_id && lifecycle.prMergeConflict && (
+          {ticket.column === 'done' &&
+            ticket.worktree_id &&
+            isTerminalTicket &&
+            lifecycle.prMergeConflict && (
             <Button
               type="button"
               variant="outline"
@@ -1886,7 +1896,7 @@ function EditModeContent({
               Auto Resolve Conflict &amp; Merge
             </Button>
           )}
-          {ticket.column === 'done' && ticket.worktree_id && (
+          {ticket.column === 'done' && ticket.worktree_id && isTerminalTicket && (
             <Button
               type="button"
               variant="outline"
@@ -2999,6 +3009,18 @@ function ReviewModeContent({
   // still in flight (or with prompts already queued) is queued instead of sent.
   const queueFeatureActive = useClaudeCliQueueFeatureActive(ticket)
 
+  // Chained tickets share one branch/PR/worktree; a ticket is the chain's terminal
+  // (last) step when nothing depends on it. Merge ships the shared branch, so it's
+  // only valid on the terminal ticket (Move to Done stays per-ticket). Mirrors the
+  // main modal footer and PRNotificationStack.
+  const isTerminalTicket = useKanbanStore((s) => {
+    const myKey = ticketKey(ticket.project_id, ticket.id)
+    for (const blockers of s.dependencyMap.values()) {
+      if (blockers.has(myKey)) return false
+    }
+    return true
+  })
+
   // ── Manual "Verify completion" ────────────────────────────────────
   const recheckTicketCompletion = useKanbanStore((s) => s.recheckTicketCompletion)
   const completionVerdict = useKanbanStore(
@@ -3567,7 +3589,8 @@ function ReviewModeContent({
                 if (worktreePath) {
                   useGitStore.getState().setCreatePRModalOpen(true, {
                     worktreeId: ticket.worktree_id!,
-                    worktreePath
+                    worktreePath,
+                    ticketId: ticket.id
                   })
                 } else {
                   toast.error('Could not find worktree path')
@@ -3579,6 +3602,7 @@ function ReviewModeContent({
             </Button>
           ))}
         {ticket.worktree_id &&
+          isTerminalTicket &&
           lifecycle.isGitHub &&
           lifecycle.hasAttachedPR &&
           lifecycle.prLiveState?.state !== 'MERGED' &&
@@ -3618,7 +3642,7 @@ function ReviewModeContent({
               {lifecycle.isRebasingPR ? 'Rebasing...' : 'Rebase PR'}
             </Button>
           )}
-        {ticket.worktree_id && lifecycle.prMergeConflict && (
+        {ticket.worktree_id && isTerminalTicket && lifecycle.prMergeConflict && (
           <Button
             type="button"
             variant="outline"

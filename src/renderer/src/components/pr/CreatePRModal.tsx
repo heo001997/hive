@@ -59,6 +59,7 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
   )
   const attachPR = useGitStore((s) => s.attachPR)
   const setCreatingPR = useGitStore((s) => s.setCreatingPR)
+  const createPRTicketId = useGitStore((s) => s.createPRTicketId)
   const fileStatusesByWorktree = useGitStore((s) => s.fileStatusesByWorktree)
   const isCommitting = useGitStore((s) => s.isCommitting)
   const loadFileStatuses = useGitStore((s) => s.loadFileStatuses)
@@ -326,6 +327,9 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
     const prBody = body.trim()
     const branchName = branchInfo?.name ?? 'Pull Request'
     const provider = resolvePRContentProvider(defaultAgentSdk, availableAgentSdks)
+    // Capture before setOpen(false) clears it — the notification reuses it so
+    // "Open Ticket" reopens the originating ticket (chains share one worktree).
+    const prTicketId = createPRTicketId ?? undefined
 
     // Remote-qualified base ref (e.g. "upstream/main") used for diffs/content.
     const targetRef = `${targetRemote}/${targetBase}`
@@ -347,7 +351,8 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
     const notifId = show({
       status: 'loading',
       message: 'Creating pull request...',
-      worktreeId
+      worktreeId,
+      ticketId: prTicketId
     })
 
     let finalTitle = prTitle
@@ -519,7 +524,8 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
     branchInfo,
     attachPR,
     setOpen,
-    setCreatingPR
+    setCreatingPR,
+    createPRTicketId
   ])
 
   // ── Cancel handler ──────────────────────────────────────────────
