@@ -120,15 +120,10 @@ function PRNotificationCard({
     return !!t && t.column !== 'done'
   })
 
-  // Non-terminal chain tickets can't merge/archive (shared branch), but they can
-  // still be completed so the chain advances — offer Move to Done directly.
-  const showMoveToDoneButton = !!(
-    worktreeId &&
-    isDone &&
-    !isTerminalTicket &&
-    ticketNeedsDone &&
-    mergePhase === 'idle'
-  )
+  // Completing a ticket is its own state, independent of merging the shared PR —
+  // any not-yet-done ticket (standalone, terminal, or mid-chain) can move to Done.
+  // Only Merge/Archive are terminal-gated (they act on the shared branch).
+  const showMoveToDoneButton = !!(worktreeId && isDone && ticketNeedsDone && mergePhase === 'idle')
 
   const handleClose = useCallback(() => {
     dismiss(id)
@@ -375,8 +370,8 @@ function PRNotificationCard({
                 Open Ticket
               </button>
             )}
-            {/* Standalone Move to Done for non-terminal chain tickets (no merge/
-                archive on shared branch). Reuses the 'moving' spinner below. */}
+            {/* Move to Done — completing a ticket is independent of merging its PR,
+                so any not-yet-done ticket gets it. Reuses the 'moving' spinner below. */}
             {showMoveToDoneButton && (
               <button
                 type="button"
