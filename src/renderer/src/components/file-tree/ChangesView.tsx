@@ -119,6 +119,10 @@ export function ChangesView({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [isRefreshing, setIsRefreshing] = useState(false)
 
+  // Track worktrees we've already auto-staged so the effect acts at most once
+  // per mount and never loops on the reload it triggers.
+  const autoStagedRef = useRef<Set<string>>(new Set())
+
   // Load initial data (skip for connection folders — no git repo)
   useEffect(() => {
     if (worktreePath && !isConnectionMode) {
@@ -162,6 +166,34 @@ export function ChangesView({
   const hasChanges = allFiles.length > 0
   const hasStaged = stagedFiles.length > 0
   const hasUnstaged = modifiedFiles.length > 0 || untrackedFiles.length > 0
+
+  // True once git statuses have actually loaded for this worktree (an empty
+  // array still counts). Kept as a primitive so the auto-stage effect below
+  // doesn't re-run on every unrelated mutation of the shared status map.
+  const statusesLoaded = useMemo(
+    () => (worktreePath ? fileStatusesByWorktree.has(worktreePath) : false),
+    [worktreePath, fileStatusesByWorktree]
+  )
+
+  // Auto-stage all changes the first time a worktree's changes load, so the
+  // commit form is ready without a manual "Stage All". Deliberately conservative:
+  //   • skipped while merge conflicts exist — `git add -A` would mark them resolved;
+  //   • skipped when anything is already staged — never clobber a stage the user
+  //     or an agent curated, and (since unstaging one of several leaves the rest
+  //     staged) this is what keeps us from re-staging files the user unstaged.
+  // The ref is only set when we actually stage, so a clean first load doesn't
+  // permanently disable auto-staging for changes that appear later.
+  useEffect(() => {
+    if (!worktreePath || isConnectionMode) return
+    if (autoStagedRef.current.has(worktreePath)) return
+    if (!statusesLoaded) return
+    if (hasConflicts || hasStaged || !hasUnstaged) return
+
+    autoStagedRef.current.add(worktreePath)
+    void stageAll(worktreePath).then((ok) => {
+      if (!ok) toast.error('Failed to stage changes')
+    })
+  }, [worktreePath, isConnectionMode, statusesLoaded, hasConflicts, hasStaged, hasUnstaged, stageAll])
 
   const toggleGroup = useCallback((group: string) => {
     setCollapsed((prev) => {
