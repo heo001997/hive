@@ -69,6 +69,7 @@ vi.mock('../../src/renderer/src/lib/toast', () => ({
 }))
 
 const projectId = 'proj-1'
+const boardSessionId = 'board-session-1'
 const assistantMessageId = 'assistant-msg-1'
 let request: ReturnType<typeof vi.fn>
 
@@ -157,6 +158,7 @@ function seedStores(boardMode: 'sticky-tab' | 'toggle') {
   useSessionStore.setState({
     activeSessionId: null,
     activeBoardAssistantProjectId: projectId,
+    activeBoardAssistantSessionId: boardSessionId,
     activePinnedSessionId: null,
     inlineConnectionSessionId: null
   })
@@ -164,7 +166,7 @@ function seedStores(boardMode: 'sticky-tab' | 'toggle') {
   request = vi.fn((method: string) => {
     if (method === 'kanban.ticket.createBatch') {
       return Promise.resolve({
-        tickets: [{ id: 'ticket-1' }],
+        tickets: [{ id: 'ticket-1', title: boardDraft.title, project_id: projectId }],
         dependencies: []
       })
     }
@@ -182,7 +184,7 @@ function seedStores(boardMode: 'sticky-tab' | 'toggle') {
     projectName: 'Project One',
     projectPath: '/tmp/proj-1'
   }
-  store.activateScope(scope, { scope })
+  store.activateSession(boardSessionId, scope)
   const messages = [
     {
       id: assistantMessageId,
@@ -217,21 +219,25 @@ function seedStores(boardMode: 'sticky-tab' | 'toggle') {
     status: 'awaiting_confirmation' as const,
     selectedTargetProjectId: projectId,
     error: null,
-    sessionId: null,
+    sessionId: boardSessionId,
     opencodeSessionId: null,
     runtimePath: null,
     selectedAgentSdkOverride: null,
     selectedModelOverride: null,
-    composerValue: ''
+    composerValue: '',
+    revertMessageID: null,
+    isEditingMessage: false,
+    editingMessageContent: null
   }
   useBoardChatStore.setState({
+    activeSessionId: boardSessionId,
     scope,
     messages,
     drafts: [boardDraft],
     draftSourceMessageId: assistantMessageId,
     status: 'awaiting_confirmation',
     snapshots: {
-      [`project:${projectId}`]: seededSnapshot
+      [boardSessionId]: seededSnapshot
     }
   })
 }
@@ -250,7 +256,7 @@ describe('board assistant create navigation', () => {
   test('switches to the sticky board tab after creating tickets', async () => {
     seedStores('sticky-tab')
 
-    render(<BoardAssistantView projectId={projectId} />)
+    render(<BoardAssistantView projectId={projectId} sessionId={boardSessionId} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Create all' }))
 
     await waitFor(() => {
@@ -305,7 +311,7 @@ describe('board assistant create navigation', () => {
   test('switches back to the toggle board view after creating tickets', async () => {
     seedStores('toggle')
 
-    render(<BoardAssistantView projectId={projectId} />)
+    render(<BoardAssistantView projectId={projectId} sessionId={boardSessionId} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Create all' }))
 
     await waitFor(() => {
@@ -332,8 +338,8 @@ describe('board assistant create navigation', () => {
       drafts,
       snapshots: {
         ...state.snapshots,
-        [`project:${projectId}`]: {
-          ...state.snapshots[`project:${projectId}`],
+        [boardSessionId]: {
+          ...state.snapshots[boardSessionId],
           drafts
         }
       }
@@ -345,7 +351,7 @@ describe('board assistant create navigation', () => {
           return Promise.reject(new Error('Kanban folder is missing'))
         }
         return Promise.resolve({
-          tickets: [{ id: 'ticket-1' }],
+          tickets: [{ id: 'ticket-1', title: boardDraft.title, project_id: projectId }],
           dependencies: []
         })
       }

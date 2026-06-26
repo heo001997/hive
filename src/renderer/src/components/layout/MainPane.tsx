@@ -108,6 +108,9 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   const ghosttyOverlaySuppressed = useLayoutStore((state) => state.ghosttyOverlaySuppressed)
   const activePinnedSessionId = useSessionStore((state) => state.activePinnedSessionId)
   const activeBoardAssistantProjectId = useSessionStore((state) => state.activeBoardAssistantProjectId)
+  const activeBoardAssistantSessionId = useSessionStore(
+    (state) => state.activeBoardAssistantSessionId
+  )
   const isBoardViewActive = useKanbanStore((state) => state.isBoardViewActive)
   const isPinnedBoardActive = useKanbanStore((state) => state.isPinnedBoardActive)
   const connectionsLoaded = useConnectionStore((state) => state.loaded)
@@ -269,9 +272,22 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
       return children
     }
 
-    // Board assistant tab is active — render BoardAssistantView in main pane
-    if (activeBoardAssistantProjectId && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
-      return <BoardAssistantView key={activeBoardAssistantProjectId} projectId={activeBoardAssistantProjectId} />
+    // Board assistant tab is active — render the focused chat's BoardAssistantView
+    // in the main pane. Keyed by sessionId so switching chats remounts cleanly.
+    if (
+      activeBoardAssistantProjectId &&
+      activeBoardAssistantSessionId &&
+      !activeFilePath &&
+      !activeDiff &&
+      !contextEditorWorktreeId
+    ) {
+      return (
+        <BoardAssistantView
+          key={activeBoardAssistantSessionId}
+          projectId={activeBoardAssistantProjectId}
+          sessionId={activeBoardAssistantSessionId}
+        />
+      )
     }
 
     // Sticky-tab board mode: render board when BOARD_TAB_ID is the active session

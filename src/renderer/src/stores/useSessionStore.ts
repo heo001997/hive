@@ -141,9 +141,10 @@ interface SessionState {
   pinnedSessionIds: Set<string>
   activePinnedSessionId: string | null
 
-  // Board assistant state — project-scoped, one per project
-  boardAssistantByProject: Map<string, Session>
+  // Board assistant state — project-scoped, N chats per project keyed by sessionId
+  boardAssistantsByProject: Map<string, Session[]>
   activeBoardAssistantProjectId: string | null
+  activeBoardAssistantSessionId: string | null
 
   // Actions
   acknowledgeClosedTerminals: (ids: Set<string>) => void
@@ -220,12 +221,13 @@ interface SessionState {
   loadConnectionSessionsBackground: (connectionId: string) => Promise<void>
 
   // Board assistant actions
-  loadBoardAssistantSession: (projectId: string) => Promise<void>
+  loadBoardAssistantSessions: (projectId: string) => Promise<void>
   createBoardAssistantSession: (
-    projectId: string
+    projectId: string,
+    options?: { defaultName?: string }
   ) => Promise<{ success: boolean; session?: Session; error?: string }>
-  closeBoardAssistantSession: (projectId: string) => Promise<{ success: boolean; error?: string }>
-  focusBoardAssistantSession: (projectId: string) => void
+  closeBoardAssistantSession: (sessionId: string) => Promise<{ success: boolean; error?: string }>
+  focusBoardAssistantSession: (sessionId: string) => void
   clearBoardAssistantFocus: () => void
 
   // Connection session actions
@@ -272,8 +274,9 @@ function findSessionInState(state: SessionState, sessionId: string): Session | n
     const found = sessions.find((session) => session.id === sessionId)
     if (found) return found
   }
-  for (const session of state.boardAssistantByProject.values()) {
-    if (session.id === sessionId) return session
+  for (const sessions of state.boardAssistantsByProject.values()) {
+    const found = sessions.find((session) => session.id === sessionId)
+    if (found) return found
   }
   return state.orphanedSessions.get(sessionId) ?? null
 }
@@ -336,8 +339,9 @@ export const useSessionStore = create<SessionState>()(
       activePinnedSessionId: null,
 
       // Board assistant state
-      boardAssistantByProject: new Map(),
+      boardAssistantsByProject: new Map(),
       activeBoardAssistantProjectId: null,
+      activeBoardAssistantSessionId: null,
 
       acknowledgeClosedTerminals: (ids: Set<string>) => {
         set((state) => {
@@ -370,8 +374,8 @@ export const useSessionStore = create<SessionState>()(
 
       // Load sessions for a worktree from database (only active sessions for tabs)
       loadSessions: async (worktreeId: string, _projectId: string) => {
-        // Also load board assistant session for this project (fire-and-forget)
-        void get().loadBoardAssistantSession(_projectId)
+        // Also load board assistant sessions for this project (fire-and-forget)
+        void get().loadBoardAssistantSessions(_projectId)
         // Only show loading indicator when no sessions are cached yet.
         // When sessions already exist (e.g., after createSession populated them),
         // skip the indicator to avoid unmounting active SessionViews mid-init.
@@ -871,7 +875,10 @@ export const useSessionStore = create<SessionState>()(
               sessionsByWorktree: newSessionsMap,
               tabOrderByWorktree: newTabOrderMap,
               activeSessionId: sessionId,
-              activeWorktreeId: worktreeId
+              activeWorktreeId: worktreeId,
+              // Leave any focused board assistant so MainPane shows this session
+              activeBoardAssistantProjectId: null,
+              activeBoardAssistantSessionId: null
             }
           })
 
@@ -947,7 +954,10 @@ export const useSessionStore = create<SessionState>()(
               tabOrderByConnection: newTabOrderMap,
               activeSessionId: sessionId,
               activeConnectionId: connectionId,
-              activeWorktreeId: null
+              activeWorktreeId: null,
+              // Leave any focused board assistant so MainPane shows this session
+              activeBoardAssistantProjectId: null,
+              activeBoardAssistantSessionId: null
             }
           })
 
@@ -978,6 +988,7 @@ export const useSessionStore = create<SessionState>()(
           set((state) => ({
             activeSessionId: sessionId,
             activeBoardAssistantProjectId: null,
+            activeBoardAssistantSessionId: null,
             activeSessionByWorktree: {
               ...state.activeSessionByWorktree,
               [worktreeId]: sessionId
@@ -987,13 +998,18 @@ export const useSessionStore = create<SessionState>()(
           set((state) => ({
             activeSessionId: sessionId,
             activeBoardAssistantProjectId: null,
+            activeBoardAssistantSessionId: null,
             activeSessionByConnection: {
               ...state.activeSessionByConnection,
               [connectionId]: sessionId
             }
           }))
         } else {
-          set({ activeSessionId: sessionId, activeBoardAssistantProjectId: null })
+          set({
+            activeSessionId: sessionId,
+            activeBoardAssistantProjectId: null,
+            activeBoardAssistantSessionId: null
+          })
         }
       },
 
@@ -1007,7 +1023,8 @@ export const useSessionStore = create<SessionState>()(
           activeWorktreeId: worktreeId,
           activeConnectionId: null,
           inlineConnectionSessionId: null,
-          activeBoardAssistantProjectId: null
+          activeBoardAssistantProjectId: null,
+          activeBoardAssistantSessionId: null
         })
 
         if (worktreeId) {
@@ -1079,9 +1096,19 @@ export const useSessionStore = create<SessionState>()(
                 }
               }
 
+              // Update in board assistant sessions (drives the board tab label)
+              const newBoardAssistantsMap = new Map(state.boardAssistantsByProject)
+              for (const [projId, sessions] of newBoardAssistantsMap.entries()) {
+                const updated = sessions.map((s) => (s.id === sessionId ? { ...s, name } : s))
+                if (updated.some((s, i) => s !== sessions[i])) {
+                  newBoardAssistantsMap.set(projId, updated)
+                }
+              }
+
               return {
                 sessionsByWorktree: newWorktreeSessionsMap,
-                sessionsByConnection: newConnectionSessionsMap
+                sessionsByConnection: newConnectionSessionsMap,
+                boardAssistantsByProject: newBoardAssistantsMap
               }
             })
 
@@ -1171,13 +1198,15 @@ export const useSessionStore = create<SessionState>()(
 
         set((state) => {
           if (session.session_type === 'board-assistant') {
-            const newMap = new Map(state.boardAssistantByProject)
-            newMap.set(session.project_id, session)
+            const newMap = new Map(state.boardAssistantsByProject)
+            const existing = newMap.get(session.project_id) || []
+            if (existing.some((s) => s.id === session.id)) return state
+            newMap.set(session.project_id, [...existing, session])
 
             const newModeMap = new Map(state.modeBySession)
             newModeMap.set(session.id, session.mode || 'build')
 
-            return { boardAssistantByProject: newMap, modeBySession: newModeMap }
+            return { boardAssistantsByProject: newMap, modeBySession: newModeMap }
           }
 
           if (session.worktree_id) {
@@ -1408,9 +1437,10 @@ export const useSessionStore = create<SessionState>()(
           }
         }
         if (agentSdk === 'opencode') {
-          for (const session of get().boardAssistantByProject.values()) {
-            if (session.id === sessionId && session.agent_sdk) {
-              agentSdk = session.agent_sdk
+          for (const sessions of get().boardAssistantsByProject.values()) {
+            const found = sessions.find((s) => s.id === sessionId)
+            if (found?.agent_sdk) {
+              agentSdk = found.agent_sdk
               break
             }
           }
@@ -1509,15 +1539,17 @@ export const useSessionStore = create<SessionState>()(
             }
           }
 
-          const newBoardAssistantMap = new Map(state.boardAssistantByProject)
-          for (const [projectId, session] of newBoardAssistantMap.entries()) {
-            if (session.id !== sessionId) continue
-            updatedAny = true
-            newBoardAssistantMap.set(projectId, {
-              ...session,
-              opencode_session_id: opencodeSessionId
+          const newBoardAssistantMap = new Map(state.boardAssistantsByProject)
+          for (const [projectId, sessions] of newBoardAssistantMap.entries()) {
+            const updatedSessions = sessions.map((s) => {
+              if (s.id !== sessionId) return s
+              updatedAny = true
+              return { ...s, opencode_session_id: opencodeSessionId }
             })
-            return { boardAssistantByProject: newBoardAssistantMap }
+            if (updatedAny) {
+              newBoardAssistantMap.set(projectId, updatedSessions)
+              return { boardAssistantsByProject: newBoardAssistantMap }
+            }
           }
 
           return {}
@@ -1706,51 +1738,70 @@ export const useSessionStore = create<SessionState>()(
 
       // ─── Board assistant actions ──────────────────────────────────────
 
-      loadBoardAssistantSession: async (projectId: string) => {
+      loadBoardAssistantSessions: async (projectId: string) => {
         try {
-          const session = await dbApi.session.getActiveBoardAssistant<Session>(projectId)
+          const sessions = await dbApi.session.getActiveBoardAssistants<Session>(projectId)
           set((state) => {
-            const map = new Map(state.boardAssistantByProject)
+            const map = new Map(state.boardAssistantsByProject)
             const newModeMap = new Map(state.modeBySession)
-            if (session) {
-              map.set(projectId, session)
-              newModeMap.set(session.id, session.mode || 'build')
+            if (sessions.length > 0) {
+              map.set(projectId, sessions)
+              for (const session of sessions) {
+                newModeMap.set(session.id, session.mode || 'build')
+              }
             } else {
               map.delete(projectId)
             }
-            return { boardAssistantByProject: map, modeBySession: newModeMap }
+            return { boardAssistantsByProject: map, modeBySession: newModeMap }
           })
         } catch {
-          // Non-fatal: board assistant tab won't show until next load
+          // Non-fatal: board assistant tabs won't show until next load
         }
       },
 
-      createBoardAssistantSession: async (projectId: string) => {
+      createBoardAssistantSession: async (
+        projectId: string,
+        options?: { defaultName?: string }
+      ) => {
         try {
-          // If one already exists, just focus it
-          const existing = get().boardAssistantByProject.get(projectId)
-          if (existing) {
-            get().focusBoardAssistantSession(projectId)
-            return { success: true, session: existing }
+          // Always create a NEW chat — never reuse an existing one. N board
+          // assistant chats may coexist per project, each its own DB row.
+          // Derive the default label from the highest existing "Board Assistant N"
+          // suffix (the unnumbered base name counts as 1) so closing a middle
+          // chat never produces a label that collides with a surviving one.
+          const existing = get().boardAssistantsByProject.get(projectId) ?? []
+          let maxIndex = 0
+          for (const s of existing) {
+            if (s.name === 'Board Assistant') {
+              maxIndex = Math.max(maxIndex, 1)
+            } else {
+              const match = /^Board Assistant (\d+)$/.exec(s.name ?? '')
+              if (match) maxIndex = Math.max(maxIndex, Number(match[1]))
+            }
           }
+          const name =
+            options?.defaultName ??
+            (maxIndex === 0 ? 'Board Assistant' : `Board Assistant ${maxIndex + 1}`)
 
           const session = await dbApi.session.create<Session>({
             worktree_id: null,
             project_id: projectId,
-            name: 'Board Assistant',
+            name,
             session_type: 'board-assistant',
             agent_sdk: useSettingsStore.getState().defaultAgentSdk ?? 'opencode'
           })
 
           set((state) => {
-            const map = new Map(state.boardAssistantByProject)
+            const map = new Map(state.boardAssistantsByProject)
+            const existing = map.get(projectId) ?? []
+            map.set(projectId, [...existing, session])
             const newModeMap = new Map(state.modeBySession)
-            map.set(projectId, session)
             newModeMap.set(session.id, session.mode || 'build')
             return {
-              boardAssistantByProject: map,
+              boardAssistantsByProject: map,
               modeBySession: newModeMap,
               activeBoardAssistantProjectId: projectId,
+              activeBoardAssistantSessionId: session.id,
               // Clear other active states so the board assistant view shows
               activeSessionId: null,
               activePinnedSessionId: null,
@@ -1767,79 +1818,93 @@ export const useSessionStore = create<SessionState>()(
         }
       },
 
-      closeBoardAssistantSession: async (projectId: string) => {
+      closeBoardAssistantSession: async (sessionId: string) => {
         try {
-          const session = get().boardAssistantByProject.get(projectId)
-          if (!session) {
-            // Clear stale focus/map state so the UI doesn't get stuck
-            set((state) => {
-              const map = new Map(state.boardAssistantByProject)
-              map.delete(projectId)
-              return {
-                boardAssistantByProject: map,
-                activeBoardAssistantProjectId:
-                  state.activeBoardAssistantProjectId === projectId
-                    ? null
-                    : state.activeBoardAssistantProjectId
-              }
-            })
+          // Locate the closed chat and its owning project across per-project arrays
+          let projectId: string | null = null
+          let session: Session | null = null
+          for (const [pid, sessions] of get().boardAssistantsByProject.entries()) {
+            const found = sessions.find((s) => s.id === sessionId)
+            if (found) {
+              projectId = pid
+              session = found
+              break
+            }
+          }
+
+          if (!session || !projectId) {
+            // Clear stale focus so the UI doesn't get stuck
+            set((state) => ({
+              activeBoardAssistantSessionId:
+                state.activeBoardAssistantSessionId === sessionId
+                  ? null
+                  : state.activeBoardAssistantSessionId
+            }))
             return { success: true }
           }
+
+          const ownerProjectId = projectId
 
           // Clean up the runtime BEFORE updating store state.
           // We must do this here rather than relying on component unmount,
           // because the BoardAssistantView may not be mounted (e.g. user
           // switched to a file tab and then closed the board assistant tab).
+          // Use the CLOSED chat's per-session snapshot — never the active mirror.
           const { useBoardChatStore } = await import('./useBoardChatStore')
-          const chatSession = useBoardChatStore.getState().getSessionSnapshot(session.id)
-          if (chatSession) {
-            const { useQuestionStore } = await import('./useQuestionStore')
-            const { usePermissionStore } = await import('./usePermissionStore')
-            const { useCommandApprovalStore } = await import('./useCommandApprovalStore')
+          const snapshot = useBoardChatStore.getState().getSessionSnapshot(sessionId)
 
-            useQuestionStore.getState().clearSession(session.id)
-            usePermissionStore.getState().clearSession(session.id)
-            useCommandApprovalStore.getState().clearSession(session.id)
+          const { useQuestionStore } = await import('./useQuestionStore')
+          const { usePermissionStore } = await import('./usePermissionStore')
+          const { useCommandApprovalStore } = await import('./useCommandApprovalStore')
 
-            if (chatSession.snapshot.runtimePath && chatSession.snapshot.opencodeSessionId) {
-              try {
-                unwrapEnvelope(
-                  await opencodeApi.abort(
-                    chatSession.snapshot.runtimePath,
-                    chatSession.snapshot.opencodeSessionId
-                  )
-                )
-              } catch {
-                // Best-effort cleanup
-              }
-              try {
-                unwrapEnvelope(
-                  await opencodeApi.disconnect(
-                    chatSession.snapshot.runtimePath,
-                    chatSession.snapshot.opencodeSessionId
-                  )
-                )
-              } catch {
-                // Best-effort cleanup
-              }
+          useQuestionStore.getState().clearSession(sessionId)
+          usePermissionStore.getState().clearSession(sessionId)
+          useCommandApprovalStore.getState().clearSession(sessionId)
+
+          if (snapshot?.runtimePath && snapshot?.opencodeSessionId) {
+            try {
+              unwrapEnvelope(
+                await opencodeApi.abort(snapshot.runtimePath, snapshot.opencodeSessionId)
+              )
+            } catch {
+              // Best-effort cleanup
+            }
+            try {
+              unwrapEnvelope(
+                await opencodeApi.disconnect(snapshot.runtimePath, snapshot.opencodeSessionId)
+              )
+            } catch {
+              // Best-effort cleanup
             }
           }
-          useBoardChatStore.getState().clearProjectSnapshot(projectId)
+          useBoardChatStore.getState().clearSessionSnapshot(sessionId)
 
-          await dbApi.session.update<Session>(session.id, {
+          await dbApi.session.update<Session>(sessionId, {
             status: 'completed',
             completed_at: new Date().toISOString()
           })
 
           set((state) => {
-            const map = new Map(state.boardAssistantByProject)
-            map.delete(projectId)
+            const map = new Map(state.boardAssistantsByProject)
+            const remaining = (map.get(ownerProjectId) ?? []).filter((s) => s.id !== sessionId)
+            if (remaining.length > 0) {
+              map.set(ownerProjectId, remaining)
+            } else {
+              map.delete(ownerProjectId)
+            }
 
-            // If this was the active board assistant, clear focus and
-            // restore the previously active session for this worktree
-            const clearFocus = state.activeBoardAssistantProjectId === projectId
+            // Only re-point focus if the CLOSED chat was the active one.
+            // Other chats stay untouched and keep streaming.
+            if (state.activeBoardAssistantSessionId === sessionId) {
+              if (remaining.length > 0) {
+                // Re-point to a surviving chat in the same project
+                return {
+                  boardAssistantsByProject: map,
+                  activeBoardAssistantSessionId: remaining[0].id
+                }
+              }
 
-            if (clearFocus) {
+              // No survivors: clear focus and restore prior worktree/connection session
               const worktreeId = state.activeWorktreeId
               const connectionId = state.activeConnectionId
               const restoredSessionId =
@@ -1848,13 +1913,14 @@ export const useSessionStore = create<SessionState>()(
                 null
 
               return {
-                boardAssistantByProject: map,
+                boardAssistantsByProject: map,
                 activeBoardAssistantProjectId: null,
+                activeBoardAssistantSessionId: null,
                 activeSessionId: restoredSessionId
               }
             }
 
-            return { boardAssistantByProject: map }
+            return { boardAssistantsByProject: map }
           })
 
           return { success: true }
@@ -1866,12 +1932,20 @@ export const useSessionStore = create<SessionState>()(
         }
       },
 
-      focusBoardAssistantSession: (projectId: string) => {
-        const session = get().boardAssistantByProject.get(projectId)
-        if (!session) return
+      focusBoardAssistantSession: (sessionId: string) => {
+        // Find the project that owns this chat
+        let projectId: string | null = null
+        for (const [pid, sessions] of get().boardAssistantsByProject.entries()) {
+          if (sessions.some((s) => s.id === sessionId)) {
+            projectId = pid
+            break
+          }
+        }
+        if (!projectId) return
 
         set({
           activeBoardAssistantProjectId: projectId,
+          activeBoardAssistantSessionId: sessionId,
           // Clear other active states so the board assistant view shows
           activeSessionId: null,
           activePinnedSessionId: null,
@@ -1880,7 +1954,7 @@ export const useSessionStore = create<SessionState>()(
       },
 
       clearBoardAssistantFocus: () => {
-        set({ activeBoardAssistantProjectId: null })
+        set({ activeBoardAssistantProjectId: null, activeBoardAssistantSessionId: null })
       },
 
       // ─── Inline connection session actions ─────────────────────────────
@@ -2133,13 +2207,20 @@ export const useSessionStore = create<SessionState>()(
         if (sessionId && connectionId) {
           set((state) => ({
             activeSessionId: sessionId,
+            // Leave any focused board assistant so MainPane shows this session
+            activeBoardAssistantProjectId: null,
+            activeBoardAssistantSessionId: null,
             activeSessionByConnection: {
               ...state.activeSessionByConnection,
               [connectionId]: sessionId
             }
           }))
         } else {
-          set({ activeSessionId: sessionId })
+          set({
+            activeSessionId: sessionId,
+            activeBoardAssistantProjectId: null,
+            activeBoardAssistantSessionId: null
+          })
         }
       },
 
@@ -2149,7 +2230,13 @@ export const useSessionStore = create<SessionState>()(
 
         if (connectionId === state.activeConnectionId) return
 
-        set({ activeConnectionId: connectionId, activeWorktreeId: null })
+        // Switching connection always leaves any focused board assistant.
+        set({
+          activeConnectionId: connectionId,
+          activeWorktreeId: null,
+          activeBoardAssistantProjectId: null,
+          activeBoardAssistantSessionId: null
+        })
 
         if (connectionId) {
           const existingSessions = (state.sessionsByConnection.get(connectionId) || []).filter(
@@ -2260,7 +2347,10 @@ export const useSessionStore = create<SessionState>()(
             orphanedSessions: newOrphanedSessions,
             activeSessionId: session.id,
             activeWorktreeId: null,
-            activeConnectionId: null
+            activeConnectionId: null,
+            // Leave any focused board assistant so MainPane shows this session
+            activeBoardAssistantProjectId: null,
+            activeBoardAssistantSessionId: null
           }
         })
 

@@ -663,10 +663,10 @@ export function SessionTabs(): React.JSX.Element | null {
   const activePinnedSessionId = useSessionStore((state) => state.activePinnedSessionId)
   const boardMode = useSettingsStore((s) => s.boardMode)
 
-  // Board assistant state
-  const boardAssistantByProject = useSessionStore((state) => state.boardAssistantByProject)
-  const activeBoardAssistantProjectId = useSessionStore(
-    (state) => state.activeBoardAssistantProjectId
+  // Board assistant state — N chats may exist per project.
+  const boardAssistantsByProject = useSessionStore((state) => state.boardAssistantsByProject)
+  const activeBoardAssistantSessionId = useSessionStore(
+    (state) => state.activeBoardAssistantSessionId
   )
   const createBoardAssistantSession = useSessionStore((s) => s.createBoardAssistantSession)
   const closeBoardAssistantSession = useSessionStore((s) => s.closeBoardAssistantSession)
@@ -924,25 +924,20 @@ export function SessionTabs(): React.JSX.Element | null {
     }
   }
 
-  // Handle creating or focusing the board assistant tab
+  // Handle creating a new board assistant chat. Always creates a fresh chat —
+  // N board-assistant chats may coexist per project.
   const handleCreateBoardAssistant = async () => {
     if (!project) return
-    const existing = boardAssistantByProject.get(project.id)
-    if (existing) {
-      focusBoardAssistantSession(project.id)
-    } else {
-      const result = await createBoardAssistantSession(project.id)
-      if (!result.success) {
-        toast.error(result.error || 'Failed to create board assistant')
-      }
+    const result = await createBoardAssistantSession(project.id)
+    if (!result.success) {
+      toast.error(result.error || 'Failed to create board assistant')
     }
   }
 
-  // Handle closing the board assistant tab
-  const handleCloseBoardAssistant = async (e: React.MouseEvent) => {
+  // Handle closing a specific board assistant chat tab
+  const handleCloseBoardAssistant = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation()
-    if (!project) return
-    const result = await closeBoardAssistantSession(project.id)
+    const result = await closeBoardAssistantSession(sessionId)
     if (!result.success) {
       toast.error(result.error || 'Failed to close board assistant')
     }
@@ -1322,40 +1317,46 @@ export function SessionTabs(): React.JSX.Element | null {
         )
       })}
 
-      {/* Board assistant tab */}
-      {project && boardAssistantByProject.has(project.id) && (
-        <button
-          className={cn(
-            'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none whitespace-nowrap border-r border-border min-w-[100px] max-w-[200px] transition-colors',
-            activeBoardAssistantProjectId === project.id && !isFileTabActive
-              ? 'bg-background text-foreground'
-              : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-          )}
-          onClick={() => {
-            setActiveFile(null)
-            clearInlineConnectionSession()
-            focusBoardAssistantSession(project.id)
-          }}
-          title="Board Assistant"
-          data-testid="board-assistant-tab"
-        >
-          <KanbanIcon className="h-3.5 w-3.5 shrink-0 text-blue-500" />
-          <span className="truncate flex-1">Board Assistant</span>
-          {/* Active bottom accent */}
-          {activeBoardAssistantProjectId === project.id && !isFileTabActive && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-          )}
-          {/* Close button */}
-          <span
-            className="ml-1 shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
-            onClick={handleCloseBoardAssistant}
-            role="button"
-            tabIndex={-1}
-          >
-            <X className="h-3 w-3" />
-          </span>
-        </button>
-      )}
+      {/* Board assistant tabs — one per chat (N chats may coexist per project) */}
+      {project &&
+        (boardAssistantsByProject.get(project.id) ?? []).map((boardSession) => {
+          const isActiveBoardTab =
+            activeBoardAssistantSessionId === boardSession.id && !isFileTabActive
+          return (
+            <button
+              key={boardSession.id}
+              className={cn(
+                'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none whitespace-nowrap border-r border-border min-w-[100px] max-w-[200px] transition-colors',
+                isActiveBoardTab
+                  ? 'bg-background text-foreground'
+                  : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+              onClick={() => {
+                setActiveFile(null)
+                clearInlineConnectionSession()
+                focusBoardAssistantSession(boardSession.id)
+              }}
+              title={boardSession.name || 'Board Assistant'}
+              data-testid="board-assistant-tab"
+            >
+              <KanbanIcon className="h-3.5 w-3.5 shrink-0 text-blue-500" />
+              <span className="truncate flex-1">{boardSession.name || 'Board Assistant'}</span>
+              {/* Active bottom accent */}
+              {isActiveBoardTab && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+              )}
+              {/* Close button */}
+              <span
+                className="ml-1 shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
+                onClick={(e) => handleCloseBoardAssistant(e, boardSession.id)}
+                role="button"
+                tabIndex={-1}
+              >
+                <X className="h-3 w-3" />
+              </span>
+            </button>
+          )
+        })}
     </>
   )
 

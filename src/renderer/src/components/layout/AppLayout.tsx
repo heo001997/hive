@@ -14,6 +14,7 @@ import { FileSearchDialog } from '@/components/file-search'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { useVimNavigation } from '@/hooks/useVimNavigation'
 import { useOpenCodeGlobalListener } from '@/hooks/useOpenCodeGlobalListener'
+import { useBoardAssistantStreamRouter } from '@/hooks/useBoardAssistantStreamRouter'
 import { useClaudeCliStatusListener } from '@/hooks/useClaudeCliStatusListener'
 import { useNotificationNavigation } from '@/hooks/useNotificationNavigation'
 import { useWindowFocusRefresh } from '@/hooks/useWindowFocusRefresh'
@@ -134,6 +135,8 @@ export function AppLayout({ children }: AppLayoutProps): React.JSX.Element {
   useVimNavigation()
   // Global listener for background session events (AI finishes while viewing another project)
   useOpenCodeGlobalListener()
+  // Keep non-focused board-assistant chats streaming live in the background
+  useBoardAssistantStreamRouter()
   useClaudeCliStatusListener()
   // Navigate to session when native notification is clicked
   useNotificationNavigation()

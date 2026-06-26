@@ -15350,10 +15350,10 @@ describe('renderer API cleanup', () => {
       'utf-8'
     )
     const createBoardAssistantStart = source.indexOf(
-      'createBoardAssistantSession: async (projectId: string)'
+      'createBoardAssistantSession: async ('
     )
     const closeBoardAssistantStart = source.indexOf(
-      'closeBoardAssistantSession: async (projectId: string)',
+      'closeBoardAssistantSession: async (sessionId: string)',
       createBoardAssistantStart
     )
     const createBoardAssistantSource = source.slice(
@@ -15376,10 +15376,10 @@ describe('renderer API cleanup', () => {
       'utf-8'
     )
     const loadBoardAssistantStart = source.indexOf(
-      'loadBoardAssistantSession: async (projectId: string)'
+      'loadBoardAssistantSessions: async (projectId: string)'
     )
     const createBoardAssistantStart = source.indexOf(
-      'createBoardAssistantSession: async (projectId: string)',
+      'createBoardAssistantSession: async (',
       loadBoardAssistantStart
     )
     const loadBoardAssistantSource = source.slice(
@@ -15391,10 +15391,10 @@ describe('renderer API cleanup', () => {
     expect(createBoardAssistantStart).toBeGreaterThan(loadBoardAssistantStart)
     expect(source).toContain("import { dbApi } from '@/api/db-api'")
     expect(loadBoardAssistantSource).toContain(
-      'const session = await dbApi.session.getActiveBoardAssistant<Session>(projectId)'
+      'const sessions = await dbApi.session.getActiveBoardAssistants<Session>(projectId)'
     )
     expect(loadBoardAssistantSource).not.toContain(
-      'const session = await db.session.getActiveBoardAssistant(projectId)'
+      'const sessions = await db.session.getActiveBoardAssistants(projectId)'
     )
   })
 
@@ -16717,10 +16717,10 @@ describe('renderer API cleanup', () => {
       'utf-8'
     )
     const closeBoardAssistantStart = source.indexOf(
-      'closeBoardAssistantSession: async (projectId: string)'
+      'closeBoardAssistantSession: async (sessionId: string)'
     )
     const focusBoardAssistantStart = source.indexOf(
-      'focusBoardAssistantSession: (projectId: string)',
+      'focusBoardAssistantSession: (sessionId: string)',
       closeBoardAssistantStart
     )
     const closeBoardAssistantSource = source.slice(
@@ -16732,20 +16732,16 @@ describe('renderer API cleanup', () => {
     expect(focusBoardAssistantStart).toBeGreaterThan(closeBoardAssistantStart)
     expect(source).toContain("import { dbApi } from '@/api/db-api'")
     expect(source).toContain("import { opencodeApi } from '@/api/opencode-api'")
-    expect(closeBoardAssistantSource).toContain('await dbApi.session.update<Session>(session.id, {')
+    expect(closeBoardAssistantSource).toContain('await dbApi.session.update<Session>(sessionId, {')
     expect(closeBoardAssistantSource).toContain(
-      'await opencodeApi.abort(\n                    chatSession.snapshot.runtimePath,'
+      'await opencodeApi.abort(snapshot.runtimePath, snapshot.opencodeSessionId)'
     )
     expect(closeBoardAssistantSource).toContain(
-      'await opencodeApi.disconnect(\n                    chatSession.snapshot.runtimePath,'
+      'await opencodeApi.disconnect(snapshot.runtimePath, snapshot.opencodeSessionId)'
     )
-    expect(closeBoardAssistantSource).not.toContain('await db.session.update(session.id, {')
-    expect(closeBoardAssistantSource).not.toContain(
-      'await window.opencodeOps.abort(\n                    chatSession.snapshot.runtimePath,'
-    )
-    expect(closeBoardAssistantSource).not.toContain(
-      'await window.opencodeOps.disconnect(\n                    chatSession.snapshot.runtimePath,'
-    )
+    expect(closeBoardAssistantSource).not.toContain('await db.session.update(sessionId, {')
+    expect(closeBoardAssistantSource).not.toContain('await window.opencodeOps.abort(')
+    expect(closeBoardAssistantSource).not.toContain('await window.opencodeOps.disconnect(')
     expect(source).not.toContain('await db.session.update(')
   })
 
@@ -16970,15 +16966,18 @@ describe('renderer API cleanup', () => {
 
   it('routes board assistant runtime fallback worktree lookup through dbApi', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/components/kanban/BoardAssistantView.tsx'),
+      path.resolve(__dirname, '../../src/renderer/src/lib/board-assistant-runtime.ts'),
       'utf-8'
     )
-    const runtimeResolverStart = source.indexOf('async function resolveProjectRuntime(')
-    const buildPromptStart = source.indexOf('function buildBoardPrompt(', runtimeResolverStart)
-    const resolverSource = source.slice(runtimeResolverStart, buildPromptStart)
+    const runtimeResolverStart = source.indexOf('export async function resolveProjectRuntime(')
+    const ensureStart = source.indexOf(
+      'export async function ensureBoardAssistantRuntime(',
+      runtimeResolverStart
+    )
+    const resolverSource = source.slice(runtimeResolverStart, ensureStart)
 
     expect(runtimeResolverStart).toBeGreaterThan(-1)
-    expect(buildPromptStart).toBeGreaterThan(runtimeResolverStart)
+    expect(ensureStart).toBeGreaterThan(runtimeResolverStart)
     expect(source).toContain("import { dbApi } from '@/api/db-api'")
     expect(resolverSource).toContain(
       'const fallbackWorktrees = await dbApi.worktree.getActiveByProject<Worktree>(projectId)'
@@ -17011,118 +17010,61 @@ describe('renderer API cleanup', () => {
 
   it('routes board assistant runtime connect through opencodeApi', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/components/kanban/BoardAssistantView.tsx'),
+      path.resolve(__dirname, '../../src/renderer/src/lib/board-assistant-runtime.ts'),
       'utf-8'
     )
-    const runtimeStart = source.indexOf('async function ensureRuntimeSession(')
-    const cleanupStart = source.indexOf('async function cleanupBoardChatRuntime()', runtimeStart)
-    const runtimeSource = source.slice(runtimeStart, cleanupStart)
+    const runtimeStart = source.indexOf('export async function ensureBoardAssistantRuntime(')
+    const runtimeSource = source.slice(runtimeStart)
 
     expect(runtimeStart).toBeGreaterThan(-1)
-    expect(cleanupStart).toBeGreaterThan(runtimeStart)
     expect(source).toContain("import { opencodeApi } from '@/api/opencode-api'")
     expect(runtimeSource).toContain(
-      'const connectResult = unwrapEnvelope(await opencodeApi.connect(runtimePath, session.id))'
+      'const connectResult = unwrapEnvelope(await opencodeApi.connect(runtimePath, sessionId))'
     )
     expect(runtimeSource).toContain('!connectResult.success || !connectResult.sessionId')
-    expect(runtimeSource).toContain('await dbApi.session.delete(session.id).catch(() => {})')
     expect(runtimeSource).not.toContain('window.opencodeOps.connect')
   })
 
-  it('routes board assistant reused-session model update through dbApi', () => {
+  it('routes board assistant runtime model update through dbApi', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/components/kanban/BoardAssistantView.tsx'),
+      path.resolve(__dirname, '../../src/renderer/src/lib/board-assistant-runtime.ts'),
       'utf-8'
     )
-    const runtimeStart = source.indexOf('async function ensureRuntimeSession(')
-    const createSessionStart = source.indexOf(
-      '} else {',
-      source.indexOf('if (existingStoreSession)', runtimeStart)
-    )
-    const reusedSessionSource = source.slice(runtimeStart, createSessionStart)
+    const runtimeStart = source.indexOf('export async function ensureBoardAssistantRuntime(')
+    const runtimeSource = source.slice(runtimeStart)
 
     expect(runtimeStart).toBeGreaterThan(-1)
-    expect(createSessionStart).toBeGreaterThan(runtimeStart)
     expect(source).toContain("import { dbApi } from '@/api/db-api'")
-    expect(reusedSessionSource).toContain('await dbApi.session.update(session.id, {')
-    expect(reusedSessionSource).toContain('agent_sdk: agentSdk')
-    expect(reusedSessionSource).toContain('model_provider_id: selectedModel.providerID')
-    expect(reusedSessionSource).toContain('model_id: selectedModel.modelID')
-    expect(reusedSessionSource).toContain('model_variant: selectedModel.variant ?? null')
-    expect(reusedSessionSource).not.toContain('db.session.update(session.id, {')
-  })
-
-  it('routes board assistant runtime session creation through dbApi', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/components/kanban/BoardAssistantView.tsx'),
-      'utf-8'
-    )
-    const runtimeStart = source.indexOf('async function ensureRuntimeSession(')
-    const createSessionStart = source.indexOf(
-      '} else {',
-      source.indexOf('if (existingStoreSession)', runtimeStart)
-    )
-    const connectStart = source.indexOf('const connectResult = unwrapEnvelope(', createSessionStart)
-    const createSessionSource = source.slice(createSessionStart, connectStart)
-
-    expect(runtimeStart).toBeGreaterThan(-1)
-    expect(createSessionStart).toBeGreaterThan(runtimeStart)
-    expect(connectStart).toBeGreaterThan(createSessionStart)
-    expect(source).toContain("import { dbApi } from '@/api/db-api'")
-    expect(createSessionSource).toContain('session = await dbApi.session.create<{ id: string }>({')
-    expect(createSessionSource).toContain('worktree_id: worktreeId')
-    expect(createSessionSource).toContain('connection_id: connectionId')
-    expect(createSessionSource).toContain("session_type: 'board-assistant'")
-    expect(createSessionSource).toContain('agent_sdk: agentSdk')
-    expect(createSessionSource).not.toContain('db.session.create({')
-  })
-
-  it('routes board assistant connect-failure session cleanup through dbApi', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/components/kanban/BoardAssistantView.tsx'),
-      'utf-8'
-    )
-    const runtimeStart = source.indexOf('async function ensureRuntimeSession(')
-    const connectFailureStart = source.indexOf(
-      'if (!connectResult.success || !connectResult.sessionId)',
-      runtimeStart
-    )
-    const loadSessionStart = source.indexOf(
-      'await useSessionStore.getState().loadBoardAssistantSession(targetProjectId)',
-      connectFailureStart
-    )
-    const cleanupSource = source.slice(connectFailureStart, loadSessionStart)
-
-    expect(runtimeStart).toBeGreaterThan(-1)
-    expect(connectFailureStart).toBeGreaterThan(runtimeStart)
-    expect(loadSessionStart).toBeGreaterThan(connectFailureStart)
-    expect(source).toContain("import { dbApi } from '@/api/db-api'")
-    expect(cleanupSource).toContain('if (!isReused) {')
-    expect(cleanupSource).toContain('await dbApi.session.delete(session.id).catch(() => {})')
-    expect(cleanupSource).not.toContain('db.session.delete(session.id)')
+    expect(runtimeSource).toContain('await dbApi.session.update(sessionId, {')
+    expect(runtimeSource).toContain('agent_sdk: agentSdk')
+    expect(runtimeSource).toContain('model_provider_id: selectedModel.providerID')
+    expect(runtimeSource).toContain('model_id: selectedModel.modelID')
+    expect(runtimeSource).toContain('model_variant: selectedModel.variant ?? null')
+    expect(runtimeSource).not.toContain('db.session.update(session.id, {')
   })
 
   it('routes board assistant connect-success session id persistence through dbApi', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/components/kanban/BoardAssistantView.tsx'),
+      path.resolve(__dirname, '../../src/renderer/src/lib/board-assistant-runtime.ts'),
       'utf-8'
     )
-    const runtimeStart = source.indexOf('async function ensureRuntimeSession(')
+    const runtimeStart = source.indexOf('export async function ensureBoardAssistantRuntime(')
+    const connectStart = source.indexOf('opencodeApi.connect(runtimePath, sessionId)', runtimeStart)
     const connectSuccessStart = source.indexOf(
-      'await dbApi.session.update(session.id, {',
-      source.indexOf('if (!connectResult.success || !connectResult.sessionId)', runtimeStart)
+      'await dbApi.session.update(sessionId, {',
+      connectStart
     )
     const setRuntimeStart = source.indexOf(
-      'useBoardChatStore.getState().setRuntimeSession({',
+      'boardStore.setRuntimeSessionForSession(',
       connectSuccessStart
     )
     const persistenceSource = source.slice(connectSuccessStart, setRuntimeStart)
 
     expect(runtimeStart).toBeGreaterThan(-1)
-    expect(connectSuccessStart).toBeGreaterThan(runtimeStart)
+    expect(connectSuccessStart).toBeGreaterThan(connectStart)
     expect(setRuntimeStart).toBeGreaterThan(connectSuccessStart)
     expect(source).toContain("import { dbApi } from '@/api/db-api'")
-    expect(persistenceSource).toContain('await dbApi.session.update(session.id, {')
+    expect(persistenceSource).toContain('await dbApi.session.update(sessionId, {')
     expect(persistenceSource).toContain('opencode_session_id: connectResult.sessionId')
     expect(persistenceSource).not.toContain('db.session.update(session.id, {')
   })
@@ -17133,14 +17075,11 @@ describe('renderer API cleanup', () => {
       'utf-8'
     )
     const materializedStart = source.indexOf('const handleMaterializedSessionId = useCallback(')
-    const syncScopeStart = source.indexOf(
-      'const syncScope = async (): Promise<void> => {',
-      materializedStart
-    )
-    const materializedSource = source.slice(materializedStart, syncScopeStart)
+    const effectStart = source.indexOf('useEffect(', materializedStart)
+    const materializedSource = source.slice(materializedStart, effectStart)
 
     expect(materializedStart).toBeGreaterThan(-1)
-    expect(syncScopeStart).toBeGreaterThan(materializedStart)
+    expect(effectStart).toBeGreaterThan(materializedStart)
     expect(source).toContain("import { dbApi } from '@/api/db-api'")
     expect(source).not.toContain('const db = unwrapEnvelopeApi(() => window.db)')
     expect(materializedSource).toContain('updateOpencodeSessionId(nextOpencodeSessionId)')
@@ -17167,7 +17106,7 @@ describe('renderer API cleanup', () => {
     expect(failureStart).toBeGreaterThan(promptStart)
     expect(source).toContain("import { opencodeApi } from '@/api/opencode-api'")
     expect(promptSource).toContain(
-      'const runtime = await ensureRuntimeSession(scope, targetProjectId)'
+      'const runtime = await ensureBoardAssistantRuntime(boardSessionId)'
     )
     expect(promptSource).toContain('const prompt = buildBoardPrompt(input, scope, targetProjectId)')
     expect(promptSource).toContain(
@@ -17271,24 +17210,19 @@ describe('renderer API cleanup', () => {
 
   it('routes board assistant existing runtime reconnect through opencodeApi', () => {
     const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/components/kanban/BoardAssistantView.tsx'),
+      path.resolve(__dirname, '../../src/renderer/src/lib/board-assistant-runtime.ts'),
       'utf-8'
     )
-    const syncStart = source.indexOf('const syncScope = async (): Promise<void> => {')
-    const systemMessageStart = source.indexOf(
-      'if (!existingSnapshot && scope && scope.kind',
-      syncStart
-    )
-    const syncSource = source.slice(syncStart, systemMessageStart)
+    const runtimeStart = source.indexOf('export async function ensureBoardAssistantRuntime(')
+    const runtimeSource = source.slice(runtimeStart)
 
-    expect(syncStart).toBeGreaterThan(-1)
-    expect(systemMessageStart).toBeGreaterThan(syncStart)
+    expect(runtimeStart).toBeGreaterThan(-1)
     expect(source).toContain("import { opencodeApi } from '@/api/opencode-api'")
-    expect(syncSource).toContain(
-      'await opencodeApi.reconnect(state.runtimePath, state.opencodeSessionId, state.sessionId)'
+    expect(runtimeSource).toContain(
+      'await opencodeApi.reconnect(snapshot.runtimePath, snapshot.opencodeSessionId, sessionId)'
     )
-    expect(syncSource).toContain('// useSessionStream will handle reconnection failures')
-    expect(syncSource).not.toContain('window.opencodeOps.reconnect')
+    expect(runtimeSource).toContain('// useSessionStream will handle reconnection failures')
+    expect(runtimeSource).not.toContain('window.opencodeOps.reconnect')
   })
 
   it('routes board assistant question replies through opencodeApi', () => {

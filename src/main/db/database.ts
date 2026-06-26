@@ -1642,6 +1642,16 @@ export class DatabaseService {
     return row ? this.mapSessionRow(row) : null
   }
 
+  getActiveBoardAssistantsByProject(projectId: string): Session[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        "SELECT * FROM sessions WHERE project_id = ? AND session_type = 'board-assistant' AND status = 'active' ORDER BY created_at ASC"
+      )
+      .all(projectId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapSessionRow(row))
+  }
+
   countActiveSessions(): number {
     const db = this.getDb()
     const row = db
