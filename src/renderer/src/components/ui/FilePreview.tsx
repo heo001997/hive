@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { X, FileText, Loader2, FolderOpen } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { FileText, Loader2, FolderOpen } from 'lucide-react'
 import Lightbox from 'yet-another-react-lightbox'
 import Zoom from 'yet-another-react-lightbox/plugins/zoom'
 import Captions from 'yet-another-react-lightbox/plugins/captions'
@@ -9,7 +8,10 @@ import 'yet-another-react-lightbox/plugins/captions.css'
 import { useGhosttySuppression } from '@/hooks'
 import { fileApi } from '@/api/file-api'
 import { projectApi } from '@/api/project-api'
-import { classifyPreview, mimeForPath, type PreviewKind } from '@/lib/file-preview'
+import { classifyPreview, extensionOf, mimeForPath, type PreviewKind } from '@/lib/file-preview'
+import { cn } from '@/lib/utils'
+import { MarkdownRenderer } from '@/components/sessions/MarkdownRenderer'
+import { Dialog, DialogContent, DialogTitle } from './dialog'
 
 /** What to preview: a ready-to-render data URL, or a file on disk to load. */
 export type FilePreviewSource =
@@ -45,20 +47,6 @@ export function FilePreview({
 }: FilePreviewProps): React.JSX.Element {
   useGhosttySuppression('file-preview', true)
   const [state, setState] = useState<Loaded>(() => initialState(source))
-
-  // Close on Escape. Capture phase + stopImmediatePropagation so the keypress
-  // closes only this overlay and never reaches an underlying Radix Dialog.
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        e.stopImmediatePropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handleEscape, true)
-    return () => window.removeEventListener('keydown', handleEscape, true)
-  }, [onClose])
 
   // Load disk files lazily, picking the lightest read for the detected kind.
   // Depend on the path primitive (not the `source` object) so callers passing an
@@ -146,58 +134,74 @@ export function FilePreview({
     )
   }
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm"
-      onClick={onClose}
-      onPointerDown={(e) => e.stopPropagation()}
-      data-testid={testId}
+  // Everything else renders inside a real Radix Dialog. This is the key reason
+  // scrolling works: Radix's scroll-lock (react-remove-scroll) *allows* wheel
+  // scrolling within the dialog's own content, so a tall text/markdown body
+  // scrolls natively — no custom wheel handling, no portal-outside-the-lock
+  // tricks. Radix also owns Escape, backdrop-close and focus management, and
+  // nests correctly when opened from another dialog (e.g. Edit Ticket).
+  const fileName = name ?? (source.kind === 'path' ? source.path : '')
+  const isText = state.status === 'ready' && state.previewKind === 'text'
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose()
+      }}
     >
-      <div
-        className="relative flex max-h-[90vh] max-w-[90vw] flex-col p-4"
-        onClick={(e) => e.stopPropagation()}
+      <DialogContent
+        data-testid={testId}
+        // The title (filename) is the only label this needs; opt out of Radix's
+        // description requirement explicitly to silence its dev a11y warning.
+        aria-describedby={undefined}
+        className={cn(
+          'flex max-h-[90vh] max-w-[92vw] flex-col gap-0 overflow-hidden p-0',
+          isText ? 'w-[min(900px,92vw)]' : 'w-auto'
+        )}
       >
-        <button
-          className="absolute -right-2 -top-2 z-10 rounded-full bg-background/90 p-2 text-foreground shadow-lg transition-colors hover:bg-background"
-          onClick={(e) => {
-            e.stopPropagation()
-            onClose()
-          }}
-          aria-label="Close"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
-        <PreviewBody state={state} name={name} canReveal={source.kind === 'path'} onReveal={showInFolder} />
-
-        {name && <div className="mt-2 text-center text-sm text-white/90">{name}</div>}
-      </div>
-    </div>,
-    document.body
+        <DialogTitle className="shrink-0 truncate border-b border-border px-4 py-2.5 pr-12 text-sm font-medium">
+          {name ?? 'Preview'}
+        </DialogTitle>
+        <PreviewBody
+          state={state}
+          name={name}
+          fileName={fileName}
+          canReveal={source.kind === 'path'}
+          onReveal={showInFolder}
+        />
+      </DialogContent>
+    </Dialog>
   )
 }
 
 function PreviewBody({
   state,
   name,
+  fileName,
   canReveal,
   onReveal
 }: {
   state: Loaded
   name?: string
+  fileName: string
   canReveal: boolean
   onReveal: () => void
 }): React.JSX.Element {
   if (state.status === 'loading') {
     return (
-      <div className="flex h-40 w-40 items-center justify-center rounded-lg bg-background/90">
+      <div className="flex h-40 items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (state.status === 'error') {
-    return <Fallback name={name} message={state.message} canReveal={canReveal} onReveal={onReveal} />
+    return (
+      <div className="flex justify-center p-6">
+        <Fallback name={name} message={state.message} canReveal={canReveal} onReveal={onReveal} />
+      </div>
+    )
   }
 
   switch (state.previewKind) {
@@ -208,68 +212,45 @@ function PreviewBody({
         <iframe
           src={state.dataUrl}
           title={name ?? 'PDF preview'}
-          className="h-[85vh] w-[85vw] rounded-lg border-0 bg-white shadow-2xl"
+          className="h-[80vh] w-[85vw] max-w-full border-0 bg-white"
         />
       )
     case 'video':
-      return (
-        <video
-          src={state.dataUrl}
-          controls
-          autoPlay
-          className="max-h-[85vh] max-w-[90vw] rounded-lg shadow-2xl"
-        />
-      )
+      return <video src={state.dataUrl} controls autoPlay className="max-h-[80vh] max-w-[88vw]" />
     case 'audio':
       return (
-        <div className="rounded-lg bg-background/95 p-6 shadow-2xl">
+        <div className="p-6">
           <audio src={state.dataUrl} controls autoPlay className="w-[60vw] max-w-[480px]" />
         </div>
       )
-    case 'text':
-      return <TextPreview text={state.text ?? ''} />
-
+    case 'text': {
+      // Render markdown nicely; show everything else as raw monospace text. The
+      // wrapping div is the scroll container (flex-1 + min-h-0 so it bounds to the
+      // dialog height, overflow-auto so it scrolls) — and because it lives inside
+      // the Radix dialog, that scroll is permitted.
+      const ext = extensionOf(fileName)
+      const isMarkdown = ext === 'md' || ext === 'markdown'
+      return (
+        <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+          {isMarkdown ? (
+            <div className="text-sm leading-relaxed text-foreground">
+              <MarkdownRenderer content={state.text ?? ''} />
+            </div>
+          ) : (
+            <pre className="whitespace-pre font-mono text-xs leading-relaxed text-foreground">
+              {state.text}
+            </pre>
+          )}
+        </div>
+      )
+    }
     default:
-      return <Fallback name={name} canReveal={canReveal} onReveal={onReveal} />
+      return (
+        <div className="flex justify-center p-6">
+          <Fallback name={name} canReveal={canReveal} onReveal={onReveal} />
+        </div>
+      )
   }
-}
-
-/**
- * Scrollable text/code/markdown viewer.
- *
- * Two real-app gotchas this guards against:
- *  - Scroll lock: when opened from inside a Radix Dialog, react-remove-scroll
- *    adds a document-level non-passive `wheel` listener that preventDefaults
- *    scroll for any target outside the dialog subtree. This overlay is portaled
- *    to `document.body` (a sibling of React's `#root`), so a React `onWheel`
- *    handler never fires for it — React delegates events at `#root`, which is
- *    not in the native bubble path of a body portal. A *native* listener on the
- *    element itself does fire (it's directly in the bubble path) and stops the
- *    event before it reaches document, so the inner scroll works.
- *  - Size cap via inline styles, not Tailwind classes, so the <pre> is always
- *    bounded (and thus scrolls) regardless of whether an arbitrary utility like
- *    `max-w-[85vw]` made it into the generated stylesheet. min-h-0/min-w-0
- *    defeat the flex-item default min-size (`auto` = content size) that would
- *    otherwise override the max-size and let the <pre> grow past the viewport.
- */
-function TextPreview({ text }: { text: string }): React.JSX.Element {
-  const ref = useRef<HTMLPreElement>(null)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const stop = (e: WheelEvent): void => e.stopPropagation()
-    el.addEventListener('wheel', stop, { passive: true })
-    return () => el.removeEventListener('wheel', stop)
-  }, [])
-  return (
-    <pre
-      ref={ref}
-      style={{ maxHeight: '85vh', maxWidth: '85vw', minHeight: 0, minWidth: 0 }}
-      className="min-h-0 min-w-0 overflow-auto rounded-lg bg-background/95 p-4 text-left font-mono text-xs leading-relaxed text-foreground shadow-2xl"
-    >
-      {text}
-    </pre>
-  )
 }
 
 function Fallback({
