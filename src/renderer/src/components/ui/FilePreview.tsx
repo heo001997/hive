@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, FileText, Loader2, FolderOpen } from 'lucide-react'
 import Lightbox from 'yet-another-react-lightbox'
@@ -156,12 +156,6 @@ export function FilePreview({
       <div
         className="relative flex max-h-[90vh] max-w-[90vw] flex-col p-4"
         onClick={(e) => e.stopPropagation()}
-        // When opened from inside a Radix Dialog, react-remove-scroll adds a
-        // document-level wheel listener that preventDefaults scroll for any target
-        // outside the dialog subtree. This overlay is portaled to document.body, so
-        // its scrollable children (e.g. the text <pre>) get blocked. Stop the wheel
-        // event before it reaches document so the inner scroll works.
-        onWheel={(e) => e.stopPropagation()}
       >
         <button
           className="absolute -right-2 -top-2 z-10 rounded-full bg-background/90 p-2 text-foreground shadow-lg transition-colors hover:bg-background"
@@ -233,17 +227,49 @@ function PreviewBody({
         </div>
       )
     case 'text':
-      // min-h-0/min-w-0: as a flex item the <pre>'s default min-size is `auto`
-      // (= content size) and would override max-h/max-w, so it'd grow past the
-      // viewport instead of scrolling. Zeroing the min-size lets overflow engage.
-      return (
-        <pre className="max-h-[85vh] min-h-0 max-w-[85vw] min-w-0 overflow-auto rounded-lg bg-background/95 p-4 text-left font-mono text-xs leading-relaxed text-foreground shadow-2xl">
-          {state.text}
-        </pre>
-      )
+      return <TextPreview text={state.text ?? ''} />
+
     default:
       return <Fallback name={name} canReveal={canReveal} onReveal={onReveal} />
   }
+}
+
+/**
+ * Scrollable text/code/markdown viewer.
+ *
+ * Two real-app gotchas this guards against:
+ *  - Scroll lock: when opened from inside a Radix Dialog, react-remove-scroll
+ *    adds a document-level non-passive `wheel` listener that preventDefaults
+ *    scroll for any target outside the dialog subtree. This overlay is portaled
+ *    to `document.body` (a sibling of React's `#root`), so a React `onWheel`
+ *    handler never fires for it — React delegates events at `#root`, which is
+ *    not in the native bubble path of a body portal. A *native* listener on the
+ *    element itself does fire (it's directly in the bubble path) and stops the
+ *    event before it reaches document, so the inner scroll works.
+ *  - Size cap via inline styles, not Tailwind classes, so the <pre> is always
+ *    bounded (and thus scrolls) regardless of whether an arbitrary utility like
+ *    `max-w-[85vw]` made it into the generated stylesheet. min-h-0/min-w-0
+ *    defeat the flex-item default min-size (`auto` = content size) that would
+ *    otherwise override the max-size and let the <pre> grow past the viewport.
+ */
+function TextPreview({ text }: { text: string }): React.JSX.Element {
+  const ref = useRef<HTMLPreElement>(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const stop = (e: WheelEvent): void => e.stopPropagation()
+    el.addEventListener('wheel', stop, { passive: true })
+    return () => el.removeEventListener('wheel', stop)
+  }, [])
+  return (
+    <pre
+      ref={ref}
+      style={{ maxHeight: '85vh', maxWidth: '85vw', minHeight: 0, minWidth: 0 }}
+      className="min-h-0 min-w-0 overflow-auto rounded-lg bg-background/95 p-4 text-left font-mono text-xs leading-relaxed text-foreground shadow-2xl"
+    >
+      {text}
+    </pre>
+  )
 }
 
 function Fallback({

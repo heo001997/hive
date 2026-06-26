@@ -65,8 +65,10 @@ describe('FilePreview — disk files', () => {
 
   it('stops wheel propagation so scrolling works inside a Radix Dialog scroll lock', async () => {
     // react-remove-scroll (used by Radix Dialog) cancels wheel events whose target
-    // is outside the dialog subtree via a document listener; this overlay is
-    // portaled to body, so it must stop the wheel event reaching document.
+    // is outside the dialog subtree via a document listener. This overlay portals
+    // to document.body — a sibling of React's #root — so a React onWheel handler
+    // never fires for it; a *native* listener on the <pre> does, and stops the
+    // event before it reaches document so the inner scroll keeps working.
     readFile.mockResolvedValue({ success: true, value: { success: true, content: 'hello from disk' } })
     render(<FilePreview source={{ kind: 'path', path: '/tmp/notes.md' }} name="notes.md" onClose={() => {}} />)
 
