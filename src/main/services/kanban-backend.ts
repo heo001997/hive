@@ -15,6 +15,7 @@ import YAML from 'yaml'
 
 import { getDatabase } from '../db'
 import { normalizeKanbanBatchDrafts } from '../db/kanban-batch'
+import { createLogger } from './logger'
 import {
   configuredFolders,
   ensureFolder,
@@ -46,6 +47,8 @@ import type {
 } from '../db'
 
 export { getDefaultMarkdownConfig } from './kanban-markdown-paths'
+
+const log = createLogger({ component: 'KanbanBackend' })
 
 const HIVE_FRONTMATTER_FIELDS = new Set([
   'id',
@@ -266,6 +269,7 @@ class InternalKanbanBackend implements KanbanBackend {
   ): Promise<KanbanTicket | null> {
     const existing = await this.get(projectId, ticketId)
     if (!existing) return null
+    if (column === 'done') await reapTicketSession(this, projectId, existing)
     return getDatabase().moveKanbanTicket(ticketId, column, sortOrder)
   }
 
@@ -292,6 +296,7 @@ class InternalKanbanBackend implements KanbanBackend {
   async archive(projectId: string, ticketId: string): Promise<KanbanTicket | null> {
     const existing = await this.get(projectId, ticketId)
     if (!existing) return null
+    await reapTicketSession(this, projectId, existing)
     return getDatabase().archiveKanbanTicket(ticketId)
   }
 
@@ -736,6 +741,9 @@ class MarkdownKanbanBackend implements KanbanBackend {
     sortOrder: number
   ): Promise<KanbanTicket | null> {
     const card = await this.requireMutableCard(projectId, ticketId)
+    if (column === 'done') {
+      await reapTicketSession(this, projectId, await this.get(projectId, ticketId))
+    }
     const project = requireProject(projectId)
     const config = parseMarkdownConfig(project)
     const touchedPaths = await rewriteOrRelocateCard(project, config, card.filePath, {
@@ -774,6 +782,7 @@ class MarkdownKanbanBackend implements KanbanBackend {
   }
 
   async archive(projectId: string, ticketId: string): Promise<KanbanTicket | null> {
+    await reapTicketSession(this, projectId, await this.get(projectId, ticketId))
     await this.update(projectId, ticketId, {
       archived_at: new Date().toISOString()
     } as KanbanTicketUpdate)
@@ -1756,6 +1765,63 @@ function isMissingMarkdownCardError(error: unknown): boolean {
 
 const internalBackend = new InternalKanbanBackend()
 const markdownBackend = new MarkdownKanbanBackend()
+
+/**
+ * Reap the claude-code PTY session attached to a ticket, if any. Called when a
+ * ticket is archived or moved to Done so finished work doesn't leave a zombie
+ * `claude` process running and accumulating until the machine chokes.
+ *
+ * Best-effort and idempotent: no-ops when the ticket has no session, and never
+ * throws out of the archive/move handler — each step (kill PTY, mark session
+ * completed, clear the pointer) is independently guarded so a failure is logged
+ * and the board mutation still completes. Reuses the exact PTY-kill path that
+ * tab-close uses (destroyNodePtyTerminal → ptyService.destroy → pty.kill).
+ */
+async function reapTicketSession(
+  backend: KanbanBackend,
+  projectId: string,
+  ticket: KanbanTicket | null
+): Promise<void> {
+  const sessionId = ticket?.current_session_id
+  if (!ticket || !sessionId) return
+
+  // Dynamically imported so a node-pty load failure can never crash the mutation.
+  try {
+    const { destroyNodePtyTerminal } = await import('./terminal-pty-bridge')
+    destroyNodePtyTerminal(sessionId)
+  } catch (error) {
+    log.error(
+      'Failed to kill PTY while reaping ticket session',
+      error instanceof Error ? error : new Error(String(error)),
+      { ticketId: ticket.id, sessionId }
+    )
+  }
+
+  // Mark the session row completed so history reflects that it stopped.
+  try {
+    getDatabase().updateSession(sessionId, {
+      status: 'completed',
+      completed_at: new Date().toISOString()
+    })
+  } catch (error) {
+    log.error(
+      'Failed to mark session completed while reaping ticket session',
+      error instanceof Error ? error : new Error(String(error)),
+      { ticketId: ticket.id, sessionId }
+    )
+  }
+
+  // Clear the ticket's session pointer (storage-agnostic via the backend).
+  try {
+    await backend.update(projectId, ticket.id, { current_session_id: null })
+  } catch (error) {
+    log.error(
+      'Failed to clear current_session_id while reaping ticket session',
+      error instanceof Error ? error : new Error(String(error)),
+      { ticketId: ticket.id, sessionId }
+    )
+  }
+}
 
 export function getKanbanBackendForProject(projectId: string): KanbanBackend {
   return getProjectStorageMode(projectId) === 'markdown' ? markdownBackend : internalBackend
