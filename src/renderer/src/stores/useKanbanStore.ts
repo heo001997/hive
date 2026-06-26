@@ -42,6 +42,15 @@ export interface TicketRef {
 
 export type TicketKey = string
 
+/**
+ * One pending follow-up in a ticket's Queue prompts queue (claude-code-cli).
+ * `id` is a stable client id for CRUD/reorder + React keys.
+ */
+export interface QueuedPrompt {
+  id: string
+  content: string
+}
+
 export interface MarkdownCardPlaceholder {
   projectId: string
   filePath: string
@@ -369,6 +378,33 @@ interface KanbanState {
    * the queue then waits for the next Strict Verify pass to drain it.
    */
   dispatchClaudeCliQueueIfReady: (projectId: string, ticketId: string) => Promise<boolean>
+  /**
+   * Queue prompts (claude-code-cli). Ordered pending follow-ups per ticket, keyed
+   * by ticketKey so the queue exists before a session does (Todo) and survives a
+   * reload (persisted). Drained one-at-a-time once Strict Verify marks the ticket
+   * complete in Review. CRUD actions back the queue management UI.
+   */
+  promptQueues: Record<TicketKey, QueuedPrompt[]>
+  /** Append `content` to the ticket's queue (trimmed; no-op when empty). */
+  addQueuedPrompt: (projectId: string, ticketId: string, content: string) => void
+  /** Replace the text of one queued prompt (trimmed; removes it when empty). */
+  updateQueuedPrompt: (
+    projectId: string,
+    ticketId: string,
+    promptId: string,
+    content: string
+  ) => void
+  /** Remove one queued prompt by id. */
+  removeQueuedPrompt: (projectId: string, ticketId: string, promptId: string) => void
+  /** Reorder one queued prompt up or down by a single slot. */
+  moveQueuedPrompt: (
+    projectId: string,
+    ticketId: string,
+    promptId: string,
+    direction: 'up' | 'down'
+  ) => void
+  /** Drop the ticket's entire queue. */
+  clearQueuedPrompts: (projectId: string, ticketId: string) => void
 }
 
 // Pending settle timers, keyed by ticketKey. Kept at module scope (not in the
@@ -953,11 +989,11 @@ async function isClaudeCliQueueFeatureActive(sessionId: string | null): Promise<
 
 /**
  * Queue prompts drain step. When the feature is active and `ticket` is a
- * verified-complete build ticket idle in Review with its CLI session idle, pop
- * the next queued follow-up and enter it (which moves the ticket back to In
- * Progress via the resulting `session_working` event). Returns `true` when a
- * prompt was dispatched. On a delivery failure the prompt is requeued at the
- * front and `false` is returned so the ticket stays put.
+ * verified-complete build ticket idle in Review with its CLI session idle, enter
+ * the head of the ticket's prompt queue (which moves it back to In Progress via
+ * the resulting `session_working` event) and remove that prompt from the queue.
+ * Returns `true` when a prompt was dispatched. On a delivery failure the prompt
+ * is left at the head and `false` is returned so the next pass retries it.
  */
 async function maybeDispatchClaudeCliQueue(
   get: () => KanbanState,
@@ -977,19 +1013,15 @@ async function maybeDispatchClaudeCliQueue(
     !!verdict && verdict.sessionId === sessionId && verdict.complete && !verdict.movedBack
   if (!verified) return false
 
-  const { useSessionStore } = await import('./useSessionStore')
-  const queued = useSessionStore.getState().pendingFollowUpMessages.get(sessionId)
-  if (!queued || queued.length === 0) return false
-
-  const next = useSessionStore.getState().dequeueFollowUpMessage(sessionId)
-  if (!next) return false
+  // Peek the head; only remove it once delivery succeeds so nothing is lost.
+  const head = get().promptQueues[ticketKey(projectId, ticketId)]?.[0]
+  if (!head) return false
 
   const { dispatchClaudeCliFollowup } = await import('@/lib/claude-cli-followup')
-  const delivered = await dispatchClaudeCliFollowup(sessionId, next)
-  if (!delivered) {
-    useSessionStore.getState().requeueFollowUpMessageFront(sessionId, next)
-    return false
-  }
+  const delivered = await dispatchClaudeCliFollowup(sessionId, head.content)
+  if (!delivered) return false
+
+  get().removeQueuedPrompt(projectId, ticketId, head.id)
   return true
 }
 
@@ -1169,6 +1201,7 @@ export const useKanbanStore = create<KanbanState>()(
       hoveredBlockedTicketKey: null,
       completionVerdicts: new Map(),
       verifyProgress: new Map(),
+      promptQueues: {},
 
       // ── setSelectedTicketId ────────────────────────────────────────
       setSelectedTicketId: (_id: null) => {
@@ -2641,6 +2674,82 @@ export const useKanbanStore = create<KanbanState>()(
         return stored
       },
 
+      addQueuedPrompt: (projectId: string, ticketId: string, content: string): void => {
+        const text = content.trim()
+        if (!text) return
+        const key = ticketKey(projectId, ticketId)
+        set((state) => {
+          const next = { ...state.promptQueues }
+          next[key] = [...(next[key] ?? []), { id: crypto.randomUUID(), content: text }]
+          return { promptQueues: next }
+        })
+      },
+
+      updateQueuedPrompt: (
+        projectId: string,
+        ticketId: string,
+        promptId: string,
+        content: string
+      ): void => {
+        const text = content.trim()
+        const key = ticketKey(projectId, ticketId)
+        set((state) => {
+          const list = state.promptQueues[key]
+          if (!list) return {}
+          // Empty text removes the prompt rather than leaving a blank entry.
+          const updated = text
+            ? list.map((p) => (p.id === promptId ? { ...p, content: text } : p))
+            : list.filter((p) => p.id !== promptId)
+          const next = { ...state.promptQueues }
+          if (updated.length === 0) delete next[key]
+          else next[key] = updated
+          return { promptQueues: next }
+        })
+      },
+
+      removeQueuedPrompt: (projectId: string, ticketId: string, promptId: string): void => {
+        const key = ticketKey(projectId, ticketId)
+        set((state) => {
+          const list = state.promptQueues[key]
+          if (!list) return {}
+          const updated = list.filter((p) => p.id !== promptId)
+          const next = { ...state.promptQueues }
+          if (updated.length === 0) delete next[key]
+          else next[key] = updated
+          return { promptQueues: next }
+        })
+      },
+
+      moveQueuedPrompt: (
+        projectId: string,
+        ticketId: string,
+        promptId: string,
+        direction: 'up' | 'down'
+      ): void => {
+        const key = ticketKey(projectId, ticketId)
+        set((state) => {
+          const list = state.promptQueues[key]
+          if (!list) return {}
+          const i = list.findIndex((p) => p.id === promptId)
+          if (i < 0) return {}
+          const j = direction === 'up' ? i - 1 : i + 1
+          if (j < 0 || j >= list.length) return {}
+          const updated = [...list]
+          ;[updated[i], updated[j]] = [updated[j], updated[i]]
+          return { promptQueues: { ...state.promptQueues, [key]: updated } }
+        })
+      },
+
+      clearQueuedPrompts: (projectId: string, ticketId: string): void => {
+        const key = ticketKey(projectId, ticketId)
+        set((state) => {
+          if (!state.promptQueues[key]) return {}
+          const next = { ...state.promptQueues }
+          delete next[key]
+          return { promptQueues: next }
+        })
+      },
+
       startClaudeCliFollowup: async (
         projectId: string,
         ticketId: string,
@@ -2676,7 +2785,8 @@ export const useKanbanStore = create<KanbanState>()(
       partialize: (state) => ({
         isBoardViewActive: state.isBoardViewActive,
         isPinnedBoardActive: state.isPinnedBoardActive,
-        simpleModeByProject: state.simpleModeByProject
+        simpleModeByProject: state.simpleModeByProject,
+        promptQueues: state.promptQueues
       })
     }
   )

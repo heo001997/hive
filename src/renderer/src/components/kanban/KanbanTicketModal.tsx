@@ -1197,6 +1197,7 @@ function KanbanTicketModalContent({
                   {ticket.title}
                 </span>
                 <div className="ml-auto shrink-0 flex items-center gap-2">
+                  <ClaudeCliQueueSection ticket={ticket} />
                   <TicketRunButton
                     state={runScriptState}
                     testId="full-width-run-btn"
@@ -1211,12 +1212,6 @@ function KanbanTicketModalContent({
                 </div>
               </div>
               <ClaudeCliPortalSlot sessionId={ticket.current_session_id} />
-              {/* Prompt queue (Claude CLI): type here to line up the next prompt;
-                  it runs after this one verifies complete. Renders nothing unless
-                  the Queue prompts feature is active. */}
-              <div className="shrink-0 px-4 pb-3">
-                <ClaudeCliQueueSection ticket={ticket} showComposer />
-              </div>
             </div>
           ) : hasSession && sessionReady ? (
             <SessionStreamPanel
@@ -1574,6 +1569,10 @@ function EditModeContent({
           onChange={setAutoApproveReview}
           testId="ticket-edit-auto-approve-review-toggle"
         />
+
+        {/* Prompt queue (Claude CLI) — author a batch of follow-ups up front.
+            Hidden on Done; renders nothing unless the feature is active. */}
+        {ticket.column !== 'done' && <ClaudeCliQueueSection ticket={ticket} />}
 
         {/* Dependencies section */}
         <div className="space-y-1.5">
@@ -3129,7 +3128,8 @@ function ReviewModeContent({
     if (queueFeatureActive) {
       const sessionId = ticket.current_session_id
       const status = useWorktreeStatusStore.getState().sessionStatuses[sessionId]?.status ?? null
-      const queued = useSessionStore.getState().pendingFollowUpMessages.get(sessionId) ?? []
+      const queued =
+        useKanbanStore.getState().promptQueues[ticketKey(ticket.project_id, ticket.id)] ?? []
       const busy = status === 'working' || status === 'planning'
       if (busy || queued.length > 0) {
         const value = followUpText.trim()
@@ -3137,7 +3137,7 @@ function ReviewModeContent({
         if (attachments.length > 0) {
           toast.warning('Attachments are not supported for queued prompts — queuing text only')
         }
-        useSessionStore.getState().enqueueFollowUpMessage(sessionId, value)
+        useKanbanStore.getState().addQueuedPrompt(ticket.project_id, ticket.id, value)
         setFollowUpText('')
         setAttachments([])
         toast.success('Prompt queued — runs after this step verifies complete')

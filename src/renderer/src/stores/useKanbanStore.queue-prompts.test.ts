@@ -2,10 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KanbanTicket } from '../../../main/db/types'
 import type { CompletionCheckResult, SessionFingerprint } from '@shared/types/completion'
 
-// Queue prompts (Claude CLI): a verified-complete Review ticket should pop the
-// next pending follow-up and dispatch it. These tests drive the store gate
-// (`maybeDispatchClaudeCliQueue` via the public actions + the Strict Verify
-// settle path) with `dispatchClaudeCliFollowup` mocked so no PTY is touched.
+// Queue prompts (Claude CLI): prompts live in the kanban store's ticket-keyed
+// `promptQueues`. A verified-complete Review ticket pops the FIFO head and
+// dispatches it. These tests drive the store gate (`maybeDispatchClaudeCliQueue`
+// via the public actions + the Strict Verify settle path) plus the CRUD actions,
+// with `dispatchClaudeCliFollowup` mocked so no PTY is touched.
 
 vi.mock('@/api/kanban-api', () => ({
   kanbanApi: {
@@ -44,7 +45,9 @@ const hoisted = vi.hoisted(() => ({
     kanbanQueuePromptsEnabled: true
   },
   sessionStatuses: {} as Record<string, { status: string; timestamp: number } | null>,
-  followUpQueue: new Map<string, string[]>(),
+  // Session-native follow-up queue — read only by `passesSettleGuards` to abort a
+  // settle when the queue feature is OFF. Distinct from the ticket promptQueues.
+  pendingFollowUp: new Map<string, string[]>(),
   sessionSdk: 'claude-code-cli' as string,
   dispatch: vi.fn<(...args: unknown[]) => Promise<boolean>>(),
   detect: vi.fn<(...args: unknown[]) => Promise<CompletionCheckResult>>(),
@@ -78,27 +81,9 @@ vi.mock('./useWorktreeStatusStore', () => ({
 vi.mock('./useSessionStore', () => ({
   useSessionStore: {
     getState: () => ({
-      pendingFollowUpMessages: hoisted.followUpQueue,
+      pendingFollowUpMessages: hoisted.pendingFollowUp,
       getSessionById: (id: string) =>
-        id === SESSION_ID ? { id, agent_sdk: hoisted.sessionSdk } : null,
-      dequeueFollowUpMessage: (id: string): string | null => {
-        const q = hoisted.followUpQueue.get(id) ?? []
-        if (q.length === 0) return null
-        const [head, ...rest] = q
-        hoisted.followUpQueue.set(id, rest)
-        return head
-      },
-      requeueFollowUpMessageFront: (id: string, msg: string): void => {
-        const q = hoisted.followUpQueue.get(id) ?? []
-        hoisted.followUpQueue.set(id, [msg, ...q])
-      },
-      enqueueFollowUpMessage: (id: string, msg: string): void => {
-        const q = hoisted.followUpQueue.get(id) ?? []
-        hoisted.followUpQueue.set(id, [...q, msg])
-      },
-      setPendingFollowUpMessages: (id: string, msgs: string[]): void => {
-        hoisted.followUpQueue.set(id, msgs)
-      }
+        id === SESSION_ID ? { id, agent_sdk: hoisted.sessionSdk } : null
     })
   }
 }))
@@ -159,6 +144,21 @@ function columnOf(ticketId: string) {
   return useKanbanStore.getState().tickets.get(PROJECT_ID)?.find((t) => t.id === ticketId)?.column
 }
 
+/** Seed the ticket prompt queue by replaying the public add action per item. */
+function setQueue(ticketId: string, contents: string[]): void {
+  for (const c of contents) {
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, ticketId, c)
+  }
+}
+
+function queueOf(ticketId: string) {
+  return useKanbanStore.getState().promptQueues[ticketKey(PROJECT_ID, ticketId)] ?? []
+}
+
+function queueContents(ticketId: string): string[] {
+  return queueOf(ticketId).map((p) => p.content)
+}
+
 function setVerifiedVerdict(ticketId: string, overrides: Record<string, unknown> = {}): void {
   useKanbanStore.getState().setCompletionVerdict(ticketKey(PROJECT_ID, ticketId), {
     complete: true,
@@ -190,7 +190,7 @@ beforeEach(() => {
   hoisted.settings.kanbanInProgressRescueEnabled = false
   hoisted.settings.kanbanQueuePromptsEnabled = true
   hoisted.sessionStatuses = { [SESSION_ID]: { status: 'completed', timestamp: -1_000_000 } }
-  hoisted.followUpQueue = new Map()
+  hoisted.pendingFollowUp = new Map()
   hoisted.sessionSdk = 'claude-code-cli'
   hoisted.dispatch.mockReset()
   hoisted.dispatch.mockResolvedValue(true)
@@ -200,7 +200,8 @@ beforeEach(() => {
   useKanbanStore.setState({
     tickets: new Map(),
     dependencyMap: new Map(),
-    completionVerdicts: new Map()
+    completionVerdicts: new Map(),
+    promptQueues: {}
   })
 })
 
@@ -209,48 +210,43 @@ afterEach(() => {
   useKanbanStore.setState({
     tickets: new Map(),
     dependencyMap: new Map(),
-    completionVerdicts: new Map()
+    completionVerdicts: new Map(),
+    promptQueues: {}
   })
 })
 
 describe('dispatchClaudeCliQueueIfReady — gating', () => {
-  it('dispatches the FIFO head and dequeues it when verified + queued', async () => {
+  it('dispatches the FIFO head and removes it from the queue when verified + queued', async () => {
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1')
-    hoisted.followUpQueue.set(SESSION_ID, ['first', 'second'])
+    setQueue('ticket-1', ['first', 'second'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(true)
     expect(hoisted.dispatch).toHaveBeenCalledTimes(1)
     expect(hoisted.dispatch).toHaveBeenCalledWith(SESSION_ID, 'first')
-    expect(hoisted.followUpQueue.get(SESSION_ID)).toEqual(['second'])
+    expect(queueContents('ticket-1')).toEqual(['second'])
   })
 
-  it('requeues the prompt at the front and returns false when dispatch fails', async () => {
+  it('leaves the head in place (no loss) and returns false when dispatch fails', async () => {
     hoisted.dispatch.mockResolvedValue(false)
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1')
-    hoisted.followUpQueue.set(SESSION_ID, ['first', 'second'])
+    setQueue('ticket-1', ['first', 'second'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
-    // The dequeued head is restored to the front — nothing is lost.
-    expect(hoisted.followUpQueue.get(SESSION_ID)).toEqual(['first', 'second'])
+    // Peek-then-remove-on-success: a delivery failure leaves the queue untouched.
+    expect(queueContents('ticket-1')).toEqual(['first', 'second'])
   })
 
   it('does nothing when the queue is empty', async () => {
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1')
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
@@ -258,24 +254,21 @@ describe('dispatchClaudeCliQueueIfReady — gating', () => {
 
   it('does not dispatch without a verified-complete verdict', async () => {
     seed(makeTicket({ column: 'review' }))
-    hoisted.followUpQueue.set(SESSION_ID, ['first'])
+    setQueue('ticket-1', ['first'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
+    expect(queueContents('ticket-1')).toEqual(['first'])
   })
 
   it('does not dispatch when the verdict was bounced (movedBack)', async () => {
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1', { complete: false, movedBack: true })
-    hoisted.followUpQueue.set(SESSION_ID, ['first'])
+    setQueue('ticket-1', ['first'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
@@ -284,11 +277,9 @@ describe('dispatchClaudeCliQueueIfReady — gating', () => {
   it('does not dispatch when the verdict belongs to a different session', async () => {
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1', { sessionId: 'other-session' })
-    hoisted.followUpQueue.set(SESSION_ID, ['first'])
+    setQueue('ticket-1', ['first'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
@@ -297,11 +288,9 @@ describe('dispatchClaudeCliQueueIfReady — gating', () => {
   it('does not dispatch when the ticket is not in Review', async () => {
     seed(makeTicket({ column: 'in_progress' }))
     setVerifiedVerdict('ticket-1')
-    hoisted.followUpQueue.set(SESSION_ID, ['first'])
+    setQueue('ticket-1', ['first'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
@@ -311,11 +300,9 @@ describe('dispatchClaudeCliQueueIfReady — gating', () => {
     hoisted.settings.kanbanQueuePromptsEnabled = false
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1')
-    hoisted.followUpQueue.set(SESSION_ID, ['first'])
+    setQueue('ticket-1', ['first'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
@@ -325,11 +312,9 @@ describe('dispatchClaudeCliQueueIfReady — gating', () => {
     hoisted.settings.kanbanStrictVerifyReviewerEnabled = false
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1')
-    hoisted.followUpQueue.set(SESSION_ID, ['first'])
+    setQueue('ticket-1', ['first'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
@@ -339,11 +324,9 @@ describe('dispatchClaudeCliQueueIfReady — gating', () => {
     hoisted.sessionSdk = 'claude-code'
     seed(makeTicket({ column: 'review' }))
     setVerifiedVerdict('ticket-1')
-    hoisted.followUpQueue.set(SESSION_ID, ['first'])
+    setQueue('ticket-1', ['first'])
 
-    const ok = await useKanbanStore
-      .getState()
-      .dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
+    const ok = await useKanbanStore.getState().dispatchClaudeCliQueueIfReady(PROJECT_ID, 'ticket-1')
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
@@ -351,13 +334,13 @@ describe('dispatchClaudeCliQueueIfReady — gating', () => {
 })
 
 describe('Strict Verify settle drains the queue', () => {
-  it('runs Strict Verify on a Review ticket WITH queued follow-ups, then dispatches the head', async () => {
+  it('runs Strict Verify on a Review ticket WITH queued prompts, then dispatches the head', async () => {
     hoisted.detect.mockResolvedValue({
       success: true,
       verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
     })
-    hoisted.followUpQueue.set(SESSION_ID, ['the next prompt'])
     seed(makeTicket({ column: 'in_progress' }))
+    setQueue('ticket-1', ['the next prompt'])
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
@@ -365,7 +348,7 @@ describe('Strict Verify settle drains the queue', () => {
     // allowQueued kept the settle alive → the Watcher ran → verified → drained.
     expect(hoisted.detect).toHaveBeenCalledTimes(1)
     expect(hoisted.dispatch).toHaveBeenCalledWith(SESSION_ID, 'the next prompt')
-    expect(hoisted.followUpQueue.get(SESSION_ID)).toEqual([])
+    expect(queueContents('ticket-1')).toEqual([])
   })
 
   it('queue drain takes precedence over Auto Review Bypass (stays in Review, no Done)', async () => {
@@ -373,8 +356,8 @@ describe('Strict Verify settle drains the queue', () => {
       success: true,
       verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
     })
-    hoisted.followUpQueue.set(SESSION_ID, ['keep going'])
     seed(makeTicket({ column: 'in_progress', auto_approve_review: true }))
+    setQueue('ticket-1', ['keep going'])
     useKanbanStore.setState({
       dependencyMap: new Map([
         [ticketKey(PROJECT_ID, 'ticket-2'), new Set([ticketKey(PROJECT_ID, 'ticket-1')])]
@@ -388,19 +371,19 @@ describe('Strict Verify settle drains the queue', () => {
     expect(columnOf('ticket-1')).toBe('review')
   })
 
-  it('feature OFF: a queued follow-up blocks the settle so the Watcher never runs', async () => {
+  it('feature OFF: a session follow-up blocks the settle so the Watcher never runs', async () => {
     hoisted.settings.kanbanQueuePromptsEnabled = false
     hoisted.detect.mockResolvedValue({
       success: true,
       verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
     })
-    hoisted.followUpQueue.set(SESSION_ID, ['orphan prompt'])
+    hoisted.pendingFollowUp.set(SESSION_ID, ['orphan prompt'])
     seed(makeTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
 
-    // allowQueued=false → non-empty queue aborts the settle guard.
+    // allowQueued=false → a non-empty session follow-up queue aborts the settle guard.
     expect(hoisted.detect).not.toHaveBeenCalled()
     expect(hoisted.dispatch).not.toHaveBeenCalled()
     expect(columnOf('ticket-1')).toBe('review')
@@ -411,15 +394,15 @@ describe('Strict Verify settle drains the queue', () => {
       success: true,
       verdict: { complete: false, needsInput: false, confidence: 0.9, reason: 'tests failing' }
     })
-    hoisted.followUpQueue.set(SESSION_ID, ['too soon'])
     seed(makeTicket({ column: 'in_progress' }))
+    setQueue('ticket-1', ['too soon'])
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
 
     expect(hoisted.dispatch).not.toHaveBeenCalled()
     expect(columnOf('ticket-1')).toBe('in_progress')
-    expect(hoisted.followUpQueue.get(SESSION_ID)).toEqual(['too soon'])
+    expect(queueContents('ticket-1')).toEqual(['too soon'])
   })
 })
 
@@ -445,5 +428,95 @@ describe('startClaudeCliFollowup', () => {
 
     expect(ok).toBe(false)
     expect(hoisted.dispatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('prompt queue CRUD actions', () => {
+  it('addQueuedPrompt appends a trimmed prompt with a generated id', () => {
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, 'ticket-1', '  do thing  ')
+
+    const q = queueOf('ticket-1')
+    expect(q).toHaveLength(1)
+    expect(q[0].content).toBe('do thing')
+    expect(typeof q[0].id).toBe('string')
+    expect(q[0].id.length).toBeGreaterThan(0)
+  })
+
+  it('addQueuedPrompt ignores empty / whitespace-only content', () => {
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, 'ticket-1', '   ')
+    expect(queueOf('ticket-1')).toEqual([])
+    expect(useKanbanStore.getState().promptQueues[ticketKey(PROJECT_ID, 'ticket-1')]).toBeUndefined()
+  })
+
+  it('addQueuedPrompt preserves FIFO order across calls', () => {
+    setQueue('ticket-1', ['a', 'b', 'c'])
+    expect(queueContents('ticket-1')).toEqual(['a', 'b', 'c'])
+  })
+
+  it('updateQueuedPrompt edits the targeted prompt content (trimmed)', () => {
+    setQueue('ticket-1', ['a', 'b'])
+    const [, second] = queueOf('ticket-1')
+    useKanbanStore.getState().updateQueuedPrompt(PROJECT_ID, 'ticket-1', second.id, '  edited  ')
+    expect(queueContents('ticket-1')).toEqual(['a', 'edited'])
+  })
+
+  it('updateQueuedPrompt with empty text removes that prompt', () => {
+    setQueue('ticket-1', ['a', 'b'])
+    const [first] = queueOf('ticket-1')
+    useKanbanStore.getState().updateQueuedPrompt(PROJECT_ID, 'ticket-1', first.id, '   ')
+    expect(queueContents('ticket-1')).toEqual(['b'])
+  })
+
+  it('updateQueuedPrompt clearing the last prompt deletes the queue key', () => {
+    setQueue('ticket-1', ['only'])
+    const [only] = queueOf('ticket-1')
+    useKanbanStore.getState().updateQueuedPrompt(PROJECT_ID, 'ticket-1', only.id, '')
+    expect(useKanbanStore.getState().promptQueues[ticketKey(PROJECT_ID, 'ticket-1')]).toBeUndefined()
+  })
+
+  it('removeQueuedPrompt removes the targeted prompt by id', () => {
+    setQueue('ticket-1', ['a', 'b', 'c'])
+    const [, middle] = queueOf('ticket-1')
+    useKanbanStore.getState().removeQueuedPrompt(PROJECT_ID, 'ticket-1', middle.id)
+    expect(queueContents('ticket-1')).toEqual(['a', 'c'])
+  })
+
+  it('removeQueuedPrompt deletes the queue key when it empties', () => {
+    setQueue('ticket-1', ['only'])
+    const [only] = queueOf('ticket-1')
+    useKanbanStore.getState().removeQueuedPrompt(PROJECT_ID, 'ticket-1', only.id)
+    expect(useKanbanStore.getState().promptQueues[ticketKey(PROJECT_ID, 'ticket-1')]).toBeUndefined()
+  })
+
+  it('moveQueuedPrompt up / down reorders neighbours', () => {
+    setQueue('ticket-1', ['a', 'b', 'c'])
+    const ids = queueOf('ticket-1').map((p) => p.id)
+    useKanbanStore.getState().moveQueuedPrompt(PROJECT_ID, 'ticket-1', ids[2], 'up')
+    expect(queueContents('ticket-1')).toEqual(['a', 'c', 'b'])
+    useKanbanStore.getState().moveQueuedPrompt(PROJECT_ID, 'ticket-1', ids[0], 'down')
+    expect(queueContents('ticket-1')).toEqual(['c', 'a', 'b'])
+  })
+
+  it('moveQueuedPrompt is a no-op at the boundaries', () => {
+    setQueue('ticket-1', ['a', 'b'])
+    const ids = queueOf('ticket-1').map((p) => p.id)
+    useKanbanStore.getState().moveQueuedPrompt(PROJECT_ID, 'ticket-1', ids[0], 'up')
+    useKanbanStore.getState().moveQueuedPrompt(PROJECT_ID, 'ticket-1', ids[1], 'down')
+    expect(queueContents('ticket-1')).toEqual(['a', 'b'])
+  })
+
+  it('clearQueuedPrompts empties the queue for the ticket', () => {
+    setQueue('ticket-1', ['a', 'b', 'c'])
+    useKanbanStore.getState().clearQueuedPrompts(PROJECT_ID, 'ticket-1')
+    expect(useKanbanStore.getState().promptQueues[ticketKey(PROJECT_ID, 'ticket-1')]).toBeUndefined()
+  })
+
+  it('queues are isolated per ticket key', () => {
+    setQueue('ticket-1', ['x'])
+    setQueue('ticket-2', ['y', 'z'])
+    expect(queueContents('ticket-1')).toEqual(['x'])
+    expect(queueContents('ticket-2')).toEqual(['y', 'z'])
+    useKanbanStore.getState().clearQueuedPrompts(PROJECT_ID, 'ticket-1')
+    expect(queueContents('ticket-2')).toEqual(['y', 'z'])
   })
 })
