@@ -156,6 +156,12 @@ export function FilePreview({
       <div
         className="relative flex max-h-[90vh] max-w-[90vw] flex-col p-4"
         onClick={(e) => e.stopPropagation()}
+        // When opened from inside a Radix Dialog, react-remove-scroll adds a
+        // document-level wheel listener that preventDefaults scroll for any target
+        // outside the dialog subtree. This overlay is portaled to document.body, so
+        // its scrollable children (e.g. the text <pre>) get blocked. Stop the wheel
+        // event before it reaches document so the inner scroll works.
+        onWheel={(e) => e.stopPropagation()}
       >
         <button
           className="absolute -right-2 -top-2 z-10 rounded-full bg-background/90 p-2 text-foreground shadow-lg transition-colors hover:bg-background"

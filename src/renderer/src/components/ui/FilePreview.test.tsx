@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { FilePreview } from './FilePreview'
 import { fileApi } from '@/api/file-api'
@@ -61,6 +61,20 @@ describe('FilePreview — disk files', () => {
     expect(pre?.className).toContain('min-h-0')
     expect(readFile).toHaveBeenCalledWith('/tmp/notes.md')
     expect(readImageAsBase64).not.toHaveBeenCalled()
+  })
+
+  it('stops wheel propagation so scrolling works inside a Radix Dialog scroll lock', async () => {
+    // react-remove-scroll (used by Radix Dialog) cancels wheel events whose target
+    // is outside the dialog subtree via a document listener; this overlay is
+    // portaled to body, so it must stop the wheel event reaching document.
+    readFile.mockResolvedValue({ success: true, value: { success: true, content: 'hello from disk' } })
+    render(<FilePreview source={{ kind: 'path', path: '/tmp/notes.md' }} name="notes.md" onClose={() => {}} />)
+
+    const pre = (await screen.findByText('hello from disk')).closest('pre')!
+    const wheel = createEvent.wheel(pre, { deltaY: 120 })
+    const stop = vi.spyOn(wheel, 'stopPropagation')
+    fireEvent(pre, wheel)
+    expect(stop).toHaveBeenCalled()
   })
 
   it('loads images as a base64 data URL', async () => {
