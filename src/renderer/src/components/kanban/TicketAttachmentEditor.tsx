@@ -17,9 +17,11 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { FilePreview } from '@/components/ui/FilePreview'
 import { parseAttachmentUrl } from '@/lib/attachment-utils'
 import type { AttachmentInfo } from '@/lib/attachment-utils'
 import { fileApi } from '@/api/file-api'
+import { systemApi } from '@/api/system-api'
 import { attachmentApi } from '@/api/attachment-api'
 
 export interface TicketAttachment extends AttachmentInfo {
@@ -191,6 +193,7 @@ function AttachmentChip({
   testIdPrefix: string
 }) {
   const [thumbnailSrc, setThumbnailSrc] = useState<string | null>(null)
+  const [previewing, setPreviewing] = useState(false)
 
   useEffect(() => {
     if (attachment.type !== 'image') return
@@ -207,32 +210,59 @@ function AttachmentChip({
     }
   }, [attachment.type, attachment.url])
 
+  const handleActivate = useCallback(() => {
+    if (attachment.type === 'image' || attachment.type === 'file') {
+      // Preview the file in-app (image / pdf / text / media, with a fallback card).
+      setPreviewing(true)
+    } else {
+      // jira / figma / generic link
+      systemApi.openInChrome(attachment.url).catch(() => {})
+    }
+  }, [attachment.type, attachment.url])
+
   return (
     <span
       data-testid={`${testIdPrefix}-attachment-chip-${index}`}
       className="inline-flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs"
     >
-      {attachment.type === 'image' && thumbnailSrc ? (
-        <img src={thumbnailSrc} alt={attachment.label} className="h-6 w-6 rounded object-cover" />
-      ) : attachment.type === 'image' ? (
-        <ImageIcon className="h-3 w-3 text-emerald-500" />
-      ) : attachment.type === 'jira' ? (
-        <Ticket className="h-3 w-3 text-blue-500" />
-      ) : attachment.type === 'figma' ? (
-        <Figma className="h-3 w-3 text-purple-500" />
-      ) : attachment.type === 'file' ? (
-        <FileIcon className="h-3 w-3 text-green-500" />
-      ) : (
-        <LinkIcon className="h-3 w-3 text-muted-foreground" />
-      )}
-      <span className="max-w-[180px] truncate">{attachment.label}</span>
+      <button
+        type="button"
+        onClick={handleActivate}
+        className="inline-flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity"
+        data-testid={`${testIdPrefix}-attachment-open-${index}`}
+      >
+        {attachment.type === 'image' && thumbnailSrc ? (
+          <img src={thumbnailSrc} alt={attachment.label} className="h-6 w-6 rounded object-cover" />
+        ) : attachment.type === 'image' ? (
+          <ImageIcon className="h-3 w-3 text-emerald-500" />
+        ) : attachment.type === 'jira' ? (
+          <Ticket className="h-3 w-3 text-blue-500" />
+        ) : attachment.type === 'figma' ? (
+          <Figma className="h-3 w-3 text-purple-500" />
+        ) : attachment.type === 'file' ? (
+          <FileIcon className="h-3 w-3 text-green-500" />
+        ) : (
+          <LinkIcon className="h-3 w-3 text-muted-foreground" />
+        )}
+        <span className="max-w-[180px] truncate">{attachment.label}</span>
+      </button>
       <button
         data-testid={`${testIdPrefix}-attachment-remove-${index}`}
-        onClick={() => onRemove(index)}
+        onClick={(e) => {
+          e.stopPropagation()
+          onRemove(index)
+        }}
         className="ml-0.5 rounded-sm hover:bg-muted transition-colors"
       >
         <X className="h-3 w-3 text-muted-foreground hover:text-foreground" />
       </button>
+      {previewing && (
+        <FilePreview
+          source={{ kind: 'path', path: attachment.url }}
+          name={attachment.label}
+          onClose={() => setPreviewing(false)}
+        />
+      )}
     </span>
   )
 }
