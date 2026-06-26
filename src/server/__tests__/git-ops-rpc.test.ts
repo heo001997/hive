@@ -1270,7 +1270,7 @@ describe('git ops RPC domain', () => {
       },
       {
         file: 'gh',
-        args: ['pr', 'merge', '123', '--merge'],
+        args: ['pr', 'merge', '123', '--squash'],
         cwd: '/tmp/hive-feature'
       },
       {
@@ -1333,7 +1333,7 @@ describe('git ops RPC domain', () => {
       }
       if (file === 'gh' && args[1] === 'merge') {
         throw new Error(
-          'Command failed: gh pr merge 24 --merge\nPull request heo001997/hive#24 is not mergeable: the merge commit cannot be cleanly created.'
+          'Command failed: gh pr merge 24 --squash\nPull request heo001997/hive#24 is not mergeable: the merge commit cannot be cleanly created.'
         )
       }
       return { stdout: '', stderr: '' }

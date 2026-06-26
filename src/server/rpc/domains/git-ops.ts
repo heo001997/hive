@@ -1923,7 +1923,7 @@ export const makeLiveGitOpsRpcService = (
       Effect.tryPromise({
         try: async (): Promise<GitOperationResult> => {
           try {
-            // Pre-flight: GitHub refuses to create the merge commit when the PR
+            // Pre-flight: GitHub refuses to create the squash commit when the PR
             // branch conflicts with its base, and `gh pr merge` then exits with a
             // raw multi-line stderr dump. Detect that up front and return an
             // actionable message instead of attempting a doomed merge.
@@ -1944,7 +1944,10 @@ export const makeLiveGitOpsRpcService = (
             }
 
             if (!alreadyMerged) {
-              await runCommand('gh', ['pr', 'merge', String(prNumber), '--merge'], {
+              // Squash merge by default so the base branch gets a single, clean commit
+              // per PR instead of the feature branch's full WIP history plus a merge
+              // commit. Keeps `<base>` history linear and readable.
+              await runCommand('gh', ['pr', 'merge', String(prNumber), '--squash'], {
                 cwd: worktreePath
               })
             }
