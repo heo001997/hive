@@ -8,13 +8,15 @@ import {
   X,
   ExternalLink,
   GitMerge,
-  Archive
+  Archive,
+  Ticket
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { usePRNotificationStore } from '@/stores/usePRNotificationStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useProjectStore } from '@/stores/useProjectStore'
 import { useKanbanStore } from '@/stores/useKanbanStore'
+import { openTicketDetail } from '@/lib/navigate-to-ticket'
 import { toast } from '@/lib/toast'
 import { gitApi } from '@/api/git-api'
 
@@ -70,10 +72,43 @@ function PRNotificationCard({
 
   const [mergePhase, setMergePhase] = useState<MergePhase>('idle')
   const showMergeButton = !!(prNumber && worktreeId && (status === 'success' || status === 'info'))
+  // Reveal the "Open Ticket" shortcut whenever the card is settled and linked to
+  // a worktree — the linked ticket is resolved lazily on click.
+  const showOpenTicketButton = !!(worktreeId && isDone)
 
   const handleClose = useCallback(() => {
     dismiss(id)
   }, [id, dismiss])
+
+  // Resolve the worktree's owning project + linked ticket, then navigate to the
+  // board and open its detail modal (mirrors the move-to-Done resolution).
+  const handleOpenTicket = useCallback(async () => {
+    if (!worktreeId) return
+
+    const worktreeStore = useWorktreeStore.getState()
+    let projectId: string | null = null
+    for (const [projId, worktrees] of worktreeStore.worktreesByProject) {
+      if (worktrees.some((w) => w.id === worktreeId)) {
+        projectId = projId
+        break
+      }
+    }
+    if (!projectId) {
+      toast.error('Worktree not found')
+      return
+    }
+
+    const ticket = useKanbanStore
+      .getState()
+      .getTicketsForProject(projectId)
+      .find((t) => t.worktree_id === worktreeId)
+    if (!ticket) {
+      toast.error('Linked ticket not found')
+      return
+    }
+
+    await openTicketDetail(projectId, ticket.id)
+  }, [worktreeId])
 
   const handleMerge = useCallback(async () => {
     if (!prNumber || !worktreeId) return
@@ -256,9 +291,23 @@ function PRNotificationCard({
             Open on GitHub
           </a>
         )}
-        {showMergeButton && (
-          <div className="mt-1.5">
-            {mergePhase === 'idle' && (
+        {(showOpenTicketButton || showMergeButton) && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {showOpenTicketButton && (
+              <button
+                type="button"
+                onClick={handleOpenTicket}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
+                  'bg-blue-500/10 border border-blue-500/30 text-blue-400',
+                  'hover:bg-blue-500/20 transition-colors'
+                )}
+              >
+                <Ticket className="h-3 w-3" />
+                Open Ticket
+              </button>
+            )}
+            {showMergeButton && mergePhase === 'idle' && (
               <button
                 type="button"
                 onClick={handleMerge}
