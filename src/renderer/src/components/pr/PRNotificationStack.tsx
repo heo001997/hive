@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
 import { usePRNotificationStore } from '@/stores/usePRNotificationStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useProjectStore } from '@/stores/useProjectStore'
-import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useKanbanStore, ticketKey } from '@/stores/useKanbanStore'
 import { openTicketDetail } from '@/lib/navigate-to-ticket'
 import { toast } from '@/lib/toast'
 import { gitApi } from '@/api/git-api'
@@ -77,6 +77,29 @@ function PRNotificationCard({
   // Reveal the "Open Ticket" shortcut whenever the card is settled and linked to
   // a worktree — the linked ticket is resolved lazily on click.
   const showOpenTicketButton = !!(worktreeId && isDone)
+
+  // Resolve the owning project reactively so the chain/terminal check can run at
+  // render time (the Archive button's visibility depends on it).
+  const projectId = useWorktreeStore((s) => {
+    if (!worktreeId) return null
+    for (const [pid, worktrees] of s.worktreesByProject) {
+      if (worktrees.some((w) => w.id === worktreeId)) return pid
+    }
+    return null
+  })
+
+  // A ticket is the chain's last step ("terminal") when no other ticket depends on
+  // it. Archiving deletes the shared worktree/branch, so only the terminal ticket
+  // may archive — otherwise the next chain ticket loses its branch out from under
+  // it. Standalone tickets (and the no-ticket fallback) are terminal.
+  const isTerminalTicket = useKanbanStore((s) => {
+    if (!ticketId || !projectId) return true
+    const myKey = ticketKey(projectId, ticketId)
+    for (const blockers of s.dependencyMap.values()) {
+      if (blockers.has(myKey)) return false
+    }
+    return true
+  })
 
   const handleClose = useCallback(() => {
     dismiss(id)
@@ -181,10 +204,15 @@ function PRNotificationCard({
       return
     }
 
+    // Move the ticket that initiated this PR — not just the first ticket on the
+    // worktree. Chained tickets share one worktree, so a worktree_id match would
+    // advance the wrong ticket. Fall back to the worktree match only when no
+    // explicit ticketId was captured.
+    const projectTickets = useKanbanStore.getState().getTicketsForProject(projectId)
+    const ticket = ticketId
+      ? projectTickets.find((t) => t.id === ticketId)
+      : projectTickets.find((t) => t.worktree_id === worktreeId)
     const kanbanStore = useKanbanStore.getState()
-    const ticket = kanbanStore
-      .getTicketsForProject(projectId)
-      .find((t) => t.worktree_id === worktreeId)
 
     setMergePhase('moving')
     try {
@@ -201,11 +229,14 @@ function PRNotificationCard({
       toast.error('Failed to move ticket to Done')
       setMergePhase('merged')
     }
-  }, [worktreeId])
+  }, [worktreeId, ticketId])
 
   // Step 2 (after Move to Done): archive the worktree.
   const handleArchive = useCallback(async () => {
     if (!worktreeId) return
+    // Guard: archiving wipes the shared worktree/branch. Refuse on a non-terminal
+    // chain ticket (the button is hidden in that case, but defend in depth).
+    if (!isTerminalTicket) return
 
     // Resolve worktree and project path from stores
     const worktreeStore = useWorktreeStore.getState()
@@ -249,7 +280,7 @@ function PRNotificationCard({
       toast.error('Failed to archive worktree')
       setMergePhase('moved')
     }
-  }, [worktreeId, id, dismiss])
+  }, [worktreeId, id, dismiss, isTerminalTicket])
 
   return (
     <div
@@ -371,7 +402,9 @@ function PRNotificationCard({
                 Moving to Done...
               </button>
             )}
-            {mergePhase === 'moved' && (
+            {/* Archive deletes the shared worktree/branch — only offer it on the
+                chain's terminal ticket so earlier chain steps keep their branch. */}
+            {mergePhase === 'moved' && isTerminalTicket && (
               <button
                 type="button"
                 onClick={handleArchive}
