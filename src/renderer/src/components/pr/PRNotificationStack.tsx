@@ -191,6 +191,9 @@ function PRNotificationCard({
         if (pull?.pulled) {
           toast.success(`Pulled latest ${pull.baseBranch} locally`)
         }
+        if (result.warning) {
+          toast.warning(result.warning)
+        }
         if (pull?.warning) {
           toast.warning(pull.warning)
         }

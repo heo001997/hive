@@ -41,6 +41,9 @@ export interface GitOperationResult {
   readonly success: boolean
   readonly error?: string
   readonly localBasePull?: GitLocalBasePullResult
+  // A non-fatal notice for an operation that still succeeded — e.g. prMerge had to
+  // fall back to a merge commit because the repo disallows squash merges.
+  readonly warning?: string
   // Set by prMerge when the merge failed specifically because the PR branch
   // conflicts with its base — lets the UI show a recoverable, actionable message
   // instead of treating it like an unexpected failure.
@@ -700,6 +703,14 @@ const isPrMergeConflictError = (message: string): boolean => {
   return PR_MERGE_CONFLICT_PHRASES.some((phrase) => lower.includes(phrase))
 }
 
+// gh refuses `--squash` when the repo has "Allow squash merging" disabled, e.g.
+// "Squash merges are not allowed on this repository". Detect it so prMerge can fall
+// back to a standard merge commit instead of failing the whole merge.
+const isSquashNotAllowedError = (message: string): boolean => {
+  const lower = message.toLowerCase()
+  return lower.includes('squash') && lower.includes('not allowed')
+}
+
 // A clear, actionable message for the common case: the PR branch has diverged from
 // its base and has real conflicts, so GitHub can't create the merge commit. Replaces
 // gh's raw multi-line stderr dump in the UI.
@@ -1223,10 +1234,25 @@ export const makeLiveGitOpsRpcService = (
               await git.raw(['diff', '--shortstat', `${baseBranch}...HEAD`])
             )
             const revList = await git.raw(['rev-list', '--count', `${baseBranch}..HEAD`])
+            const commitsAhead = parseInt(revList.trim(), 10) || 0
+            if (commitsAhead > 0) {
+              // A squash merge lands the branch's work as one new commit on the base
+              // with a fresh SHA, so the branch's original commits stay "ahead" by
+              // ancestry and the 3-dot diff still shows their changes — phantom work
+              // that's actually already merged. Identical tree SHAs prove HEAD has
+              // nothing the base lacks, so report it as fully merged (nothing ahead).
+              const [baseTree, headTree] = await Promise.all([
+                git.raw(['rev-parse', `${baseBranch}^{tree}`]),
+                git.raw(['rev-parse', 'HEAD^{tree}'])
+              ])
+              if (baseTree.trim() === headTree.trim()) {
+                return { success: true, filesChanged: 0, insertions: 0, deletions: 0, commitsAhead: 0 }
+              }
+            }
             return {
               success: true,
               ...stat,
-              commitsAhead: parseInt(revList.trim(), 10) || 0
+              commitsAhead
             }
           } catch (error) {
             return {
@@ -1943,13 +1969,28 @@ export const makeLiveGitOpsRpcService = (
               }
             }
 
+            let warning: string | undefined
             if (!alreadyMerged) {
               // Squash merge by default so the base branch gets a single, clean commit
               // per PR instead of the feature branch's full WIP history plus a merge
               // commit. Keeps `<base>` history linear and readable.
-              await runCommand('gh', ['pr', 'merge', String(prNumber), '--squash'], {
-                cwd: worktreePath
-              })
+              try {
+                await runCommand('gh', ['pr', 'merge', String(prNumber), '--squash'], {
+                  cwd: worktreePath
+                })
+              } catch (mergeError) {
+                const message =
+                  mergeError instanceof Error ? mergeError.message : String(mergeError)
+                // Repo has squash merging disabled — fall back to a standard merge
+                // commit so the PR still lands (history just won't be squashed). Any
+                // other failure (e.g. a conflict) propagates to the outer handler.
+                if (!isSquashNotAllowedError(message)) throw mergeError
+                await runCommand('gh', ['pr', 'merge', String(prNumber), '--merge'], {
+                  cwd: worktreePath
+                })
+                warning =
+                  'Squash merging is disabled for this repository — merged with a merge commit instead.'
+              }
             }
 
             // The base branch is the PR's base. Prefer the value already fetched in the
@@ -1997,7 +2038,7 @@ export const makeLiveGitOpsRpcService = (
               localBasePull = await fetchLocalBaseRef(worktreePath, targetBranch, runCommand)
             }
 
-            return { success: true, localBasePull }
+            return { success: true, localBasePull, warning }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             // The merge itself failed for conflict reasons (e.g. mergeability was
@@ -2109,15 +2150,22 @@ export const makeLiveGitOpsRpcService = (
       Effect.tryPromise({
         try: async (): Promise<GitBranchMergedResult> => {
           try {
-            const result = await simpleGit(worktreePath).raw([
-              'rev-list',
-              '--count',
-              `HEAD..${branch}`
-            ])
-            return {
-              success: true,
-              isMerged: (parseInt(result.trim(), 10) || 0) === 0
+            const git = simpleGit(worktreePath)
+            const ahead =
+              parseInt((await git.raw(['rev-list', '--count', `HEAD..${branch}`])).trim(), 10) || 0
+            if (ahead === 0) {
+              // Branch's commits are ancestors of HEAD — a fast-forward or real merge.
+              return { success: true, isMerged: true }
             }
+            // Squash merges replace the branch's commits with a single new commit on
+            // HEAD, so the originals are never ancestors and `rev-list` still counts
+            // them as "ahead". Fall back to a content check: identical tree SHAs mean
+            // the branch's work is fully present in HEAD, i.e. it has been merged.
+            const [headTree, branchTree] = await Promise.all([
+              git.raw(['rev-parse', 'HEAD^{tree}']),
+              git.raw(['rev-parse', `${branch}^{tree}`])
+            ])
+            return { success: true, isMerged: headTree.trim() === branchTree.trim() }
           } catch {
             return { success: true, isMerged: false }
           }
