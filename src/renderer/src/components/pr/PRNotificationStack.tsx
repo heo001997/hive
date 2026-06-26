@@ -73,13 +73,12 @@ function PRNotificationCard({
     status === 'success' || status === 'error' || status === 'info' || status === 'warning'
 
   const [mergePhase, setMergePhase] = useState<MergePhase>('idle')
-  const showMergeButton = !!(prNumber && worktreeId && (status === 'success' || status === 'info'))
   // Reveal the "Open Ticket" shortcut whenever the card is settled and linked to
   // a worktree — the linked ticket is resolved lazily on click.
   const showOpenTicketButton = !!(worktreeId && isDone)
 
   // Resolve the owning project reactively so the chain/terminal check can run at
-  // render time (the Archive button's visibility depends on it).
+  // render time (the Merge/Archive button visibility depends on it).
   const projectId = useWorktreeStore((s) => {
     if (!worktreeId) return null
     for (const [pid, worktrees] of s.worktreesByProject) {
@@ -100,6 +99,16 @@ function PRNotificationCard({
     }
     return true
   })
+
+  // Merge merges the whole shared branch/PR, so it's only valid on the chain's
+  // terminal ticket — merging from an earlier step would ship the chain before
+  // the later steps finish their work on the same branch.
+  const showMergeButton = !!(
+    prNumber &&
+    worktreeId &&
+    isTerminalTicket &&
+    (status === 'success' || status === 'info')
+  )
 
   const handleClose = useCallback(() => {
     dismiss(id)
