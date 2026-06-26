@@ -110,6 +110,26 @@ function PRNotificationCard({
     (status === 'success' || status === 'info')
   )
 
+  // True while the originating ticket still needs completing (not yet in Done).
+  const ticketNeedsDone = useKanbanStore((s) => {
+    if (!projectId) return false
+    const list = s.tickets.get(projectId) ?? []
+    const t = ticketId
+      ? list.find((x) => x.id === ticketId)
+      : list.find((x) => x.worktree_id === worktreeId)
+    return !!t && t.column !== 'done'
+  })
+
+  // Non-terminal chain tickets can't merge/archive (shared branch), but they can
+  // still be completed so the chain advances — offer Move to Done directly.
+  const showMoveToDoneButton = !!(
+    worktreeId &&
+    isDone &&
+    !isTerminalTicket &&
+    ticketNeedsDone &&
+    mergePhase === 'idle'
+  )
+
   const handleClose = useCallback(() => {
     dismiss(id)
   }, [id, dismiss])
@@ -339,7 +359,7 @@ function PRNotificationCard({
             Open on GitHub
           </a>
         )}
-        {(showOpenTicketButton || showMergeButton) && (
+        {(showOpenTicketButton || showMergeButton || showMoveToDoneButton) && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             {showOpenTicketButton && (
               <button
@@ -353,6 +373,22 @@ function PRNotificationCard({
               >
                 <Ticket className="h-3 w-3" />
                 Open Ticket
+              </button>
+            )}
+            {/* Standalone Move to Done for non-terminal chain tickets (no merge/
+                archive on shared branch). Reuses the 'moving' spinner below. */}
+            {showMoveToDoneButton && (
+              <button
+                type="button"
+                onClick={handleMoveToDone}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium',
+                  'bg-emerald-600/10 border border-emerald-600/30 text-emerald-500',
+                  'hover:bg-emerald-600/20 transition-colors'
+                )}
+              >
+                <Check className="h-3 w-3" />
+                Move to Done
               </button>
             )}
             {showMergeButton && mergePhase === 'idle' && (
