@@ -208,8 +208,11 @@ function PreviewBody({
         </div>
       )
     case 'text':
+      // min-h-0/min-w-0: as a flex item the <pre>'s default min-size is `auto`
+      // (= content size) and would override max-h/max-w, so it'd grow past the
+      // viewport instead of scrolling. Zeroing the min-size lets overflow engage.
       return (
-        <pre className="max-h-[85vh] max-w-[85vw] overflow-auto rounded-lg bg-background/95 p-4 text-left font-mono text-xs leading-relaxed text-foreground shadow-2xl">
+        <pre className="max-h-[85vh] min-h-0 max-w-[85vw] min-w-0 overflow-auto rounded-lg bg-background/95 p-4 text-left font-mono text-xs leading-relaxed text-foreground shadow-2xl">
           {state.text}
         </pre>
       )

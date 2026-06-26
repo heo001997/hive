@@ -52,7 +52,11 @@ describe('FilePreview — disk files', () => {
     readFile.mockResolvedValue({ success: true, value: { success: true, content: 'hello from disk' } })
     render(<FilePreview source={{ kind: 'path', path: '/tmp/notes.md' }} name="notes.md" onClose={() => {}} />)
 
-    expect(await screen.findByText('hello from disk')).toBeInTheDocument()
+    const pre = (await screen.findByText('hello from disk')).closest('pre')
+    expect(pre).toBeInTheDocument()
+    // Long files (md, logs, code) must scroll inside the overlay, not grow past it.
+    expect(pre?.className).toContain('overflow-auto')
+    expect(pre?.className).toContain('min-h-0')
     expect(readFile).toHaveBeenCalledWith('/tmp/notes.md')
     expect(readImageAsBase64).not.toHaveBeenCalled()
   })
