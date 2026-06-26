@@ -1211,6 +1211,12 @@ function KanbanTicketModalContent({
                 </div>
               </div>
               <ClaudeCliPortalSlot sessionId={ticket.current_session_id} />
+              {/* Prompt queue (Claude CLI): type here to line up the next prompt;
+                  it runs after this one verifies complete. Renders nothing unless
+                  the Queue prompts feature is active. */}
+              <div className="shrink-0 px-4 pb-3">
+                <ClaudeCliQueueSection ticket={ticket} showComposer />
+              </div>
             </div>
           ) : hasSession && sessionReady ? (
             <SessionStreamPanel
@@ -1568,11 +1574,6 @@ function EditModeContent({
           onChange={setAutoApproveReview}
           testId="ticket-edit-auto-approve-review-toggle"
         />
-
-        {/* Prompt queue (Claude CLI) — only while the ticket is actively working */}
-        {ticket.column === 'in_progress' && (
-          <ClaudeCliQueueSection ticket={ticket} showComposer />
-        )}
 
         {/* Dependencies section */}
         <div className="space-y-1.5">
