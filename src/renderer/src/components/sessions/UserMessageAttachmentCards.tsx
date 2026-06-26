@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
-import { KanbanSquare, FileText, MessageSquareText, X } from 'lucide-react'
+import { useState } from 'react'
+import { KanbanSquare, FileText, MessageSquareText } from 'lucide-react'
 import { ProviderIcon } from '@/components/ui/provider-icon'
+import { ImageLightbox } from '@/components/ui/ImageLightbox'
 import type { ParsedTicket, ParsedPrComment, ParsedFile, ParsedDataAttachment, ParsedDiffComment } from '@/lib/parse-user-message-attachments'
-import { useGhosttySuppression } from '@/hooks'
 
 interface UserMessageAttachmentCardsProps {
   tickets: ParsedTicket[]
@@ -20,21 +20,6 @@ export function UserMessageAttachmentCards({
   diffComments
 }: UserMessageAttachmentCardsProps): React.JSX.Element | null {
   const [expandedImage, setExpandedImage] = useState<{ dataUrl: string; name: string } | null>(null)
-  useGhosttySuppression('image-lightbox', expandedImage !== null)
-
-  // Handle Escape key to close lightbox
-  useEffect(() => {
-    if (!expandedImage) return
-
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setExpandedImage(null)
-      }
-    }
-
-    window.addEventListener('keydown', handleEscape)
-    return () => window.removeEventListener('keydown', handleEscape)
-  }, [expandedImage])
 
   if (tickets.length === 0 && prComments.length === 0 && files.length === 0 && dataAttachments.length === 0 && diffComments.length === 0) return null
 
@@ -163,31 +148,11 @@ export function UserMessageAttachmentCards({
     </div>
 
     {expandedImage && (
-      <div
-        className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm"
-        onClick={() => setExpandedImage(null)}
-        data-testid="image-lightbox"
-      >
-        <div className="relative max-w-[90vw] max-h-[90vh] p-4">
-          <button
-            className="absolute -top-2 -right-2 p-2 rounded-full bg-background/90 hover:bg-background text-foreground shadow-lg transition-colors"
-            onClick={(e) => {
-              e.stopPropagation()
-              setExpandedImage(null)
-            }}
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
-          <img
-            src={expandedImage.dataUrl}
-            alt={expandedImage.name}
-            className="max-w-full max-h-[85vh] object-contain rounded-lg shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <div className="mt-2 text-center text-sm text-white/90">{expandedImage.name}</div>
-        </div>
-      </div>
+      <ImageLightbox
+        src={expandedImage.dataUrl}
+        name={expandedImage.name}
+        onClose={() => setExpandedImage(null)}
+      />
     )}
   </>
   )

@@ -1427,6 +1427,11 @@ export const useKanbanStore = create<KanbanState>()(
           set((state) => {
             return { dependencyMap: removeDependencyLinksForTicket(state.dependencyMap, ticketKey(projectId, ticketId)) }
           })
+          // Drop the persisted ticket-detail tab view (dynamic import avoids a
+          // static cycle with useSessionStore, matching the pattern elsewhere here).
+          void import('./useSessionStore').then(({ useSessionStore }) => {
+            useSessionStore.getState().setTicketActiveView(ticketId, null)
+          })
         } catch (err) {
           // Revert on failure
           set((state) => {
@@ -1714,7 +1719,18 @@ export const useKanbanStore = create<KanbanState>()(
         set((state) => {
           const next = new Map(state.tickets)
           const tickets = (next.get(projectId) ?? []).map((t) =>
-            t.id === ticketId ? { ...t, column, sort_order: sortOrder } : t
+            t.id === ticketId
+              ? {
+                  ...t,
+                  column,
+                  sort_order: sortOrder,
+                  // Re-arm the unviewed-Review glow the instant the ticket first
+                  // enters Review (mirrors the DB reset in moveKanbanTicket).
+                  ...(column === 'review' && t.column !== 'review'
+                    ? { review_seen_at: null }
+                    : {})
+                }
+              : t
           )
           next.set(projectId, tickets)
           return { tickets: next }

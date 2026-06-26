@@ -844,6 +844,58 @@ describe('dbApi', () => {
     })
   })
 
+  it('routes session.getActiveBoardAssistants (plural) through the renderer RPC client', async () => {
+    const sessions = [
+      {
+        id: 'session-1',
+        worktree_id: null,
+        project_id: 'project-1',
+        connection_id: null,
+        name: 'Board Assistant',
+        status: 'active',
+        opencode_session_id: null,
+        claude_session_id: null,
+        agent_sdk: 'opencode',
+        mode: 'build',
+        session_type: 'board-assistant',
+        model_provider_id: null,
+        model_id: null,
+        model_variant: null,
+        created_at: '2026-05-28T00:00:00.000Z',
+        updated_at: '2026-05-28T00:00:00.000Z',
+        completed_at: null
+      },
+      {
+        id: 'session-2',
+        worktree_id: null,
+        project_id: 'project-1',
+        connection_id: null,
+        name: 'Board Assistant 2',
+        status: 'active',
+        opencode_session_id: null,
+        claude_session_id: null,
+        agent_sdk: 'opencode',
+        mode: 'build',
+        session_type: 'board-assistant',
+        model_provider_id: null,
+        model_id: null,
+        model_variant: null,
+        created_at: '2026-05-28T00:01:00.000Z',
+        updated_at: '2026-05-28T00:01:00.000Z',
+        completed_at: null
+      }
+    ]
+    const request = vi.fn().mockResolvedValue(sessions)
+    const subscribe = vi.fn()
+
+    setRendererRpcClient({ request, subscribe })
+
+    await expect(dbApi.session.getActiveBoardAssistants('project-1')).resolves.toBe(sessions)
+    expect(request).toHaveBeenCalledWith('db.session.getActiveBoardAssistants', {
+      projectId: 'project-1'
+    })
+  })
+
   it('routes session.getPinnedSessions through the renderer RPC client', async () => {
     const sessions = [
       {

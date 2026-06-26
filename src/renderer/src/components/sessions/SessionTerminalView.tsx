@@ -3,6 +3,8 @@ import { TerminalView } from '@/components/terminal/TerminalView'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useConnectionStore } from '@/stores/useConnectionStore'
+import { dbApi } from '@/api/db-api'
+import type { Worktree } from '../../../../main/db/types'
 
 interface SessionTerminalViewProps {
   sessionId: string
@@ -68,7 +70,28 @@ export function SessionTerminalView({
     setLastKnownCwd((current) => (current === resolvedCwd ? current : resolvedCwd))
   }, [resolvedCwd])
 
-  const cwd = resolvedCwd || lastKnownCwd
+  // The in-store resolution above reads a non-reactive snapshot of
+  // `worktreesByProject`. When this terminal is portaled into a surface whose
+  // project worktrees aren't loaded (e.g. a ticket detail opened from the board),
+  // that snapshot is empty and never recomputes — leaving the terminal stuck on
+  // "Loading terminal...". Fall back to the worktree's DB path so the PTY can
+  // still spawn (mirrors SessionView / TicketSessionPane).
+  const [dbCwd, setDbCwd] = useState<string | null>(null)
+  useEffect(() => {
+    if (resolvedCwd || !session?.worktree_id) {
+      setDbCwd(null)
+      return
+    }
+    let cancelled = false
+    dbApi.worktree.get<Worktree>(session.worktree_id).then((wt) => {
+      if (!cancelled) setDbCwd(wt?.path ?? null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [resolvedCwd, session?.worktree_id])
+
+  const cwd = resolvedCwd || lastKnownCwd || dbCwd
 
   if (!cwd) {
     return (

@@ -624,9 +624,10 @@ export function useOpenCodeGlobalListener(): void {
           }
         }
         if (!idleSession) {
-          for (const session of sessionState.boardAssistantByProject.values()) {
-            if (session.id === sessionId) {
-              idleSession = session
+          for (const sessions of sessionState.boardAssistantsByProject.values()) {
+            const found = sessions.find((s) => s.id === sessionId)
+            if (found) {
+              idleSession = found
               break
             }
           }

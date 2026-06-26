@@ -235,6 +235,6 @@ describe('MainPane terminal visibility', () => {
 
     const terminal = screen.getByTestId('terminal-view-terminal-1')
     expect(terminal.getAttribute('data-visible')).toBe('false')
-    expect(terminal.parentElement?.classList.contains('hidden')).toBe(true)
+    expect(terminal.closest('.hidden')).not.toBeNull()
   })
 })

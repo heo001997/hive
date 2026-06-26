@@ -40,6 +40,7 @@ import {
   type ParsedBoardAssistantDraft,
   type ParsedBoardAssistantDraftSet
 } from '@/lib/board-assistant-drafts'
+import { ensureBoardAssistantRuntime } from '@/lib/board-assistant-runtime'
 import { toast } from '@/lib/toast'
 import {
   useBoardChatStore,
@@ -52,7 +53,6 @@ import {
   resolveBoardChatDefaultModel
 } from '@/stores/useBoardChatStore'
 import { useCommandApprovalStore } from '@/stores/useCommandApprovalStore'
-import { useConnectionStore } from '@/stores/useConnectionStore'
 import { useKanbanStore } from '@/stores/useKanbanStore'
 import { usePermissionStore } from '@/stores/usePermissionStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -68,7 +68,6 @@ import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { opencodeApi } from '@/api/opencode-api'
 import { dbApi } from '@/api/db-api'
 import { kanbanApi } from '@/api/kanban-api'
-import type { Worktree } from '@shared/types/worktree'
 import type {
   KanbanTicketBatchCreate,
   KanbanTicketBatchCreateResult
@@ -76,6 +75,7 @@ import type {
 
 interface BoardAssistantViewProps {
   projectId: string
+  sessionId: string
 }
 
 type BoardAssistantAgentSdk = 'opencode' | 'claude-code' | 'codex'
@@ -100,13 +100,6 @@ const BOARD_ASSISTANT_RULES = [
   'Keep titles short, specific, and implementation-ready.',
   'Whenever you reference an existing ticket from existingTickets, render its title as a markdown link [title](hive-ticket:projectId/ticketId) using that ticket\'s exact id and projectId so the user can click through to it. Only use ids that appear in existingTickets.'
 ].join('\n')
-
-function buildScopeKey(scope: BoardChatScope | null): string {
-  if (!scope) return 'none'
-  if (scope.kind === 'project') return `project:${scope.projectId}`
-  if (scope.kind === 'connection') return `connection:${scope.connectionId}`
-  return 'pinned'
-}
 
 /** Re-emit parsed attachments as the XML blocks UserBubble knows how to render. */
 function buildAttachmentXml(parsed: ReturnType<typeof parseUserMessageAttachments>): string {
@@ -230,32 +223,6 @@ function buildTicketDrafts(
   })
 }
 
-async function resolveProjectRuntime(
-  projectId: string
-): Promise<{ worktreeId: string; path: string } | null> {
-  const worktreeStore = useWorktreeStore.getState()
-  const selectedWorktreeId = worktreeStore.selectedWorktreeId
-  const projectWorktrees = worktreeStore.getWorktreesForProject(projectId)
-  const selectedProjectWorktree = projectWorktrees.find(
-    (worktree) => worktree.id === selectedWorktreeId
-  )
-  const chosenWorktree =
-    selectedProjectWorktree ??
-    worktreeStore.getDefaultWorktree(projectId) ??
-    projectWorktrees[0] ??
-    null
-
-  if (chosenWorktree?.path) {
-    return { worktreeId: chosenWorktree.id, path: chosenWorktree.path }
-  }
-
-  const fallbackWorktrees = await dbApi.worktree.getActiveByProject<Worktree>(projectId)
-  const fallback =
-    fallbackWorktrees.find((worktree) => worktree.is_default) ?? fallbackWorktrees[0] ?? null
-
-  return fallback?.path ? { worktreeId: fallback.id, path: fallback.path } : null
-}
-
 function buildBoardPrompt(input: string, scope: BoardChatScope, targetProjectId: string): string {
   const projectStore = useProjectStore.getState()
   const kanbanStore = useKanbanStore.getState()
@@ -308,121 +275,6 @@ function buildBoardPrompt(input: string, scope: BoardChatScope, targetProjectId:
     'User request:',
     input
   ].join('\n')
-}
-
-async function ensureRuntimeSession(
-  scope: BoardChatScope,
-  targetProjectId: string
-): Promise<{
-  sessionId: string
-  opencodeSessionId: string
-  runtimePath: string
-} | null> {
-  const currentState = useBoardChatStore.getState()
-  if (currentState.sessionId && currentState.opencodeSessionId && currentState.runtimePath) {
-    return {
-      sessionId: currentState.sessionId,
-      opencodeSessionId: currentState.opencodeSessionId,
-      runtimePath: currentState.runtimePath
-    }
-  }
-
-  const settings = useSettingsStore.getState()
-  const baseAgentSdk =
-    currentState.selectedAgentSdkOverride ?? resolveBoardChatAgentSdk(settings.defaultAgentSdk)
-  const selectedModel =
-    currentState.selectedModelOverride ?? resolveBoardChatDefaultModel(settings, baseAgentSdk)
-  const agentSdk = currentState.selectedAgentSdkOverride ?? selectedModel?.agentSdk ?? baseAgentSdk
-
-  let runtimePath: string | null = null
-  let worktreeId: string | null = null
-  let connectionId: string | null = null
-
-  if (scope.kind === 'project') {
-    const runtime = await resolveProjectRuntime(scope.projectId)
-    if (!runtime) return null
-    runtimePath = runtime.path
-    worktreeId = runtime.worktreeId
-  } else if (scope.kind === 'connection') {
-    const connection = useConnectionStore
-      .getState()
-      .connections.find((candidate) => candidate.id === scope.connectionId)
-    if (!connection?.path) return null
-    runtimePath = connection.path
-    connectionId = connection.id
-  } else {
-    return null
-  }
-
-  // Reuse the session already created by the session store (from createBoardAssistantSession)
-  // rather than creating a duplicate. Only create if none exists.
-  const { useSessionStore } = await import('@/stores/useSessionStore')
-  const existingStoreSession = useSessionStore
-    .getState()
-    .boardAssistantByProject.get(targetProjectId)
-
-  let session: { id: string }
-  const isReused = Boolean(existingStoreSession)
-  if (existingStoreSession) {
-    session = existingStoreSession
-    // Update the existing session with the model/SDK settings
-    await dbApi.session.update(session.id, {
-      agent_sdk: agentSdk,
-      ...(selectedModel
-        ? {
-            model_provider_id: selectedModel.providerID,
-            model_id: selectedModel.modelID,
-            model_variant: selectedModel.variant ?? null
-          }
-        : {})
-    })
-  } else {
-    session = await dbApi.session.create<{ id: string }>({
-      worktree_id: worktreeId,
-      connection_id: connectionId,
-      project_id: targetProjectId,
-      name: 'Board Assistant',
-      session_type: 'board-assistant',
-      agent_sdk: agentSdk,
-      mode: 'build',
-      ...(selectedModel
-        ? {
-            model_provider_id: selectedModel.providerID,
-            model_id: selectedModel.modelID,
-            model_variant: selectedModel.variant ?? null
-          }
-        : {})
-    })
-  }
-
-  const connectResult = unwrapEnvelope(await opencodeApi.connect(runtimePath, session.id))
-  if (!connectResult.success || !connectResult.sessionId) {
-    // Only delete the session if we just created it. Reused sessions
-    // should be kept so the user doesn't lose the record and messages.
-    if (!isReused) {
-      await dbApi.session.delete(session.id).catch(() => {})
-    }
-    // Re-sync store so the stale entry is removed and the tab disappears
-    const { useSessionStore } = await import('@/stores/useSessionStore')
-    await useSessionStore.getState().loadBoardAssistantSession(targetProjectId)
-    return null
-  }
-
-  await dbApi.session.update(session.id, {
-    opencode_session_id: connectResult.sessionId
-  })
-
-  useBoardChatStore.getState().setRuntimeSession({
-    sessionId: session.id,
-    opencodeSessionId: connectResult.sessionId,
-    runtimePath
-  })
-
-  return {
-    sessionId: session.id,
-    opencodeSessionId: connectResult.sessionId,
-    runtimePath
-  }
 }
 
 async function cleanupBoardChatRuntime(): Promise<void> {
@@ -1163,7 +1015,8 @@ function BoardChatComposer({
 }
 
 export function BoardAssistantView({
-  projectId
+  projectId,
+  sessionId: boardSessionId
 }: BoardAssistantViewProps): React.JSX.Element | null {
   const projects = useProjectStore((state) => state.projects)
   const project = projects.find((p) => p.id === projectId)
@@ -1219,7 +1072,7 @@ export function BoardAssistantView({
   const updateOpencodeSessionId = useBoardChatStore((state) => state.updateOpencodeSessionId)
   const setComposerValue = useBoardChatStore((state) => state.setComposerValue)
   const resetState = useBoardChatStore((state) => state.resetState)
-  const activateScope = useBoardChatStore((state) => state.activateScope)
+  const activateSession = useBoardChatStore((state) => state.activateSession)
   const revertMessageID = useBoardChatStore((state) => state.revertMessageID)
   const setRevertMessageID = useBoardChatStore((state) => state.setRevertMessageID)
   const isEditingMessage = useBoardChatStore((state) => state.isEditingMessage)
@@ -1267,54 +1120,37 @@ export function BoardAssistantView({
   )
 
   useEffect(() => {
-    let cancelled = false
+    if (!boardSessionId) return
 
-    const syncScope = async (): Promise<void> => {
-      const scopeKey = buildScopeKey(scope)
-      const existingSnapshot =
+    const hadSnapshot = Boolean(useBoardChatStore.getState().getSessionSnapshot(boardSessionId))
+
+    // Make this chat the focused one and hydrate the mirror from its snapshot.
+    activateSession(boardSessionId, scope, {
+      preserveOpen: true,
+      selectedTargetProjectId:
         scope?.kind === 'project'
-          ? useBoardChatStore.getState().getProjectSnapshot(scope.projectId)
-          : null
+          ? scope.projectId
+          : scope?.kind === 'connection'
+            ? (scope.availableProjects[0]?.id ?? null)
+            : null
+    })
 
-      activateScope(scope, {
-        preserveOpen: true,
-        scope,
-        selectedTargetProjectId:
-          scope?.kind === 'project'
-            ? scope.projectId
-            : scope?.kind === 'connection'
-              ? (scope.availableProjects[0]?.id ?? null)
-              : null
-      })
-
-      if (cancelled) return
-
-      const state = useBoardChatStore.getState()
-      if (state.sessionId && state.opencodeSessionId && state.runtimePath && scopeKey !== 'none') {
-        try {
-          unwrapEnvelope(
-            await opencodeApi.reconnect(state.runtimePath, state.opencodeSessionId, state.sessionId)
-          )
-        } catch {
-          // useSessionStream will handle reconnection failures
-        }
-      }
-
-      if (!existingSnapshot && scope && scope.kind !== 'pinned') {
-        addLocalSystemMessage(
-          scope.kind === 'project'
-            ? `Assistant scope set to ${scope.projectName}.`
-            : `Assistant scope set to ${scope.connectionName}.`
-        )
-      }
+    // Reconnect when this chat already has a live runtime (re-focusing a chat
+    // that previously connected, or a restored session). A brand-new chat with
+    // no runtime IDs defers its OpenCode connection until first send.
+    const activeSnapshot = useBoardChatStore.getState().getSessionSnapshot(boardSessionId)
+    if (activeSnapshot?.opencodeSessionId && activeSnapshot.runtimePath) {
+      void ensureBoardAssistantRuntime(boardSessionId)
     }
 
-    void syncScope()
-
-    return () => {
-      cancelled = true
+    if (!hadSnapshot && scope && scope.kind !== 'pinned') {
+      addLocalSystemMessage(
+        scope.kind === 'project'
+          ? `Assistant scope set to ${scope.projectName}.`
+          : `Assistant scope set to ${scope.connectionName}.`
+      )
     }
-  }, [activateScope, addLocalSystemMessage, scope])
+  }, [activateSession, addLocalSystemMessage, boardSessionId, scope])
 
   // NOTE: We intentionally do NOT clean up the runtime on unmount.
   // The board assistant is a persistent tab — the runtime and chat state
@@ -1333,7 +1169,12 @@ export function BoardAssistantView({
     sessionId: sessionId ?? '',
     worktreePath: runtimePath ?? '',
     opencodeSessionId: opencodeSessionId ?? '',
-    enabled: Boolean(sessionId && opencodeSessionId && runtimePath),
+    // Gate on the mirror matching this view's session so a stale mirror (from a
+    // just-replaced focused chat, before activateSession commits) can't drive the
+    // stream with another chat's runtime IDs.
+    enabled: Boolean(
+      sessionId && opencodeSessionId && runtimePath && sessionId === boardSessionId
+    ),
     onMaterializedSessionId: handleMaterializedSessionId
   })
 
@@ -1574,7 +1415,7 @@ export function BoardAssistantView({
       setComposerValue('')
       clearComposerAttachments()
 
-      const runtime = await ensureRuntimeSession(scope, targetProjectId)
+      const runtime = await ensureBoardAssistantRuntime(boardSessionId)
       if (!runtime) {
         throw new Error('Unable to start a board assistant session for this board scope.')
       }
@@ -1601,6 +1442,7 @@ export function BoardAssistantView({
   }, [
     addLocalSystemMessage,
     addLocalUserMessage,
+    boardSessionId,
     clearComposerAttachments,
     composerAttachments,
     composerValue,

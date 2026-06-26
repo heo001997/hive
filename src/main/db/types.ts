@@ -512,6 +512,14 @@ export interface KanbanTicket {
    * INTEGER 0/1 in DB.
    */
   auto_approve_review: boolean
+  /**
+   * ISO timestamp of when the user last opened this ticket *while it sat in the
+   * Review column*. NULL means the ticket reached Review but hasn't been opened
+   * since — the board card glows to flag it. Reset to NULL on every transition
+   * INTO Review; set when the ticket detail is opened. Optional so existing
+   * KanbanTicket literals (e.g. test factories) don't all need updating.
+   */
+  review_seen_at?: string | null
 }
 
 export interface KanbanTicketCreate {
@@ -555,6 +563,7 @@ export interface KanbanTicketUpdate {
   goal_success_criteria?: string | null
   note?: string | null
   auto_approve_review?: boolean
+  review_seen_at?: string | null
 }
 
 export interface BoardAssistantDraft {

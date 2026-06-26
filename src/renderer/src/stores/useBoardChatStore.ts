@@ -94,20 +94,39 @@ export interface BoardChatSnapshot {
 interface BoardChatState extends BoardChatSnapshot {
   isOpen: boolean
   isMinimized: boolean
-  activeScopeKey: string
+  // Snapshots are keyed by hive sessionId — N board-assistant chats may coexist
+  // per project, each its own snapshot. The top-level mirror reflects the
+  // currently focused (active) chat.
+  activeSessionId: string | null
   snapshots: Record<string, BoardChatSnapshot>
   open: () => void
   minimize: () => void
   restore: () => void
   close: () => Promise<void>
   clear: () => Promise<void>
-  activateScope: (scope: BoardChatScope | null, options?: ResetBoardChatOptions) => void
-  getProjectSnapshot: (projectId: string) => BoardChatSnapshot | null
-  getSessionSnapshot: (sessionId: string) => { key: string; snapshot: BoardChatSnapshot } | null
-  clearProjectSnapshot: (projectId: string) => void
-  syncScope: (scope: BoardChatScope | null) => Promise<void>
+  activateSession: (
+    sessionId: string,
+    scope?: BoardChatScope | null,
+    options?: ResetBoardChatOptions
+  ) => void
+  getSnapshotsForProject: (projectId: string) => BoardChatSnapshot[]
+  getSessionSnapshot: (sessionId: string) => BoardChatSnapshot | null
+  clearSessionSnapshot: (sessionId: string) => void
   resetForBoardExit: () => Promise<void>
   syncTranscript: (messages: OpenCodeMessage[], isStreaming: boolean) => void
+  // Router-facing per-session actions: write a specific session's snapshot and
+  // only touch the top-level mirror when that session is the active one.
+  seedSessionSnapshot: (sessionId: string, scope: BoardChatScope | null) => void
+  ingestTranscriptForSession: (
+    sessionId: string,
+    messages: OpenCodeMessage[],
+    isStreaming: boolean
+  ) => void
+  setRuntimeSessionForSession: (
+    sessionId: string,
+    runtime: { opencodeSessionId: string; runtimePath: string; scope?: BoardChatScope | null }
+  ) => void
+  updateOpencodeSessionIdForSession: (sessionId: string, opencodeSessionId: string) => void
   sendMessage: (message: string) => Promise<void>
   createSelected: () => Promise<void>
   toggleDraftSelected: (draftId: string) => void
@@ -283,13 +302,6 @@ function createInitialSnapshot(options?: ResetBoardChatOptions): BoardChatSnapsh
   }
 }
 
-function getScopeKey(scope: BoardChatScope | null): string {
-  if (!scope) return 'none'
-  if (scope.kind === 'project') return `project:${scope.projectId}`
-  if (scope.kind === 'connection') return `connection:${scope.connectionId}`
-  return 'pinned'
-}
-
 function getSnapshotFromState(state: BoardChatState): BoardChatSnapshot {
   return {
     scope: state.scope,
@@ -316,21 +328,21 @@ function getSnapshotFromState(state: BoardChatState): BoardChatSnapshot {
 function replaceActiveSnapshot(
   state: BoardChatState,
   snapshot: BoardChatSnapshot,
-  activeScopeKey = getScopeKey(snapshot.scope),
+  activeSessionId: string | null = snapshot.sessionId ?? state.activeSessionId,
   options?: { dropExistingSnapshot?: boolean }
 ): Partial<BoardChatState> {
   const nextSnapshots = { ...state.snapshots }
-  if (activeScopeKey !== 'none') {
+  if (activeSessionId) {
     if (options?.dropExistingSnapshot) {
-      delete nextSnapshots[activeScopeKey]
+      delete nextSnapshots[activeSessionId]
     } else {
-      nextSnapshots[activeScopeKey] = snapshot
+      nextSnapshots[activeSessionId] = snapshot
     }
   }
 
   return {
     ...snapshot,
-    activeScopeKey,
+    activeSessionId,
     snapshots: nextSnapshots
   }
 }
@@ -339,22 +351,40 @@ function patchActiveSnapshot(
   state: BoardChatState,
   patch: Partial<BoardChatSnapshot>
 ): Partial<BoardChatState> {
-  const activeScopeKey = state.activeScopeKey || getScopeKey(state.scope)
+  const activeSessionId = state.activeSessionId
   const nextSnapshot = {
     ...getSnapshotFromState(state),
     ...patch
   }
 
   const nextSnapshots = { ...state.snapshots }
-  if (activeScopeKey !== 'none') {
-    nextSnapshots[activeScopeKey] = nextSnapshot
+  if (activeSessionId) {
+    nextSnapshots[activeSessionId] = nextSnapshot
   }
 
   return {
     ...patch,
-    activeScopeKey,
     snapshots: nextSnapshots
   }
+}
+
+// Write a SPECIFIC session's snapshot. Used by the background stream router so
+// non-focused chats update live without touching the active mirror. Only when
+// the patched session IS the active one do we also update the top-level mirror.
+function patchSessionSnapshot(
+  state: BoardChatState,
+  sessionId: string,
+  patch: Partial<BoardChatSnapshot>
+): Partial<BoardChatState> {
+  const base = state.snapshots[sessionId] ?? createInitialSnapshot()
+  const nextSnapshot: BoardChatSnapshot = { ...base, ...patch, sessionId }
+  const nextSnapshots = { ...state.snapshots, [sessionId]: nextSnapshot }
+
+  if (sessionId === state.activeSessionId) {
+    return { ...patch, sessionId, snapshots: nextSnapshots }
+  }
+
+  return { snapshots: nextSnapshots }
 }
 
 function createBaseState(): Omit<
@@ -364,13 +394,16 @@ function createBaseState(): Omit<
   | 'restore'
   | 'close'
   | 'clear'
-  | 'activateScope'
-  | 'getProjectSnapshot'
+  | 'activateSession'
+  | 'getSnapshotsForProject'
   | 'getSessionSnapshot'
-  | 'clearProjectSnapshot'
-  | 'syncScope'
+  | 'clearSessionSnapshot'
   | 'resetForBoardExit'
   | 'syncTranscript'
+  | 'seedSessionSnapshot'
+  | 'ingestTranscriptForSession'
+  | 'setRuntimeSessionForSession'
+  | 'updateOpencodeSessionIdForSession'
   | 'sendMessage'
   | 'createSelected'
   | 'toggleDraftSelected'
@@ -404,7 +437,7 @@ function createBaseState(): Omit<
   return {
     isOpen: false,
     isMinimized: false,
-    activeScopeKey: 'none',
+    activeSessionId: null,
     snapshots: {},
     ...createInitialSnapshot()
   }
@@ -670,7 +703,7 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
     })
     set((current) => ({
       isOpen: false,
-      ...replaceActiveSnapshot(current, resetSnapshot, current.activeScopeKey, {
+      ...replaceActiveSnapshot(current, resetSnapshot, current.activeSessionId, {
         dropExistingSnapshot: true
       })
     }))
@@ -689,78 +722,67 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
           selectedAgentSdkOverride: state.selectedAgentSdkOverride,
           selectedModelOverride: state.selectedModelOverride
         }),
-        current.activeScopeKey
+        current.activeSessionId
       )
     )
     await resetAndCleanup(state)
   },
 
-  activateScope: (scope, options) => {
+  activateSession: (sessionId, scope, options) => {
     set((state) => {
-      const scopeKey = getScopeKey(scope)
-      const existing = scopeKey !== 'none' ? state.snapshots[scopeKey] : null
+      const existing = state.snapshots[sessionId]
 
       if (existing) {
-        const hydrated = {
+        const nextScope = scope ?? existing.scope
+        const hydrated: BoardChatSnapshot = {
           ...existing,
-          scope,
+          scope: nextScope,
+          sessionId,
           selectedTargetProjectId:
-            scope?.kind === 'project'
-              ? scope.projectId
-              : (existing.selectedTargetProjectId ?? buildDefaultTargetProjectId(scope))
+            nextScope?.kind === 'project'
+              ? nextScope.projectId
+              : (existing.selectedTargetProjectId ?? buildDefaultTargetProjectId(nextScope))
         }
-        return replaceActiveSnapshot(state, hydrated, scopeKey)
+        return replaceActiveSnapshot(state, hydrated, sessionId)
       }
 
       return replaceActiveSnapshot(
         state,
-        createInitialSnapshot({
-          ...options,
-          scope,
-          selectedTargetProjectId:
-            options?.selectedTargetProjectId ?? buildDefaultTargetProjectId(scope)
-        }),
-        scopeKey
+        {
+          ...createInitialSnapshot({
+            ...options,
+            scope: scope ?? null,
+            selectedTargetProjectId:
+              options?.selectedTargetProjectId ?? buildDefaultTargetProjectId(scope ?? null)
+          }),
+          sessionId
+        },
+        sessionId
       )
     })
   },
 
-  getProjectSnapshot: (projectId) => {
-    const key = `project:${projectId}`
+  getSnapshotsForProject: (projectId) => {
     const state = get()
-    if (state.activeScopeKey === key) {
-      return getSnapshotFromState(state)
-    }
-    return state.snapshots[key] ?? null
+    return Object.values(state.snapshots).filter(
+      (snapshot) => snapshot.scope?.kind === 'project' && snapshot.scope.projectId === projectId
+    )
   },
 
   getSessionSnapshot: (sessionId) => {
-    const state = get()
     if (!sessionId) return null
-
-    if (state.sessionId === sessionId) {
-      return {
-        key: state.activeScopeKey,
-        snapshot: getSnapshotFromState(state)
-      }
-    }
-
-    for (const [key, snapshot] of Object.entries(state.snapshots)) {
-      if (snapshot.sessionId === sessionId) {
-        return { key, snapshot }
-      }
-    }
-
-    return null
+    // snapshots[activeSessionId] is kept in sync with the mirror by
+    // patchActiveSnapshot/replaceActiveSnapshot, so a direct lookup is correct
+    // for both the focused chat and background chats.
+    return get().snapshots[sessionId] ?? null
   },
 
-  clearProjectSnapshot: (projectId) => {
+  clearSessionSnapshot: (sessionId) => {
     set((state) => {
-      const key = `project:${projectId}`
       const nextSnapshots = { ...state.snapshots }
-      delete nextSnapshots[key]
+      delete nextSnapshots[sessionId]
 
-      if (state.activeScopeKey === key) {
+      if (state.activeSessionId === sessionId) {
         return {
           ...createBaseState(),
           isOpen: state.isOpen,
@@ -773,24 +795,87 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
     })
   },
 
-  syncScope: async (scope) => {
-    const current = get()
-    if (getScopeKey(current.scope) === getScopeKey(scope)) {
-      set((state) =>
-        patchActiveSnapshot(state, {
+  seedSessionSnapshot: (sessionId, scope) => {
+    set((state) => {
+      const existing = state.snapshots[sessionId]
+      if (existing) {
+        // Fill in scope only if it's missing — never clobber a live snapshot.
+        if (existing.scope || !scope) return {}
+        return patchSessionSnapshot(state, sessionId, {
           scope,
           selectedTargetProjectId:
-            scope?.kind === 'project'
-              ? scope.projectId
-              : (current.selectedTargetProjectId ?? buildDefaultTargetProjectId(scope))
+            existing.selectedTargetProjectId ?? buildDefaultTargetProjectId(scope)
         })
-      )
-      return
-    }
+      }
+      const snapshot: BoardChatSnapshot = {
+        ...createInitialSnapshot({
+          scope,
+          selectedTargetProjectId: buildDefaultTargetProjectId(scope)
+        }),
+        sessionId
+      }
+      return { snapshots: { ...state.snapshots, [sessionId]: snapshot } }
+    })
+  },
 
-    get().activateScope(scope, {
-      scope,
-      selectedTargetProjectId: buildDefaultTargetProjectId(scope)
+  setRuntimeSessionForSession: (sessionId, { opencodeSessionId, runtimePath, scope }) => {
+    set((state) => {
+      const existing = state.snapshots[sessionId]
+      const patch: Partial<BoardChatSnapshot> = { opencodeSessionId, runtimePath }
+      if (scope && !existing?.scope) {
+        patch.scope = scope
+        patch.selectedTargetProjectId =
+          existing?.selectedTargetProjectId ?? buildDefaultTargetProjectId(scope)
+      }
+      return patchSessionSnapshot(state, sessionId, patch)
+    })
+  },
+
+  updateOpencodeSessionIdForSession: (sessionId, opencodeSessionId) =>
+    set((state) => patchSessionSnapshot(state, sessionId, { opencodeSessionId })),
+
+  ingestTranscriptForSession: (sessionId, messages, isStreaming) => {
+    set((state) => {
+      const snapshot = state.snapshots[sessionId]
+      if (!snapshot) return {}
+
+      const mergedMessages = mergeTranscriptMessages(snapshot.messages, messages)
+      const latestDraftMessage = [...messages]
+        .reverse()
+        .find((message) => message.role === 'assistant' && hasBoardDraftBlock(message.content))
+      const parsedDrafts = latestDraftMessage
+        ? parseDraftsFromMessage(
+            latestDraftMessage,
+            snapshot.scope,
+            snapshot.selectedTargetProjectId
+          )
+        : null
+      const draftParseFailed = Boolean(latestDraftMessage) && !parsedDrafts && !isStreaming
+
+      return patchSessionSnapshot(state, sessionId, {
+        messages: mergedMessages,
+        drafts:
+          parsedDrafts && latestDraftMessage
+            ? applyCreatedDraftState(parsedDrafts, snapshot.createdDraftIds)
+            : latestDraftMessage
+              ? []
+              : snapshot.drafts,
+        draftSourceMessageId: latestDraftMessage?.id ?? snapshot.draftSourceMessageId,
+        error: draftParseFailed
+          ? BOARD_DRAFT_PARSE_ERROR
+          : parsedDrafts
+            ? null
+            : snapshot.error,
+        status: isStreaming
+          ? 'thinking'
+          : draftParseFailed
+            ? 'error'
+            : parsedDrafts && parsedDrafts.length > 0
+              ? 'awaiting_confirmation'
+              : snapshot.status === 'error'
+                ? 'error'
+                : 'idle'
+      })
     })
   },
 
@@ -1040,7 +1125,7 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
           selectedAgentSdkOverride: state.selectedAgentSdkOverride,
           selectedModelOverride: state.selectedModelOverride
         }),
-        current.activeScopeKey
+        current.activeSessionId
       )
     )
     await resetAndCleanup(state)
@@ -1140,10 +1225,13 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
     set((state) =>
       replaceActiveSnapshot(
         state,
-        createInitialSnapshot(
-          options ? { ...options, scope: options.scope ?? state.scope } : { scope: state.scope }
-        ),
-        state.activeScopeKey
+        {
+          ...createInitialSnapshot(
+            options ? { ...options, scope: options.scope ?? state.scope } : { scope: state.scope }
+          ),
+          sessionId: state.activeSessionId
+        },
+        state.activeSessionId
       )
     )
 }))

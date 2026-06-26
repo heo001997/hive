@@ -142,6 +142,7 @@
     "ulidx": "^2.4.1",
     "ws": "^8.21.0",
     "yaml": "^2.8.2",
+    "yet-another-react-lightbox": "^3.32.0",
     "zod": "^4.0.0",
     "zustand": "^5.0.2"
   },

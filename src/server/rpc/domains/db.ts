@@ -122,6 +122,9 @@ export interface DbRpcService {
   readonly getActiveBoardAssistant: (
     projectId: string
   ) => Effect.Effect<Session | null, unknown, never>
+  readonly getActiveBoardAssistants: (
+    projectId: string
+  ) => Effect.Effect<Session[], unknown, never>
   readonly listSessionMessages: (
     sessionId: string
   ) => Effect.Effect<SessionMessage[], unknown, never>
@@ -787,6 +790,14 @@ export const makeLiveDbRpcService = (): DbRpcService => ({
       },
       catch: (cause) => cause
     }),
+  getActiveBoardAssistants: (projectId) =>
+    Effect.tryPromise({
+      try: async () => {
+        const { getDatabase } = await import('../../../main/db')
+        return getDatabase().getActiveBoardAssistantsByProject(projectId)
+      },
+      catch: (cause) => cause
+    }),
   listSessionMessages: (sessionId) =>
     Effect.tryPromise({
       try: async () => {
@@ -1449,6 +1460,17 @@ export const makeDbRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.getActiveBoardAssistant(projectId)
+        })
+    ],
+    [
+      'db.session.getActiveBoardAssistants',
+      (params) =>
+        Effect.gen(function* () {
+          const { projectId } = yield* Effect.try({
+            try: () => sessionByProjectParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.getActiveBoardAssistants(projectId)
         })
     ],
     [

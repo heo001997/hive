@@ -32,6 +32,7 @@ import {
   RadioTower
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
+import { CreateSessionMenu } from './CreateSessionMenu'
 import { useSessionStore, BOARD_TAB_ID } from '@/stores/useSessionStore'
 import { useShallow } from 'zustand/react/shallow'
 import {
@@ -82,8 +83,6 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu'
-import { Tip } from '@/components/ui/Tip'
-import { useTipStore } from '@/stores/useTipStore'
 import { opencodeApi } from '@/api/opencode-api'
 import { kanbanApi } from '@/api/kanban-api'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
@@ -663,10 +662,10 @@ export function SessionTabs(): React.JSX.Element | null {
   const activePinnedSessionId = useSessionStore((state) => state.activePinnedSessionId)
   const boardMode = useSettingsStore((s) => s.boardMode)
 
-  // Board assistant state
-  const boardAssistantByProject = useSessionStore((state) => state.boardAssistantByProject)
-  const activeBoardAssistantProjectId = useSessionStore(
-    (state) => state.activeBoardAssistantProjectId
+  // Board assistant state — N chats may exist per project.
+  const boardAssistantsByProject = useSessionStore((state) => state.boardAssistantsByProject)
+  const activeBoardAssistantSessionId = useSessionStore(
+    (state) => state.activeBoardAssistantSessionId
   )
   const createBoardAssistantSession = useSessionStore((s) => s.createBoardAssistantSession)
   const closeBoardAssistantSession = useSessionStore((s) => s.closeBoardAssistantSession)
@@ -715,12 +714,6 @@ export function SessionTabs(): React.JSX.Element | null {
   // Auto-start runs as a direct follow-up to loadSessions (not a separate effect) to
   // eliminate race conditions between the two async operations.
   const autoStartSession = useSettingsStore((state) => state.autoStartSession)
-  const availableAgentSdks = useSettingsStore((state) => state.availableAgentSdks)
-  const defaultAgentSdk = useSettingsStore((state) => state.defaultAgentSdk)
-  const multipleProvidersAvailable =
-    [availableAgentSdks?.opencode, availableAgentSdks?.claude, availableAgentSdks?.codex].filter(
-      Boolean
-    ).length >= 2
   const autoStartedRef = useRef<string | null>(null)
 
   useEffect(() => {
@@ -894,17 +887,11 @@ export function SessionTabs(): React.JSX.Element | null {
 
   // Handle creating a new session with a specific agent SDK (from context menu)
   const handleCreateSessionWithSdk = async (sdk: AgentSdk) => {
+    // The provider-right-click tip side-effects are handled by CreateSessionMenu.
     if (isConnectionMode && selectedConnectionId) {
       const result = await createConnectionSession(selectedConnectionId, sdk)
       if (!result.success) {
         toast.error(result.error || 'Failed to create session')
-      }
-      // Tip logic for AI providers (not terminal)
-      if (sdk !== 'terminal') {
-        useTipStore.getState().markTipAsSeen('provider-right-click')
-        if (sdk !== defaultAgentSdk) {
-          useTipStore.getState().setNonDefaultProviderChosen(true)
-        }
       }
       return
     }
@@ -915,34 +902,22 @@ export function SessionTabs(): React.JSX.Element | null {
     if (!result.success) {
       toast.error(result.error || 'Failed to create session')
     }
-    // Tip logic for AI providers (not terminal)
-    if (sdk !== 'terminal') {
-      useTipStore.getState().markTipAsSeen('provider-right-click')
-      if (sdk !== defaultAgentSdk) {
-        useTipStore.getState().setNonDefaultProviderChosen(true)
-      }
-    }
   }
 
-  // Handle creating or focusing the board assistant tab
+  // Handle creating a new board assistant chat. Always creates a fresh chat —
+  // N board-assistant chats may coexist per project.
   const handleCreateBoardAssistant = async () => {
     if (!project) return
-    const existing = boardAssistantByProject.get(project.id)
-    if (existing) {
-      focusBoardAssistantSession(project.id)
-    } else {
-      const result = await createBoardAssistantSession(project.id)
-      if (!result.success) {
-        toast.error(result.error || 'Failed to create board assistant')
-      }
+    const result = await createBoardAssistantSession(project.id)
+    if (!result.success) {
+      toast.error(result.error || 'Failed to create board assistant')
     }
   }
 
-  // Handle closing the board assistant tab
-  const handleCloseBoardAssistant = async (e: React.MouseEvent) => {
+  // Handle closing a specific board assistant chat tab
+  const handleCloseBoardAssistant = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation()
-    if (!project) return
-    const result = await closeBoardAssistantSession(project.id)
+    const result = await closeBoardAssistantSession(sessionId)
     if (!result.success) {
       toast.error(result.error || 'Failed to close board assistant')
     }
@@ -1322,40 +1297,46 @@ export function SessionTabs(): React.JSX.Element | null {
         )
       })}
 
-      {/* Board assistant tab */}
-      {project && boardAssistantByProject.has(project.id) && (
-        <button
-          className={cn(
-            'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none whitespace-nowrap border-r border-border min-w-[100px] max-w-[200px] transition-colors',
-            activeBoardAssistantProjectId === project.id && !isFileTabActive
-              ? 'bg-background text-foreground'
-              : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
-          )}
-          onClick={() => {
-            setActiveFile(null)
-            clearInlineConnectionSession()
-            focusBoardAssistantSession(project.id)
-          }}
-          title="Board Assistant"
-          data-testid="board-assistant-tab"
-        >
-          <KanbanIcon className="h-3.5 w-3.5 shrink-0 text-blue-500" />
-          <span className="truncate flex-1">Board Assistant</span>
-          {/* Active bottom accent */}
-          {activeBoardAssistantProjectId === project.id && !isFileTabActive && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
-          )}
-          {/* Close button */}
-          <span
-            className="ml-1 shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
-            onClick={handleCloseBoardAssistant}
-            role="button"
-            tabIndex={-1}
-          >
-            <X className="h-3 w-3" />
-          </span>
-        </button>
-      )}
+      {/* Board assistant tabs — one per chat (N chats may coexist per project) */}
+      {project &&
+        (boardAssistantsByProject.get(project.id) ?? []).map((boardSession) => {
+          const isActiveBoardTab =
+            activeBoardAssistantSessionId === boardSession.id && !isFileTabActive
+          return (
+            <button
+              key={boardSession.id}
+              className={cn(
+                'group relative flex items-center gap-1.5 px-3 py-1.5 text-sm cursor-pointer select-none whitespace-nowrap border-r border-border min-w-[100px] max-w-[200px] transition-colors',
+                isActiveBoardTab
+                  ? 'bg-background text-foreground'
+                  : 'bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+              onClick={() => {
+                setActiveFile(null)
+                clearInlineConnectionSession()
+                focusBoardAssistantSession(boardSession.id)
+              }}
+              title={boardSession.name || 'Board Assistant'}
+              data-testid="board-assistant-tab"
+            >
+              <KanbanIcon className="h-3.5 w-3.5 shrink-0 text-blue-500" />
+              <span className="truncate flex-1">{boardSession.name || 'Board Assistant'}</span>
+              {/* Active bottom accent */}
+              {isActiveBoardTab && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+              )}
+              {/* Close button */}
+              <span
+                className="ml-1 shrink-0 rounded-sm p-0.5 opacity-0 group-hover:opacity-100 hover:bg-accent transition-opacity"
+                onClick={(e) => handleCloseBoardAssistant(e, boardSession.id)}
+                role="button"
+                tabIndex={-1}
+              >
+                <X className="h-3 w-3" />
+              </span>
+            </button>
+          )
+        })}
     </>
   )
 
@@ -1367,56 +1348,12 @@ export function SessionTabs(): React.JSX.Element | null {
       {/* New session / new ticket button - on the left */}
       {boardMode === 'sticky-tab' || !isBoardViewActive ? (
         /* Session create button with right-click provider menu */
-        <Tip tipId="provider-right-click" enabled={multipleProvidersAvailable}>
-          <div className="shrink-0">
-            <ContextMenu>
-              <ContextMenuTrigger asChild>
-                <button
-                  onClick={handleCreateSession}
-                  className="p-1.5 hover:bg-accent transition-colors border-r border-border"
-                  data-testid="create-session"
-                  title="Create new session (right-click for options)"
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </ContextMenuTrigger>
-              <ContextMenuContent>
-                {availableAgentSdks?.opencode && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('opencode')}>
-                    New OpenCode Session
-                  </ContextMenuItem>
-                )}
-                {availableAgentSdks?.claude && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('claude-code')}>
-                    New Claude Code Session
-                  </ContextMenuItem>
-                )}
-                {availableAgentSdks?.claude && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('claude-code-cli')}>
-                    New Claude Code CLI Session
-                  </ContextMenuItem>
-                )}
-                {availableAgentSdks?.codex && (
-                  <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('codex')}>
-                    New Codex Session
-                  </ContextMenuItem>
-                )}
-                {(availableAgentSdks?.opencode ||
-                  availableAgentSdks?.claude ||
-                  availableAgentSdks?.codex) && <ContextMenuSeparator />}
-                <ContextMenuItem onSelect={() => handleCreateSessionWithSdk('terminal')}>
-                  <TerminalSquare className="h-4 w-4 mr-2 text-emerald-500" />
-                  New Terminal
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem onSelect={handleCreateBoardAssistant}>
-                  <KanbanIcon className="h-4 w-4 mr-2 text-blue-500" />
-                  New Board Assistant
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
-          </div>
-        </Tip>
+        <CreateSessionMenu
+          onDefaultCreate={handleCreateSession}
+          onCreate={handleCreateSessionWithSdk}
+          includeBoardAssistant
+          onCreateBoardAssistant={handleCreateBoardAssistant}
+        />
       ) : isBoardViewActive && !isConnectionBoardActive ? (
         /* Toggle mode kanban: plus button opens the ticket creation modal (hidden in connection board — board has its own) */
         <button
