@@ -218,6 +218,7 @@ const ticket: KanbanTicket = {
   worktree_id: 'worktree-1',
   mode: 'plan',
   plan_ready: true,
+  auto_approve_plan: false,
   created_at: now,
   updated_at: now,
   archived_at: null,

@@ -91,6 +91,7 @@ import { usePinAndActivateSession } from '@/hooks/usePinAndActivateSession'
 import { useConflictFixFlow } from '@/hooks/useConflictFixFlow'
 import { TicketAttachmentEditor } from './TicketAttachmentEditor'
 import { TicketDiscardChangesDialog } from './TicketDiscardChangesDialog'
+import { AutoApprovePlanToggle } from './AutoApprovePlanToggle'
 import { useImagePaste } from '@/hooks/useImagePaste'
 import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoffSelection'
 import { canonicalizeTicketTitle, extractPlanTitle } from '@shared/types/branch-utils'
@@ -1683,6 +1684,9 @@ function EditModeContent({
 
         <TicketGoalSection ticket={ticket} isEditMode />
 
+        {/* Auto-approve plan (per-ticket; applies to Claude CLI plan-mode runs) */}
+        <AutoApprovePlanToggle ticket={ticket} />
+
         {/* Attachments */}
         <TicketAttachmentEditor
           attachments={attachments}
@@ -2054,30 +2058,6 @@ function PlanReviewModeContent({
     setFollowUpMode((prev) => (prev === 'build' ? 'plan' : 'build'))
   }, [])
 
-  const toggleSuperMode = useCallback(() => {
-    setFollowUpMode((prev) => (prev === 'super-plan' ? 'plan' : 'super-plan'))
-  }, [])
-
-  // Tab key toggles mode, Shift+Tab toggles super-plan
-  useEffect(() => {
-    if (isClaudeCliPlanSession) return
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const modal = document.querySelector('[data-testid="kanban-ticket-modal"]')
-        if (modal?.contains(document.activeElement)) {
-          e.preventDefault()
-          e.stopImmediatePropagation()
-          if (e.shiftKey) {
-            toggleSuperMode()
-          } else {
-            toggleMode()
-          }
-        }
-      }
-    }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
-  }, [isClaudeCliPlanSession, toggleMode, toggleSuperMode])
 
   // ── Send followup (reject pending plan + iterate) ────────────────
   const handleSendFollowup = useCallback(async () => {
@@ -2867,6 +2847,9 @@ function PlanReviewModeContent({
 
       <TicketGoalSection ticket={ticket} />
 
+      {/* Auto-approve plan (per-ticket; applies to the next plan-mode iteration) */}
+      <AutoApprovePlanToggle ticket={ticket} />
+
       {/* Followup input — iterate on the plan */}
       <FollowupInput
         text={followUpText}
@@ -3230,30 +3213,6 @@ function ReviewModeContent({
     setFollowUpMode((prev) => (prev === 'build' ? 'plan' : 'build'))
   }, [])
 
-  const toggleSuperMode = useCallback(() => {
-    setFollowUpMode((prev) => (prev === 'super-plan' ? 'plan' : 'super-plan'))
-  }, [])
-
-  // Tab key toggles mode, Shift+Tab toggles super-plan
-  useEffect(() => {
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        // Only intercept when the modal is focused
-        const modal = document.querySelector('[data-testid="kanban-ticket-modal"]')
-        if (modal?.contains(document.activeElement)) {
-          e.preventDefault()
-          e.stopImmediatePropagation()
-          if (e.shiftKey) {
-            toggleSuperMode()
-          } else {
-            toggleMode()
-          }
-        }
-      }
-    }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
-  }, [toggleMode, toggleSuperMode])
 
   // ── Send followup ─────────────────────────────────────────────────
   const handleSendFollowup = useCallback(async () => {
@@ -3523,6 +3482,9 @@ function ReviewModeContent({
       {/* Prompt queue (Claude CLI) — pending follow-ups waiting on verification */}
       <ClaudeCliQueueSection ticket={ticket} />
 
+      {/* Auto-approve plan (per-ticket; applies if a followup re-enters plan mode) */}
+      <AutoApprovePlanToggle ticket={ticket} />
+
       {/* Followup input area */}
       <FollowupInput
         text={followUpText}
@@ -3768,29 +3730,6 @@ function ErrorModeContent({
     setFollowUpMode((prev) => (prev === 'build' ? 'plan' : 'build'))
   }, [])
 
-  const toggleSuperMode = useCallback(() => {
-    setFollowUpMode((prev) => (prev === 'super-plan' ? 'plan' : 'super-plan'))
-  }, [])
-
-  // Tab key toggles mode, Shift+Tab toggles super-plan
-  useEffect(() => {
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const modal = document.querySelector('[data-testid="kanban-ticket-modal"]')
-        if (modal?.contains(document.activeElement)) {
-          e.preventDefault()
-          e.stopImmediatePropagation()
-          if (e.shiftKey) {
-            toggleSuperMode()
-          } else {
-            toggleMode()
-          }
-        }
-      }
-    }
-    window.addEventListener('keydown', handler, true)
-    return () => window.removeEventListener('keydown', handler, true)
-  }, [toggleMode, toggleSuperMode])
 
   // ── Send followup for error retry ─────────────────────────────────
   const handleSendFollowup = useCallback(async () => {

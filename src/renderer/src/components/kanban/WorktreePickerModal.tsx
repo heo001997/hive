@@ -195,6 +195,7 @@ export function WorktreePickerModal({
   const [goalCriteria, setGoalCriteria] = useState('')
   const [autoApproveReview, setAutoApproveReview] = useState(false)
   const [moveChain, setMoveChain] = useState(false)
+  const [autoApprovePlan, setAutoApprovePlan] = useState(false)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -241,6 +242,7 @@ export function WorktreePickerModal({
   const defaultAgentSdk = useSettingsStore((s) => s.defaultAgentSdk) ?? 'opencode'
   const codexFastMode = useSettingsStore((s) => s.codexFastMode)
   const codexFastModeAccepted = useSettingsStore((s) => s.codexFastModeAccepted)
+  const autoApprovePlanDefault = useSettingsStore((s) => s.autoApprovePlanEnabled)
   const updateSetting = useSettingsStore((s) => s.updateSetting)
   const defaultSdkNormalized = defaultAgentSdk === 'terminal' ? 'opencode' : defaultAgentSdk
   const baseAgentSdk = selectedSdk ?? defaultSdkNormalized
@@ -257,6 +259,11 @@ export function WorktreePickerModal({
   const agentSdk =
     selectedSdk ?? selectedModel?.agentSdk ?? autoResolvedModel?.agentSdk ?? baseAgentSdk
   const goalAvailable = supportsGoalMode(agentSdk) && mode === 'build' && !preAssignOnly
+  // Auto-approve only fires for the real CLI (PTY menu reading) when Claude
+  // produces the ExitPlanMode approval menu. It's a per-ticket preference that
+  // persists, so we expose it for any CLI launch (incl. build) — a build session
+  // that later plans, or a plan-mode followup, will honor it.
+  const autoApproveAvailable = agentSdk === 'claude-code-cli' && !preAssignOnly
   const availableSdkButtonCount = availableAgentSdks
     ? [
         availableAgentSdks.opencode,
@@ -342,6 +349,8 @@ export function WorktreePickerModal({
       setGoalCriteria('')
       setAutoApproveReview(ticket.auto_approve_review)
       setMoveChain(false)
+      // Seed the per-ticket auto-approve toggle from the global default.
+      setAutoApprovePlan(useSettingsStore.getState().autoApprovePlanEnabled)
       setSelectedModel(null)
       setSelectedSdk(null)
       setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
@@ -402,65 +411,6 @@ export function WorktreePickerModal({
     }
   }, [mode])
 
-  // ── Handle Shift+Tab super-plan shortcut ─────────────────────
-  const toggleSuperShortcut = useCallback(() => {
-    setMode((prev) => {
-      const next: PickerMode = prev === 'super-plan' ? 'plan' : 'super-plan'
-      setPromptText((current) => swapModePrefix(current, prev, next))
-      setGoalMode(false)
-      setGoalCriteria('')
-      return next
-    })
-  }, [])
-
-  // ── Handle Tab / Shift+Tab keys ─────────────────────────────────
-  // Must use window-level capture-phase listener to beat SessionView's
-  // global Tab handler which also uses capture and stops propagation.
-  // Tab = toggle build↔plan, Shift+Tab = toggle ±super-plan.
-  useEffect(() => {
-    if (!open || preAssignOnly) return
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return
-      if (branchPopoverOpen) return // Don't toggle mode while picking a branch
-      e.preventDefault()
-      e.stopImmediatePropagation()
-
-      if (e.shiftKey) {
-        toggleSuperShortcut()
-      } else {
-        toggleMode()
-      }
-      // Also focus the prompt textarea if it isn't already focused
-      if (document.activeElement !== promptRef.current) {
-        promptRef.current?.focus()
-      }
-    }
-    window.addEventListener('keydown', handler, true) // capture phase
-    return () => {
-      window.removeEventListener('keydown', handler, true)
-    }
-  }, [open, toggleMode, toggleSuperShortcut, branchPopoverOpen, preAssignOnly])
-
-  // Keep React keydown for test compatibility (jsdom doesn't have capture-phase issues)
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Tab' && !preAssignOnly) {
-        if (branchPopoverOpen) return
-        e.preventDefault()
-        if (e.shiftKey) {
-          toggleSuperShortcut()
-        } else {
-          toggleMode()
-        }
-        // Also focus the prompt textarea if it isn't already focused
-        if (document.activeElement !== promptRef.current) {
-          promptRef.current?.focus()
-        }
-      }
-    },
-    [toggleMode, toggleSuperShortcut, branchPopoverOpen, preAssignOnly]
-  )
-
   // ── Handle worktree selection ───────────────────────────────────
   const handleSelectWorktree = useCallback((wtId: string) => {
     setSelectedWorktreeId(wtId)
@@ -513,6 +463,9 @@ export function WorktreePickerModal({
         const sessionId = sessionResult.session.id
         const sessionAgentSdk = sessionResult.session.agent_sdk
 
+        // Seed the in-memory auto-approve override so the runtime effect picks it up.
+        useSessionStore.getState().setAutoApprovePlan(sessionId, autoApprovePlan)
+
         // Set status tracking immediately so the sidebar shows spinning right away.
         messageSendTimes.set(sessionId, Date.now())
         userExplicitSendTimes.set(sessionId, Date.now())
@@ -544,7 +497,8 @@ export function WorktreePickerModal({
           plan_ready: false,
           goal_mode: goalMode,
           goal_success_criteria: goalMode ? goalCriteria.trim() : null,
-          auto_approve_review: autoApproveReview
+          auto_approve_review: autoApproveReview,
+          auto_approve_plan: autoApprovePlan
         })
 
         void autoPinBaseWorktree(ticket.project_id)
@@ -677,7 +631,8 @@ export function WorktreePickerModal({
           sdk: agentSdk,
           codexFastMode,
           goalMode,
-          goalSuccessCriteria: goalMode ? goalCriteria.trim() : null
+          goalSuccessCriteria: goalMode ? goalCriteria.trim() : null,
+          autoApprovePlan
         }
 
         const sortOrder = useKanbanStore
@@ -694,7 +649,8 @@ export function WorktreePickerModal({
           mode,
           goal_mode: goalMode,
           goal_success_criteria: goalMode ? goalCriteria.trim() : null,
-          auto_approve_review: autoApproveReview
+          auto_approve_review: autoApproveReview,
+          auto_approve_plan: autoApprovePlan
         })
 
         onSendComplete?.()
@@ -821,6 +777,9 @@ export function WorktreePickerModal({
       const sessionId = sessionResult.session.id
       const sessionAgentSdk = sessionResult.session.agent_sdk
 
+      // Seed the in-memory auto-approve override so the runtime effect picks it up.
+      useSessionStore.getState().setAutoApprovePlan(sessionId, autoApprovePlan)
+
       // Set status tracking immediately so the sidebar shows spinning right away.
       // This must happen before any async work (connect, prompt) to avoid a race
       // where loadSessions wipes the session from sessionsByWorktree before the
@@ -876,7 +835,8 @@ export function WorktreePickerModal({
         plan_ready: false,
         goal_mode: goalMode,
         goal_success_criteria: goalMode ? goalCriteria.trim() : null,
-        auto_approve_review: autoApproveReview
+        auto_approve_review: autoApproveReview,
+        auto_approve_plan: autoApprovePlan
       })
 
       // ── Bring the whole dependency chain into In Progress on the same worktree ──
@@ -1054,6 +1014,7 @@ export function WorktreePickerModal({
     goalMode,
     goalCriteria,
     autoApproveReview,
+    autoApprovePlan,
     isConnectionMode,
     connectionId,
     moveChain,
@@ -1070,7 +1031,6 @@ export function WorktreePickerModal({
       <DialogContent
         data-testid="worktree-picker-modal"
         className="sm:max-w-[520px] overflow-visible"
-        onKeyDown={handleKeyDown}
       >
         <DialogHeader className="space-y-2.5 pb-1">
           <DialogTitle className="text-base">
@@ -1430,6 +1390,23 @@ export function WorktreePickerModal({
                     When this ticket settles in Review, auto-commit it and — if another ticket
                     depends on it — advance it to Done so the next chain ticket auto-starts. Runs
                     after the global wait time (Settings → General).
+                  </p>
+                </div>
+              )}
+              {autoApproveAvailable && (
+                <div className="space-y-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-foreground">Auto-approve plan</span>
+                    <Switch
+                      checked={autoApprovePlan}
+                      onCheckedChange={setAutoApprovePlan}
+                      data-testid="auto-approve-plan-toggle"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {autoApprovePlanDefault
+                      ? 'On by default (set in Settings).'
+                      : 'When Claude finishes planning, auto-pick the menu option matching your Settings text.'}
                   </p>
                 </div>
               )}

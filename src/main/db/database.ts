@@ -365,6 +365,7 @@ export class DatabaseService {
       pending_launch_config: (row.pending_launch_config as string) ?? null,
       goal_mode: row.goal_mode === 1,
       goal_success_criteria: (row.goal_success_criteria as string) ?? null,
+      auto_approve_plan: row.auto_approve_plan === 1,
       note: (row.note as string) ?? null,
       created_from_session: row.created_from_session === 1,
       auto_approve_review: row.auto_approve_review === 1,
@@ -668,6 +669,7 @@ export class DatabaseService {
     this.safeAddColumn('kanban_tickets', 'note', 'TEXT DEFAULT NULL')
     this.safeAddColumn('kanban_tickets', 'goal_mode', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('kanban_tickets', 'goal_success_criteria', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'auto_approve_plan', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('kanban_tickets', 'created_from_session', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('kanban_tickets', 'review_seen_at', 'TEXT DEFAULT NULL')
     this.safeAddColumn('sessions', 'session_type', "TEXT NOT NULL DEFAULT 'default'")
@@ -2735,6 +2737,10 @@ export class DatabaseService {
     if (data.goal_success_criteria !== undefined) {
       updates.push('goal_success_criteria = ?')
       values.push(data.goal_success_criteria)
+    }
+    if (data.auto_approve_plan !== undefined) {
+      updates.push('auto_approve_plan = ?')
+      values.push(data.auto_approve_plan ? 1 : 0)
     }
     if (data.note !== undefined) {
       updates.push('note = ?')

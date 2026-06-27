@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { DEFAULT_THEME_ID } from '@/lib/themes'
 import { useSettingsStore } from '@/stores/useSettingsStore'
-import { RotateCcw, Trash2, Loader2, CheckCircle2, XCircle } from 'lucide-react'
+import { RotateCcw, Trash2, Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -150,6 +150,8 @@ export function SettingsGeneral(): React.JSX.Element {
     mergeConflictMode,
     autoResolveConflictPrompt,
     protectedBranches,
+    autoApprovePlanEnabled,
+    autoApprovePlanMatchText,
     tipsEnabled,
     breedType,
     showModelIcons,
@@ -174,6 +176,11 @@ export function SettingsGeneral(): React.JSX.Element {
   useEffect(() => {
     setAutoResolvePromptDraft(autoResolveConflictPrompt)
   }, [autoResolveConflictPrompt])
+
+  const [autoApprovePlanDraft, setAutoApprovePlanDraft] = useState(autoApprovePlanMatchText)
+  useEffect(() => {
+    setAutoApprovePlanDraft(autoApprovePlanMatchText)
+  }, [autoApprovePlanMatchText])
 
   // Strict Verify "Test" button — probes whether the configured provider + model
   // can actually be called (CLI installed, model id valid, authenticated).
@@ -1076,6 +1083,103 @@ export function SettingsGeneral(): React.JSX.Element {
           className="h-8 text-sm"
           data-testid="protected-branches-input"
         />
+      </div>
+
+      {/* Auto-approve plan mode */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <label className="text-sm font-medium">Auto-approve plan mode</label>
+            <p className="text-xs text-muted-foreground">
+              When a Claude Code CLI session finishes planning, Hive can auto-pick the approval
+              option whose label contains the match text below. Turn it on or off per ticket — this
+              switch only sets the default for newly started tickets.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={autoApprovePlanEnabled}
+            onClick={() => updateSetting('autoApprovePlanEnabled', !autoApprovePlanEnabled)}
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              autoApprovePlanEnabled ? 'bg-primary' : 'bg-muted'
+            )}
+            data-testid="auto-approve-plan-toggle"
+          >
+            <span
+              className={cn(
+                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                autoApprovePlanEnabled ? 'translate-x-4' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted-foreground">
+            Approval option match text
+          </label>
+          <Input
+            value={autoApprovePlanDraft}
+            onChange={(e) => setAutoApprovePlanDraft(e.target.value)}
+            onBlur={() => updateSetting('autoApprovePlanMatchText', autoApprovePlanDraft)}
+            placeholder="e.g. clear context"
+            className="h-8 text-sm"
+            data-testid="auto-approve-plan-match-input"
+          />
+          <p className="text-xs text-muted-foreground">
+            Used for every ticket that has auto-approve on. Case-insensitive; first matching option
+            wins. Leave blank to disable.
+          </p>
+          <div
+            className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs"
+            data-testid="auto-approve-plan-warning"
+          >
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+            <div className="space-y-1.5 text-muted-foreground">
+              <p>
+                <span className="font-medium text-foreground">
+                  Pick a phrase unique to one option.
+                </span>{' '}
+                The match is a case-insensitive substring and the{' '}
+                <span className="font-medium">first</span> matching option wins, so a loose phrase
+                can select the wrong option. Common ExitPlanMode options and a safe match for each:
+              </p>
+              <ul className="space-y-0.5">
+                <li>
+                  Yes, clear context … →{' '}
+                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">clear context</code>
+                </li>
+                <li>
+                  Yes, and bypass permissions →{' '}
+                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">
+                    yes, and bypass
+                  </code>
+                </li>
+                <li>
+                  Yes, manually approve edits →{' '}
+                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">
+                    manually approve
+                  </code>
+                </li>
+                <li>
+                  No, refine with plan … →{' '}
+                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">
+                    refine with plan
+                  </code>
+                </li>
+              </ul>
+              <p>
+                Avoid{' '}
+                <code className="rounded bg-muted px-1 py-0.5 text-foreground">
+                  bypass permissions
+                </code>{' '}
+                — it appears in both the &ldquo;clear context&rdquo; and &ldquo;bypass
+                permissions&rdquo; options, so it would pick the first (clear context). Labels vary
+                by Claude Code version — re-check after upgrading.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Tips */}

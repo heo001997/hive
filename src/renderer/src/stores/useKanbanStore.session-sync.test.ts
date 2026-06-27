@@ -51,6 +51,7 @@ function makeTicket(overrides: Partial<KanbanTicket> = {}): KanbanTicket {
     pending_launch_config: null,
     goal_mode: false,
     goal_success_criteria: null,
+    auto_approve_plan: false,
     note: null,
     created_from_session: true,
     auto_approve_review: false,

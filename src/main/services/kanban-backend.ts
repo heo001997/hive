@@ -66,7 +66,8 @@ const HIVE_FRONTMATTER_FIELDS = new Set([
   'github_pr_url',
   'mark',
   'goal_mode',
-  'goal_success_criteria'
+  'goal_success_criteria',
+  'auto_approve_plan'
 ])
 
 const CARD_FILE_SIZE_LIMIT_BYTES = 1024 * 1024
@@ -700,6 +701,8 @@ class MarkdownKanbanBackend implements KanbanBackend {
     if (data.goal_mode !== undefined) publicUpdates.goal_mode = data.goal_mode
     if (data.goal_success_criteria !== undefined)
       publicUpdates.goal_success_criteria = data.goal_success_criteria
+    if (data.auto_approve_plan !== undefined)
+      publicUpdates.auto_approve_plan = data.auto_approve_plan
 
     if (data.attachments !== undefined) runtimeUpdates.attachments = data.attachments
     if (data.current_session_id !== undefined)
@@ -1517,7 +1520,8 @@ class MarkdownKanbanBackend implements KanbanBackend {
       auto_approve_review: asBoolean(frontmatter.auto_approve_review) ?? false,
       // Markdown-backed boards don't track an unviewed-Review state, so mark
       // cards as always "seen" (non-null) to keep the glow off for them.
-      review_seen_at: updatedAt
+      review_seen_at: updatedAt,
+      auto_approve_plan: asBoolean(frontmatter.auto_approve_plan) ?? false
     }
 
     return { ticket, filePath, frontmatter }
@@ -1885,6 +1889,7 @@ export async function moveKanbanTicketToProject(
         archived_at: sourceTicket.archived_at,
         goal_mode: sourceTicket.goal_mode,
         goal_success_criteria: sourceTicket.goal_success_criteria,
+        auto_approve_plan: sourceTicket.auto_approve_plan,
         note: sourceTicket.note,
         pending_launch_config: null
       })) ?? created

@@ -417,6 +417,24 @@ export class XtermBackend implements TerminalBackend {
     this.terminal?.write(data)
   }
 
+  /**
+   * Snapshot the currently-visible rows as decoded text (one string per row).
+   * Reads only the viewport (not scrollback) so callers see exactly what the
+   * user sees — used to detect and parse the plan-mode approval menu. Returns
+   * an empty array when the terminal isn't mounted.
+   */
+  readScreen(): string[] {
+    const buffer = this.terminal?.buffer.active
+    if (!this.terminal || !buffer) return []
+    const lines: string[] = []
+    const start = buffer.baseY
+    const end = start + this.terminal.rows
+    for (let i = start; i < end; i++) {
+      lines.push(buffer.getLine(i)?.translateToString(true) ?? '')
+    }
+    return lines
+  }
+
   resize(cols: number, rows: number): void {
     terminalApi.resize(this.terminalId, cols, rows).then(unwrapEnvelope)
   }

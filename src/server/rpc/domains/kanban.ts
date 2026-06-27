@@ -262,6 +262,7 @@ const kanbanTicketUpdateSchema = z
     pending_launch_config: z.string().nullable().optional(),
     goal_mode: z.boolean().optional(),
     goal_success_criteria: z.string().nullable().optional(),
+    auto_approve_plan: z.boolean().optional(),
     note: z.string().nullable().optional(),
     archived_at: z.string().nullable().optional(),
     auto_approve_review: z.boolean().optional(),

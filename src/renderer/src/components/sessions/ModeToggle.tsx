@@ -50,7 +50,7 @@ export const ModeToggle = memo(function ModeToggle({
           ? 'bg-blue-500/10 border-blue-500/30 text-blue-500 hover:bg-blue-500/20'
           : 'bg-violet-500/10 border-violet-500/30 text-violet-500 hover:bg-violet-500/20'
       )}
-      title={`${config.description} (Tab to toggle, Shift+Tab for Super Plan)`}
+      title={config.description}
       aria-label={`Current mode: ${config.label}. Click to switch to ${mode === 'build' ? 'Plan' : 'Build'} mode`}
       data-testid="mode-toggle"
       data-mode={mode}

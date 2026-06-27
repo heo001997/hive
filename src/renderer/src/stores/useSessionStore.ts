@@ -99,6 +99,9 @@ interface SessionState {
   modeBySession: Map<string, SessionMode>
   // Super armed state per session - keyed by session ID (memory only, not persisted)
   superArmedBySession: Map<string, boolean>
+  // Per-session auto-approve-plan override - keyed by session ID (memory only, not
+  // persisted). undefined = fall back to the ticket flag / settings default.
+  autoApprovePlanBySession: Map<string, boolean>
   // Pending initial messages - keyed by session ID (e.g., code review prompts)
   pendingMessages: Map<string, string>
   // Pending plan approvals - keyed by session ID (from ExitPlanMode blocking tool)
@@ -192,6 +195,8 @@ interface SessionState {
   hydrateSession: (session: Session) => void
   getSessionMode: (sessionId: string) => SessionMode
   getSuperArmed: (sessionId: string) => boolean
+  getAutoApprovePlanOverride: (sessionId: string) => boolean | undefined
+  setAutoApprovePlan: (sessionId: string, value: boolean) => void
   toggleSessionMode: (sessionId: string) => Promise<void>
   toggleSuperMode: (sessionId: string) => Promise<void>
   toggleSuperPlanShortcut: (sessionId: string) => Promise<void>
@@ -330,6 +335,7 @@ export const useSessionStore = create<SessionState>()(
       tabOrderByWorktree: new Map(),
       modeBySession: new Map(),
       superArmedBySession: new Map(),
+      autoApprovePlanBySession: new Map(),
       pendingMessages: new Map(),
       pendingPlans: new Map(),
       pendingFollowUpMessages: new Map(),
@@ -1235,6 +1241,20 @@ export const useSessionStore = create<SessionState>()(
       // Get super armed state for a session (defaults to false)
       getSuperArmed: (sessionId: string): boolean => {
         return get().superArmedBySession.get(sessionId) ?? false
+      },
+
+      // Per-session auto-approve-plan override (undefined = no override set)
+      getAutoApprovePlanOverride: (sessionId: string): boolean | undefined => {
+        return get().autoApprovePlanBySession.get(sessionId)
+      },
+
+      // Set the per-session auto-approve-plan override (memory only)
+      setAutoApprovePlan: (sessionId: string, value: boolean): void => {
+        set((state) => {
+          const next = new Map(state.autoApprovePlanBySession)
+          next.set(sessionId, value)
+          return { autoApprovePlanBySession: next }
+        })
       },
 
       // Get session by ID from either worktree or connection sessions

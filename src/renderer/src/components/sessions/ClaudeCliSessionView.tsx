@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { CheckCheck, AlertTriangle } from 'lucide-react'
 import { terminalApi } from '@/api/terminal-api'
 import { TerminalView, type TerminalViewHandle } from '@/components/terminal/TerminalView'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
@@ -19,6 +20,7 @@ import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoff
 import { lastSendMode } from '@/lib/message-send-times'
 import { bumpWorktreeLastMessage } from '@/lib/last-message-utils'
 import { startBackgroundSessionPrompt } from '@/lib/backgroundSessionStart'
+import { parsePlanMenu, findMatchingOption, buildSelectionKeystrokes } from '@/lib/plan-menu'
 import {
   recordHiveQuestionAnswerTelemetry,
   registerHivePromptHandoff,
@@ -291,10 +293,52 @@ export function ClaudeCliSessionView({
   const [ended, setEnded] = useState(false)
   const [planSavedAsTicket, setPlanSavedAsTicket] = useState(false)
   const pendingPlan = useSessionStore((state) => state.pendingPlans.get(sessionId) ?? null)
+  const autoApprovePlanEnabled = useSettingsStore((state) => state.autoApprovePlanEnabled)
+  const autoApprovePlanMatchText = useSettingsStore((state) => state.autoApprovePlanMatchText)
+  const autoApproveHandledRef = useRef<string | null>(null)
   const { getTarget, revision: portalRevision } = useClaudeCliSessionPortal()
   void portalRevision
   const isMountedInTicketModal = !!getTarget(sessionId)
   const sessionRecord = useSessionStore((state) => state.getSessionById(sessionId))
+
+  // Resolve the effective auto-approve setting for THIS session:
+  //   per-session override (live header toggle) ?? ticket flag ?? global default.
+  const projectId = sessionRecord?.project_id ?? null
+  const ticketAutoApprove = useKanbanStore(
+    useCallback(
+      (state) => {
+        if (!projectId) return undefined
+        const ticket = state.tickets
+          .get(projectId)
+          ?.find((t) => t.current_session_id === sessionId)
+        return ticket?.auto_approve_plan
+      },
+      [projectId, sessionId]
+    )
+  )
+  const autoApproveOverride = useSessionStore((state) =>
+    state.autoApprovePlanBySession.get(sessionId)
+  )
+  const autoApproveEffective =
+    autoApproveOverride ?? ticketAutoApprove ?? autoApprovePlanEnabled
+
+  // Live toggle: flip the per-session override and, when a ticket is linked,
+  // persist the choice to it so it survives reload and shows on the board.
+  const handleToggleAutoApprove = useCallback(() => {
+    const next = !autoApproveEffective
+    useSessionStore.getState().setAutoApprovePlan(sessionId, next)
+    if (projectId) {
+      const ticket = useKanbanStore
+        .getState()
+        .tickets.get(projectId)
+        ?.find((t) => t.current_session_id === sessionId)
+      if (ticket) {
+        void useKanbanStore
+          .getState()
+          .updateTicket(ticket.id, projectId, { auto_approve_plan: next })
+      }
+    }
+  }, [autoApproveEffective, sessionId, projectId])
 
   // While Telegram forwarding is active, AskUserQuestion is intercepted by the
   // hook bridge (so it never renders in the terminal) and surfaced through the
@@ -306,6 +350,42 @@ export function ClaudeCliSessionView({
   useEffect(() => {
     setPlanSavedAsTicket(false)
   }, [pendingPlan?.planContent])
+
+  // Auto-approve plan mode: when a plan is ready and the user has configured a
+  // match string, poll the rendered ExitPlanMode menu and send the keystrokes
+  // that select the option whose label contains the match text. We act exactly
+  // once per plan; if no option matches we leave the menu for manual selection.
+  useEffect(() => {
+    const planContent = pendingPlan?.planContent
+    if (!planContent) {
+      autoApproveHandledRef.current = null
+      return
+    }
+    if (!autoApproveEffective) return
+    const matchText = autoApprovePlanMatchText.trim()
+    if (!matchText) return
+    if (autoApproveHandledRef.current === planContent) return
+
+    let attempts = 0
+    const MAX_ATTEMPTS = 25 // ~5s at 200ms — covers the menu's render latency
+    const interval = window.setInterval(() => {
+      attempts += 1
+      const menu = parsePlanMenu(terminalRef.current?.readScreen() ?? [])
+      if (!menu) {
+        if (attempts >= MAX_ATTEMPTS) window.clearInterval(interval)
+        return
+      }
+      // The menu is live — commit to a single decision for this plan.
+      window.clearInterval(interval)
+      autoApproveHandledRef.current = planContent
+      const target = findMatchingOption(menu.options, matchText)
+      if (!target) return
+      const keystrokes = buildSelectionKeystrokes(menu, target)
+      if (keystrokes) terminalApi.write(sessionId, keystrokes)
+    }, 200)
+
+    return () => window.clearInterval(interval)
+  }, [pendingPlan?.planContent, autoApproveEffective, autoApprovePlanMatchText, sessionId])
 
   useEffect(() => {
     if (!isVisible) return
@@ -534,6 +614,37 @@ export function ClaudeCliSessionView({
       data-testid="claude-cli-session-view"
       data-session-id={sessionId}
     >
+      {!ended && (
+        <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-border/40">
+          <button
+            type="button"
+            onClick={handleToggleAutoApprove}
+            aria-pressed={autoApproveEffective}
+            data-testid="cli-auto-approve-toggle"
+            className={cn(
+              'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors',
+              'border select-none',
+              autoApproveEffective
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/20'
+                : 'bg-muted/50 border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+            )}
+            title="Auto-approve plan: when Claude finishes planning, auto-select the menu option whose label matches your Settings text"
+          >
+            <CheckCheck className="h-3 w-3" aria-hidden="true" />
+            <span>Auto-approve plan</span>
+          </button>
+          {autoApproveEffective && !autoApprovePlanMatchText.trim() && (
+            <span
+              data-testid="cli-auto-approve-no-match-warning"
+              className="flex items-center gap-1 text-[11px] font-medium text-amber-500"
+              title="Auto-approve is on but no match text is set. Set it in Settings → Auto-approve plan mode; nothing is auto-selected until then."
+            >
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+              <span>Set match text in Settings</span>
+            </span>
+          )}
+        </div>
+      )}
       <div className="relative min-h-0 flex-1">
         <TerminalView
           ref={terminalRef}

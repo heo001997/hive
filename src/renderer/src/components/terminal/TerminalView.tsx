@@ -37,6 +37,8 @@ export interface TerminalViewHandle {
   fit: () => void
   focus: () => void
   clear: () => void
+  /** Decoded visible rows (xterm backend only; empty otherwise). */
+  readScreen: () => string[]
 }
 
 /**
@@ -128,6 +130,13 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
       },
       clear: () => {
         backendRef.current?.clear()
+      },
+      readScreen: () => {
+        const backend = backendRef.current
+        if (backend && backend.type === 'xterm') {
+          return (backend as XtermBackend).readScreen()
+        }
+        return []
       }
     }),
     []
