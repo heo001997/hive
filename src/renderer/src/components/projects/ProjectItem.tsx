@@ -11,7 +11,8 @@ import {
   RefreshCw,
   Settings,
   GitBranch,
-  FolderHeart
+  FolderHeart,
+  Eraser
 } from 'lucide-react'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
@@ -41,6 +42,7 @@ import {
 import {
   useProjectStore,
   useWorktreeStore,
+  useKanbanStore,
   useSpaceStore,
   useConnectionStore,
   useHintStore,
@@ -71,6 +73,13 @@ interface Project {
   sort_order: number
   created_at: string
   last_accessed_at: string
+}
+
+interface StaleWorktree {
+  id: string
+  name: string
+  path: string
+  branch_name: string
 }
 
 interface ProjectItemProps {
@@ -139,6 +148,9 @@ export const ProjectItem = memo(function ProjectItem({
   const [branchPickerOpen, setBranchPickerOpen] = useState(false)
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false)
   const [noCommitsDialogOpen, setNoCommitsDialogOpen] = useState(false)
+  const [cleanStaleOpen, setCleanStaleOpen] = useState(false)
+  const [staleWorktrees, setStaleWorktrees] = useState<StaleWorktree[]>([])
+  const [isCleaningStale, setIsCleaningStale] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const isExpanded = isSearchMode || isExpandedInStore
@@ -217,6 +229,79 @@ export const ProjectItem = memo(function ProjectItem({
     await syncWorktrees(project.id, project.path, { force: true })
     toast.success('Project refreshed')
   }
+
+  // Find worktrees not attached to any ticket and open the confirmation dialog.
+  // "Stale" = active, non-default worktree that no non-archived ticket references.
+  const handleCleanStaleWorktrees = useCallback(async (): Promise<void> => {
+    // Make sure both lists reflect the DB before computing attachment.
+    await Promise.all([
+      useWorktreeStore.getState().loadWorktrees(project.id),
+      useKanbanStore.getState().loadTickets(project.id)
+    ]).catch(() => {
+      // Fall through and use whatever is cached on failure.
+    })
+
+    // Abort if tickets never loaded for this project: an empty ticket list would
+    // make every worktree look unattached and could delete attached worktrees.
+    if (!useKanbanStore.getState().tickets.has(project.id)) {
+      toast.error('Could not load tickets — skipped cleaning to avoid removing attached worktrees')
+      return
+    }
+
+    const worktrees = useWorktreeStore.getState().getWorktreesForProject(project.id)
+    const tickets = useKanbanStore.getState().getTicketsForProject(project.id)
+    const attachedWorktreeIds = new Set(
+      tickets
+        .filter((t) => !t.archived_at && t.worktree_id)
+        .map((t) => t.worktree_id as string)
+    )
+
+    const stale = worktrees
+      .filter((w) => !w.is_default && w.status === 'active' && !attachedWorktreeIds.has(w.id))
+      .map((w) => ({ id: w.id, name: w.name, path: w.path, branch_name: w.branch_name }))
+
+    if (stale.length === 0) {
+      toast.info('No stale worktrees to clean — all are attached to a ticket')
+      return
+    }
+
+    setStaleWorktrees(stale)
+    setCleanStaleOpen(true)
+  }, [project.id])
+
+  const doCleanStaleWorktrees = useCallback(async (): Promise<void> => {
+    setCleanStaleOpen(false)
+    const targets = staleWorktrees
+    if (targets.length === 0) return
+
+    setIsCleaningStale(true)
+    const loadingToastId = toast.loading(
+      `Cleaning ${targets.length} stale worktree${targets.length === 1 ? '' : 's'}...`
+    )
+
+    let cleaned = 0
+    let failed = 0
+    for (const wt of targets) {
+      const result = await useWorktreeStore
+        .getState()
+        .archiveWorktree(wt.id, wt.path, wt.branch_name, project.path)
+      if (result.success) {
+        cleaned++
+      } else {
+        failed++
+      }
+    }
+
+    toast.dismiss(loadingToastId)
+    setIsCleaningStale(false)
+    setStaleWorktrees([])
+
+    if (failed === 0) {
+      toast.success(`Cleaned ${cleaned} stale worktree${cleaned === 1 ? '' : 's'}`)
+    } else {
+      toast.warning(`Cleaned ${cleaned}, failed to clean ${failed}`)
+    }
+  }, [staleWorktrees, project.path])
 
   const doCreateWorktree = useCallback(async (): Promise<void> => {
     if (isCreatingWorktree) return
@@ -490,6 +575,10 @@ export const ProjectItem = memo(function ProjectItem({
               <RefreshCw className="h-4 w-4 mr-2" />
               Refresh Project
             </ContextMenuItem>
+            <ContextMenuItem onClick={handleCleanStaleWorktrees} disabled={isCleaningStale}>
+              <Eraser className="h-4 w-4 mr-2" />
+              Clean Stale Worktrees
+            </ContextMenuItem>
             <ContextMenuItem onClick={() => setBranchPickerOpen(true)}>
               <GitBranch className="h-4 w-4 mr-2" />
               New Workspace From...
@@ -594,6 +683,43 @@ export const ProjectItem = memo(function ProjectItem({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogAction onClick={() => setNoCommitsDialogOpen(false)}>OK</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Clean Stale Worktrees Dialog */}
+      <AlertDialog open={cleanStaleOpen} onOpenChange={setCleanStaleOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Clean {staleWorktrees.length} stale worktree
+              {staleWorktrees.length === 1 ? '' : 's'}?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  These worktrees aren&apos;t attached to any ticket. They will be removed and
+                  their branches deleted. This cannot be undone, including any uncommitted or
+                  unpushed changes.
+                </p>
+                <ul className="max-h-48 overflow-y-auto rounded bg-muted px-2 py-1 space-y-0.5">
+                  {staleWorktrees.map((wt) => (
+                    <li key={wt.id} className="font-mono text-xs break-all">
+                      {wt.name}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={doCleanStaleWorktrees}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Clean
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
