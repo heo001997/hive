@@ -77,12 +77,12 @@ That's it! Open Hive and point it at a git repo.
 
 If you run multiple AI coding agents across different projects and branches, you know the pain -- six terminal tabs open, you can't remember which agent is working on what, and you're worried two of them are editing the same files.
 
-Hive is an AI agent orchestrator. See all your running agents in one sidebar, click to switch between them, and each one runs on an isolated git worktree branch so they can't conflict. Connect multiple repositories together so a single agent session has context across your entire stack.
+Hive is an AI agent orchestrator. See every running agent in one sidebar, click to switch between them, and each one runs on an isolated git worktree branch so they can't conflict. Connect multiple repositories together so a single agent session has context across your entire stack.
 
 ## Features
 
 ### 🌳 **Worktree-First Workflow**
-Work on multiple branches simultaneously without stashing or switching. Create, archive, and organize worktrees with one click. Each worktree gets a unique city-based name for easy identification.
+Work on multiple branches at once without stashing or switching. Create, archive, and organize worktrees with one click. Each worktree gets a unique city-based name for easy identification.
 
 ### 🤖 **Built-in AI Coding Sessions**
 Run AI coding agents directly inside Hive with **OpenCode**, **Claude Code**, and **Codex** support. Stream responses in real-time, watch tool calls execute, and approve permissions as needed. Full undo/redo support keeps you in control.
@@ -97,7 +97,7 @@ Commit, push, pull, and manage branches visually. No terminal needed for common 
 Group related projects and worktrees into logical workspaces. Pin your favorites for quick access. Keep your development environment organized as you scale.
 
 ### ⚡ **Command Palette**
-Navigate and act fast with keyboard shortcuts. Press `Cmd+K` to access any feature instantly. Search sessions, switch worktrees, or run commands without touching the mouse.
+Navigate and act fast with keyboard shortcuts. Press `Cmd+K` to reach any feature instantly. Search sessions, switch worktrees, or run commands without touching the mouse.
 
 ### 🎨 **Beautiful Themes**
 Choose from 10 carefully crafted themes — 6 dark and 4 light. Switch instantly to match your preference or time of day. Follows system theme automatically if desired.
