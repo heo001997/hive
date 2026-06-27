@@ -18,6 +18,12 @@ const lastFileStatusLoad = new Map<string, number>()
 const lastBranchInfoLoad = new Map<string, number>()
 const LOAD_TTL_MS = 2500
 
+// Active "detect the PR the CLI just opened" polls, keyed by worktree id so a
+// second Create-PR click can't stack timers. See pollForPRAttachment.
+const prDetectionPolls = new Map<string, ReturnType<typeof setInterval>>()
+const PR_DETECT_INTERVAL_MS = 5000
+const PR_DETECT_MAX_ATTEMPTS = 60 // ~5 min — enough for the CLI to push + open the PR
+
 // Git status types matching main process
 type GitStatusCode = 'M' | 'A' | 'D' | '?' | 'C' | ''
 
@@ -114,6 +120,13 @@ interface GitStoreState {
   setCreatingPR: (worktreeId: string, creating: boolean) => void
   attachPR: (worktreeId: string, prNumber: number, prUrl: string) => Promise<void>
   detachPR: (worktreeId: string) => Promise<void>
+  // Ask `gh` whether a PR already exists for the worktree's branch and attach it
+  // if so. Used to recover the PR opened by the Claude Code CLI handoff, which
+  // creates it in its own terminal so the app never learns the number directly.
+  detectAndAttachPR: (worktreeId: string, worktreePath: string) => Promise<boolean>
+  // Start a bounded background poll that runs detectAndAttachPR until a PR is
+  // found (or it times out). Safe to call repeatedly — one poll per worktree.
+  pollForPRAttachment: (worktreeId: string, worktreePath: string) => void
 
   // Cross-worktree merge default actions
   setDefaultMergeBranch: (projectId: string, branchName: string) => void
@@ -537,6 +550,60 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
         return { attachedPR: newMap }
       })
     }
+  },
+
+  // Look up the PR for this worktree's branch via `gh` and attach it if found.
+  detectAndAttachPR: async (worktreeId: string, worktreePath: string): Promise<boolean> => {
+    // Already attached — nothing to do.
+    if (get().attachedPR.has(worktreeId)) return true
+
+    // Need the remote URL to build the PR link; load it if it isn't cached yet.
+    let remote = get().remoteInfo.get(worktreeId)
+    if (!remote) {
+      await get().checkRemoteInfo(worktreeId, worktreePath)
+      remote = get().remoteInfo.get(worktreeId)
+    }
+    if (!remote?.isGitHub || !remote.url) return false
+
+    try {
+      const result = await gitApi.findPullRequestForBranch(worktreePath)
+      if (!result.found || !result.number) return false
+      // Another path may have attached while we awaited the lookup.
+      if (get().attachedPR.has(worktreeId)) return true
+      const prUrl = `${remote.url.replace(/\.git$/, '')}/pull/${result.number}`
+      await get().attachPR(worktreeId, result.number, prUrl)
+      return true
+    } catch {
+      return false
+    }
+  },
+
+  // Bounded poll: re-run detectAndAttachPR every few seconds until it succeeds
+  // or the attempt cap is reached. Started after the Create-PR handoff so the
+  // button flips to the PR badge once the CLI's `gh pr create` lands.
+  pollForPRAttachment: (worktreeId: string, worktreePath: string): void => {
+    if (prDetectionPolls.has(worktreeId)) return
+    if (get().attachedPR.has(worktreeId)) return
+
+    const stop = (): void => {
+      const timer = prDetectionPolls.get(worktreeId)
+      if (timer) clearInterval(timer)
+      prDetectionPolls.delete(worktreeId)
+    }
+
+    let attempts = 0
+    const timer = setInterval(() => {
+      attempts += 1
+      get()
+        .detectAndAttachPR(worktreeId, worktreePath)
+        .then((done) => {
+          if (done || attempts >= PR_DETECT_MAX_ATTEMPTS) stop()
+        })
+        .catch(() => {
+          if (attempts >= PR_DETECT_MAX_ATTEMPTS) stop()
+        })
+    }, PR_DETECT_INTERVAL_MS)
+    prDetectionPolls.set(worktreeId, timer)
   },
 
   // Detach a PR from a worktree (optimistic + DB write)
