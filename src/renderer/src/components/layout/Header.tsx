@@ -12,13 +12,11 @@ import {
   Archive,
   ChevronDown,
   Coffee,
-  FileSearch,
   X,
   ExternalLink,
   Copy,
   Hammer,
   Map,
-  Check,
   MoonStar,
   Wand2
 } from 'lucide-react'
@@ -44,7 +42,6 @@ import { cn } from '@/lib/utils'
 import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useSessionHistoryStore } from '@/stores/useSessionHistoryStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
-import { REVIEW_PROMPT_LABELS, type ReviewPromptType } from '@/constants/reviewPrompts'
 import { useProjectStore } from '@/stores/useProjectStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useConnectionStore } from '@/stores/useConnectionStore'
@@ -83,14 +80,12 @@ export function Header(): React.JSX.Element {
   }, [selectedWorktreeId, worktreesByProject])
   // Lifecycle actions hook — PR/Review/Merge/Archive logic
   const lifecycle = useLifecycleActions(selectedWorktreeId)
-  const { pinAndActivate, lifecycleLoading } = usePinAndActivateSession()
+  const { lifecycleLoading } = usePinAndActivateSession()
 
   const vimMode = useVimModeStore((s) => s.mode)
   const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled)
   const mergeConflictMode = useSettingsStore((s) => s.mergeConflictMode)
   const boardMode = useSettingsStore((s) => s.boardMode)
-  const currentReviewPromptType = useSettingsStore((s) => s.reviewPromptType)
-  const updateSetting = useSettingsStore((s) => s.updateSetting)
   const keepAwakeEnabled = useSettingsStore((s) => s.keepAwakeEnabled)
   const streamingCount = useWorktreeStatusStore((state) =>
     Object.values(state.sessionStatuses).filter(
@@ -159,7 +154,7 @@ export function Header(): React.JSX.Element {
   const {
     attachedPR, hasAttachedPR, prLiveState, isGitHub,
     isMergingPR, isArchiving: isArchivingWorktree, branchInfo, remoteBranches,
-    prTargetBranch, reviewTargetBranch, isCleanTree
+    prTargetBranch, isCleanTree
   } = lifecycle
 
   // PR picker popover state (UI-specific to Header)
@@ -416,95 +411,6 @@ export function Header(): React.JSX.Element {
             <Wand2 className="h-3.5 w-3.5 mr-1" />
             Auto Resolve Conflict &amp; Merge
           </Button>
-        )}
-        {!isConnectionMode && selectedWorktree && (
-          <>
-            <div className="flex items-center">
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs rounded-r-none border-r-0"
-                onClick={() => pinAndActivate(() => lifecycle.createCodeReview())}
-                disabled={isOperating || lifecycleLoading}
-                title="Review branch changes with AI"
-                data-testid="review-button"
-              >
-                {lifecycleLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                ) : (
-                  <FileSearch className="h-3.5 w-3.5 mr-1" />
-                )}
-                {showVimHints ? (
-                  <span>
-                    <span className="text-primary font-bold">R</span>eview
-                  </span>
-                ) : (
-                  'Review'
-                )}
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 px-1 rounded-l-none"
-                    disabled={isOperating || lifecycleLoading}
-                    data-testid="review-prompt-type-trigger"
-                  >
-                    <ChevronDown className="h-3 w-3" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  {(Object.keys(REVIEW_PROMPT_LABELS) as ReviewPromptType[]).map((type) => (
-                    <DropdownMenuItem
-                      key={type}
-                      onClick={() => {
-                        updateSetting('reviewPromptType', type)
-                        pinAndActivate(() => lifecycle.createCodeReview())
-                      }}
-                      data-testid={`review-prompt-${type}`}
-                    >
-                      {currentReviewPromptType === type && (
-                        <Check className="h-3.5 w-3.5 mr-2" />
-                      )}
-                      {currentReviewPromptType !== type && (
-                        <span className="w-3.5 mr-2" />
-                      )}
-                      {REVIEW_PROMPT_LABELS[type]}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-xs text-muted-foreground px-2 h-7"
-                  data-testid="review-target-branch-trigger"
-                >
-                  vs {reviewTargetBranch || branchInfo?.tracking || 'origin/main'}
-                  <ChevronDown className="h-3 w-3 ml-1" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="max-h-60 overflow-y-auto">
-                {remoteBranches.length === 0 ? (
-                  <DropdownMenuItem disabled>No remote branches</DropdownMenuItem>
-                ) : (
-                  remoteBranches.map((branch) => (
-                    <DropdownMenuItem
-                      key={branch.name}
-                      onClick={() => lifecycle.setReviewTargetBranch(branch.name)}
-                      data-testid={`review-target-branch-${branch.name}`}
-                    >
-                      {branch.name}
-                    </DropdownMenuItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>
         )}
         {/* PR Badge with Popover Picker — shown when a PR is attached */}
         {!isConnectionMode && isGitHub && hasAttachedPR && (

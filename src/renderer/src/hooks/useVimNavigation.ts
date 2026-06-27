@@ -300,14 +300,6 @@ export function useVimNavigation(): void {
       }
 
       // --- Header action shortcuts ---
-      if (event.key === 'r') {
-        const btn = document.querySelector<HTMLElement>('[data-testid="review-button"]')
-        if (btn) {
-          btn.click()
-          event.preventDefault()
-          return
-        }
-      }
       if (event.key === 'p') {
         const btn = document.querySelector<HTMLElement>('[data-testid="pr-button"]')
         if (btn) {
