@@ -1,5 +1,6 @@
 import {
   PET_JUMP_TO_WORKTREE_CHANNEL,
+  PET_OPEN_TICKET_CHANNEL,
   PET_SETTINGS_UPDATED_CHANNEL,
   PET_STATUS_CHANNEL
 } from '@shared/pet-events'
@@ -22,7 +23,8 @@ const isPetStatusPayload = (value: unknown): value is PetStatusPayload =>
   'sourceWorktreeId' in value &&
   (typeof value.sourceWorktreeId === 'string' || value.sourceWorktreeId === null) &&
   'workingSessionCount' in value &&
-  typeof value.workingSessionCount === 'number'
+  typeof value.workingSessionCount === 'number' &&
+  (!('pets' in value) || Array.isArray((value as { pets?: unknown }).pets))
 
 const isPetSettings = (value: unknown): value is PetSettings =>
   typeof value === 'object' &&
@@ -45,11 +47,24 @@ const isPetJumpToWorktreePayload = (value: unknown): value is { worktreeId: stri
   'worktreeId' in value &&
   typeof value.worktreeId === 'string'
 
+const isPetOpenTicketPayload = (
+  value: unknown
+): value is { projectId: string; ticketId: string } =>
+  typeof value === 'object' &&
+  value !== null &&
+  'projectId' in value &&
+  typeof value.projectId === 'string' &&
+  'ticketId' in value &&
+  typeof value.ticketId === 'string'
+
 export const petApi = {
   show: async (): Promise<void> => getRendererRpcClient().request<void>('petOps.show', {}),
   hide: async (): Promise<void> => getRendererRpcClient().request<void>('petOps.hide', {}),
-  focusMain: async (payload: { worktreeId: string | null }): Promise<void> =>
-    getRendererRpcClient().request<void>('petOps.focusMain', payload),
+  focusMain: async (payload: {
+    worktreeId: string | null
+    projectId?: string | null
+    ticketId?: string | null
+  }): Promise<void> => getRendererRpcClient().request<void>('petOps.focusMain', payload),
   setIgnoreMouse: (ignore: boolean): void => {
     void getRendererRpcClient().request<void>('petOps.setIgnoreMouse', { ignore })
   },
@@ -84,6 +99,14 @@ export const petApi = {
   onJumpToWorktree: (callback: (payload: { worktreeId: string }) => void): (() => void) =>
     getRendererRpcClient().subscribe(PET_JUMP_TO_WORKTREE_CHANNEL, (event: ServerEvent) => {
       if (isPetJumpToWorktreePayload(event.payload)) {
+        callback(event.payload)
+      }
+    }),
+  onOpenTicket: (
+    callback: (payload: { projectId: string; ticketId: string }) => void
+  ): (() => void) =>
+    getRendererRpcClient().subscribe(PET_OPEN_TICKET_CHANNEL, (event: ServerEvent) => {
+      if (isPetOpenTicketPayload(event.payload)) {
         callback(event.payload)
       }
     }),

@@ -202,7 +202,8 @@ describe('pet ops RPC mocked provider', () => {
           opacity: 1,
           animationSpeedEnabled: false,
           animationSpeed: 5,
-          hasHatched: false
+          hasHatched: false,
+          maxVisiblePets: 3
         },
         position: { x: 0, y: 0 },
         manifest: {
@@ -249,7 +250,8 @@ describe('pet ops RPC mocked provider', () => {
       await expect(Effect.runPromise(service.getCurrentStatus!())).resolves.toEqual({
         state: 'idle',
         sourceWorktreeId: null,
-        workingSessionCount: 0
+        workingSessionCount: 0,
+        pets: []
       })
     } finally {
       if (originalSendDescriptor) {

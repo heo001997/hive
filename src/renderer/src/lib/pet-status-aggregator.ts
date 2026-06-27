@@ -1,4 +1,5 @@
-import type { PetState, PetStatusPayload } from '@shared/types/pet'
+import type { PetState, PetStatusPayload, PetTicket } from '@shared/types/pet'
+import { MAX_PET_TICKETS } from '@shared/types/pet'
 import type { SessionStatusEntry, SessionStatusType } from '@/stores/useWorktreeStatusStore'
 
 const STATUS_PRIORITY: Record<SessionStatusType, number> = {
@@ -98,4 +99,105 @@ export function aggregatePetStatus(input: PetAggregateInput): PetStatusPayload {
     sourceWorktreeId: state === 'idle' ? null : best.sourceWorktreeId,
     workingSessionCount
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-ticket pets: one pet per active ticket (running / needs-attention).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Minimal shape read from a kanban ticket — `KanbanTicket` is a superset of this. */
+export interface PetTicketInput {
+  id: string
+  project_id: string
+  worktree_id: string | null
+  current_session_id: string | null
+  column: 'todo' | 'in_progress' | 'review' | 'done'
+  title: string
+  archived_at: string | null
+}
+
+export interface PetTicketsAggregateInput {
+  tickets: PetTicketInput[]
+  sessionStatuses: Record<string, SessionStatusEntry | null>
+  /** sessionId → number of pending questions awaiting the user. */
+  pendingQuestionCountBySession: Map<string, number>
+}
+
+// Higher number = surfaced first and survives the cap. Mirrors the card's
+// attention ordering: needs-input > plan-ready > running.
+const PET_TICKET_STATE_PRIORITY: Record<Exclude<PetState, 'idle'>, number> = {
+  question: 5,
+  permission: 4,
+  plan_ready: 3,
+  working: 2
+}
+
+/**
+ * The pet state for a single ticket, or `null` when the ticket should not get a
+ * pet (todo, done, archived, or an idle/completed in-progress session).
+ */
+function ticketPetState(
+  ticket: PetTicketInput,
+  sessionStatuses: Record<string, SessionStatusEntry | null>,
+  pendingQuestionCountBySession: Map<string, number>
+): Exclude<PetState, 'idle'> | null {
+  if (ticket.archived_at || ticket.column === 'done' || ticket.column === 'todo') return null
+
+  const sessionId = ticket.current_session_id
+  const status = sessionId ? sessionStatuses[sessionId]?.status : undefined
+  const hasPendingQuestions = sessionId
+    ? (pendingQuestionCountBySession.get(sessionId) ?? 0) > 0
+    : false
+
+  // Needs input — highest attention.
+  if (status === 'answering' || hasPendingQuestions) return 'question'
+  if (status === 'command_approval' || status === 'permission') return 'permission'
+  if (status === 'plan_ready') return 'plan_ready'
+
+  // A ticket sitting in Review needs a human look — surface it as a question pet
+  // so clicking it jumps straight into the ticket detail.
+  if (ticket.column === 'review') return 'question'
+
+  // Any started ticket in the In Progress column is "running" — including the
+  // idle gap between agent turns (status completed/unread), when the session
+  // still exists but isn't emitting. Without this, parked-but-running tickets
+  // silently lose their pet, so N in-progress tickets collapse to one.
+  if (ticket.column === 'in_progress' && sessionId) return 'working'
+
+  // Safety net: a working/planning session in any other column.
+  if (status === 'working' || status === 'planning') return 'working'
+
+  return null
+}
+
+/**
+ * Build the list of per-ticket pets: one pet for every running or
+ * needs-attention ticket, sorted by attention priority (stable within a
+ * priority by source order) and capped to `MAX_PET_TICKETS`.
+ */
+export function computePetTickets(input: PetTicketsAggregateInput): PetTicket[] {
+  const ranked: Array<{ pet: PetTicket; priority: number; order: number }> = []
+
+  input.tickets.forEach((ticket, order) => {
+    const state = ticketPetState(
+      ticket,
+      input.sessionStatuses,
+      input.pendingQuestionCountBySession
+    )
+    if (!state) return
+    ranked.push({
+      pet: {
+        ticketId: ticket.id,
+        projectId: ticket.project_id,
+        worktreeId: ticket.worktree_id,
+        state,
+        title: ticket.title
+      },
+      priority: PET_TICKET_STATE_PRIORITY[state],
+      order
+    })
+  })
+
+  ranked.sort((a, b) => b.priority - a.priority || a.order - b.order)
+  return ranked.slice(0, MAX_PET_TICKETS).map((entry) => entry.pet)
 }

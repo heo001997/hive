@@ -13,9 +13,11 @@ import {
 } from '../../../shared/desktop-command'
 import {
   PET_JUMP_TO_WORKTREE_CHANNEL,
+  PET_OPEN_TICKET_CHANNEL,
   PET_SETTINGS_UPDATED_CHANNEL,
   PET_STATUS_CHANNEL
 } from '../../../shared/pet-events'
+import { DEFAULT_MAX_VISIBLE_PETS } from '../../../shared/types/pet'
 import type { PetPosition, PetSettings, PetStatusPayload } from '../../../shared/types/pet'
 import type { RpcContext, RpcHandler } from '../router'
 
@@ -35,16 +37,32 @@ export interface PetOpsRpcService {
 }
 
 const emptyParamsSchema = z.union([z.object({}).strict(), z.undefined(), z.null()])
+const petTicketSchema = z
+  .object({
+    ticketId: z.string(),
+    projectId: z.string(),
+    worktreeId: z.string().nullable(),
+    state: z.enum(['idle', 'working', 'question', 'permission', 'plan_ready']),
+    title: z.string()
+  })
+  .strict()
 const petStatusParamsSchema = z
   .object({
     state: z.enum(['idle', 'working', 'question', 'permission', 'plan_ready']),
     sourceWorktreeId: z.string().nullable(),
-    workingSessionCount: z.number().int().nonnegative()
+    workingSessionCount: z.number().int().nonnegative(),
+    pets: petTicketSchema.array().optional()
   })
   .strict()
 const setIgnoreMouseParamsSchema = z.object({ ignore: z.boolean() }).strict()
 const moveParamsSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict()
-const focusMainParamsSchema = z.object({ worktreeId: z.string().nullable() }).strict()
+const focusMainParamsSchema = z
+  .object({
+    worktreeId: z.string().nullable(),
+    projectId: z.string().nullable().optional(),
+    ticketId: z.string().nullable().optional()
+  })
+  .strict()
 const updateSettingsParamsSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -53,7 +71,8 @@ const updateSettingsParamsSchema = z
     opacity: z.number().finite().optional(),
     animationSpeedEnabled: z.boolean().optional(),
     animationSpeed: z.number().finite().optional(),
-    hasHatched: z.boolean().optional()
+    hasHatched: z.boolean().optional(),
+    maxVisiblePets: z.number().int().finite().optional()
   })
   .strict()
 
@@ -64,7 +83,8 @@ const DEFAULT_PET_SETTINGS: PetSettings = {
   opacity: 1,
   animationSpeedEnabled: false,
   animationSpeed: 5,
-  hasHatched: false
+  hasHatched: false,
+  maxVisiblePets: DEFAULT_MAX_VISIBLE_PETS
 }
 
 let fallbackPetSettings: PetSettings = { ...DEFAULT_PET_SETTINGS }
@@ -101,7 +121,8 @@ const makeDefaultPetConfigResult = (): GetPetConfigResult => ({
 const makeDefaultPetStatusResult = (): GetCurrentPetStatusResult => ({
   state: 'idle',
   sourceWorktreeId: null,
-  workingSessionCount: 0
+  workingSessionCount: 0,
+  pets: []
 })
 
 export const makeLivePetOpsRpcService = (): PetOpsRpcService => ({
@@ -267,7 +288,12 @@ export const makePetOpsRpcHandlers = (
             return yield* Effect.fail(new Error('petOps.focusMain is unavailable'))
           }
           yield* service.focusMain(payload)
-          if (payload.worktreeId) {
+          if (payload.projectId && payload.ticketId) {
+            yield* context.eventBus.publish({
+              channel: PET_OPEN_TICKET_CHANNEL,
+              payload: { projectId: payload.projectId, ticketId: payload.ticketId }
+            })
+          } else if (payload.worktreeId) {
             yield* context.eventBus.publish({
               channel: PET_JUMP_TO_WORKTREE_CHANNEL,
               payload: { worktreeId: payload.worktreeId }

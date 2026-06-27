@@ -1,4 +1,5 @@
 import { Bug, Check } from 'lucide-react'
+import { clampMaxVisiblePets, MAX_PET_TICKETS } from '@shared/types/pet'
 import type { PetSettings, PetSize } from '@shared/types/pet'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -16,6 +17,7 @@ export function SettingsPet(): React.JSX.Element {
   const { pet, updateSetting } = useSettingsStore()
   const pets = listPets()
   const animationSpeed = Math.min(Math.max(pet.animationSpeed, 2), 5)
+  const maxVisiblePets = clampMaxVisiblePets(pet.maxVisiblePets)
 
   const updatePet = (partial: Partial<PetSettings>): void => {
     updateSetting('pet', { ...pet, ...partial })
@@ -115,6 +117,27 @@ export function SettingsPet(): React.JSX.Element {
           className="w-full accent-primary"
           data-testid="pet-opacity-slider"
         />
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium">Max visible pets</label>
+          <span className="text-xs text-muted-foreground">{maxVisiblePets}</span>
+        </div>
+        <input
+          type="range"
+          min={1}
+          max={MAX_PET_TICKETS}
+          step={1}
+          value={maxVisiblePets}
+          onChange={(event) => updatePet({ maxVisiblePets: Number(event.target.value) })}
+          className="w-full accent-primary"
+          data-testid="pet-max-visible-slider"
+        />
+        <p className="text-xs text-muted-foreground">
+          One pet per active ticket. Beyond this many, the extras collapse into a single
+          pet badged ×N so the screen stays tidy.
+        </p>
       </div>
 
       <div className="space-y-2">

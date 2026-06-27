@@ -24,6 +24,29 @@ button {
   background: transparent;
 }
 
+/*
+ * Vertical stack of per-ticket pets, bottom-anchored so it grows upward to
+ * match the window's bottom-anchored resize. `gap` is kept in sync with
+ * PET_COLUMN_GAP (shared/types/pet.ts) and the top/bottom padding sums to
+ * PET_PADDING (src/main/services/pet-window.ts) so the column fits exactly.
+ */
+.pet-column {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 24px 0;
+  box-sizing: border-box;
+  background: transparent;
+}
+
+.pet-column .pet-hit-target {
+  flex: 0 0 auto;
+}
+
 .pet-hit-target {
   position: relative;
   display: grid;
@@ -125,6 +148,29 @@ button {
 
 .pet-bubble-ready {
   background: #16a34a;
+}
+
+/* Overflow count badge: this pet stands for N collapsed tickets. */
+.pet-count {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: #111827;
+  color: white;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow:
+    0 2px 8px rgb(0 0 0 / 0.3),
+    inset 0 0 0 1px rgb(255 255 255 / 0.4);
 }
 
 .pet-glow {
