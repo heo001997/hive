@@ -235,6 +235,11 @@ const runDevHeadless = async () => {
   // Non-interactive runs (CI / piped) start fresh without prompting.
   await ensureDevDataReady()
 
+  // Sync deps before building so a freshly pulled lib (added to package.json by
+  // someone else) is installed instead of crashing the build with a missing
+  // module. No-op/fast when the lockfile already matches node_modules.
+  await run('pnpm', ['install'])
+
   await run('pnpm', ['run', 'build:server'])
   copyDevServerBundle()
 
@@ -265,6 +270,12 @@ const runDevDesktop = async () => {
   // (readline needs cooked-mode stdin) and BEFORE the long build, so the dev
   // answers up front instead of waiting behind build:server.
   await ensureDevDataReady()
+
+  // Sync deps before building so a freshly pulled lib (added to package.json by
+  // someone else) is installed instead of crashing the build with a missing
+  // module. No-op/fast when the lockfile already matches node_modules. Runs
+  // before the raw-mode TTY handler so pnpm keeps cooked-mode stdin.
+  await run('pnpm', ['install'])
 
   const disposeInteractiveInterruptHandler = installInteractiveInterruptHandler()
   const disposeForegroundProcessGroupReclaimer = installForegroundProcessGroupReclaimer()
