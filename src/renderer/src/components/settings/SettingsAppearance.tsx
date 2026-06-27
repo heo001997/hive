@@ -1,7 +1,142 @@
+import { useRef } from 'react'
 import { THEME_PRESETS, ThemePreset } from '@/lib/themes'
 import { useThemeStore } from '@/stores/useThemeStore'
+import { useSettingsStore } from '@/stores/useSettingsStore'
 import { cn } from '@/lib/utils'
-import { Check } from 'lucide-react'
+import { Check, Upload, RotateCcw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { toast } from '@/lib/toast'
+import hiveLogo from '@/assets/icon.png'
+
+/** Longest edge (px) the custom logo is downscaled to before being stored as a data URL. */
+const MAX_LOGO_DIM = 128
+
+/** Read an image file and return a downscaled PNG data URL (keeps the persisted settings blob small). */
+function fileToResizedDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Failed to read file'))
+    reader.onload = () => {
+      const img = new Image()
+      img.onerror = () => reject(new Error('Failed to load image'))
+      img.onload = () => {
+        const scale = Math.min(1, MAX_LOGO_DIM / Math.max(img.width, img.height))
+        const w = Math.max(1, Math.round(img.width * scale))
+        const h = Math.max(1, Math.round(img.height * scale))
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          reject(new Error('Canvas not supported'))
+          return
+        }
+        ctx.drawImage(img, 0, 0, w, h)
+        resolve(canvas.toDataURL('image/png'))
+      }
+      img.src = reader.result as string
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+function BrandingSection(): React.JSX.Element {
+  const customLogoDataUrl = useSettingsStore((s) => s.customLogoDataUrl)
+  const customAppName = useSettingsStore((s) => s.customAppName)
+  const updateSetting = useSettingsStore((s) => s.updateSetting)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleLogoSelect = async (e: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = e.target.files?.[0]
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please choose an image file')
+      return
+    }
+    try {
+      const dataUrl = await fileToResizedDataUrl(file)
+      await updateSetting('customLogoDataUrl', dataUrl)
+      toast.success('Logo updated')
+    } catch {
+      toast.error('Failed to load image')
+    }
+  }
+
+  return (
+    <section className="space-y-3" data-testid="settings-branding">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Branding
+      </h3>
+      <p className="text-sm text-muted-foreground">
+        Customize the logo and name shown in the top-left of the title bar.
+      </p>
+
+      {/* Logo */}
+      <div className="flex items-center gap-4">
+        <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-md border bg-muted/30">
+          <img
+            src={customLogoDataUrl || hiveLogo}
+            alt="App logo preview"
+            className="h-10 w-10 rounded object-contain"
+            draggable={false}
+            data-testid="branding-logo-preview"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleLogoSelect}
+              data-testid="branding-logo-input"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              data-testid="branding-logo-upload"
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Upload logo
+            </Button>
+            {customLogoDataUrl && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => updateSetting('customLogoDataUrl', null)}
+                data-testid="branding-logo-reset"
+              >
+                <RotateCcw className="h-4 w-4 mr-2" />
+                Reset
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            PNG, JPG, SVG or WebP. Resized to {MAX_LOGO_DIM}px.
+          </p>
+        </div>
+      </div>
+
+      {/* Name */}
+      <div className="space-y-2">
+        <label className="text-sm font-medium">App name</label>
+        <Input
+          value={customAppName}
+          onChange={(e) => updateSetting('customAppName', e.target.value)}
+          placeholder="Hive"
+          maxLength={40}
+          className="max-w-xs text-sm"
+          data-testid="branding-app-name"
+        />
+        <p className="text-xs text-muted-foreground">Leave empty to use the default name.</p>
+      </div>
+    </section>
+  )
+}
 
 interface ThemeCardProps {
   preset: ThemePreset
@@ -102,6 +237,8 @@ export function SettingsAppearance(): React.JSX.Element {
           Choose a theme preset. Hover to preview before selecting.
         </p>
       </div>
+
+      <BrandingSection />
 
       {/* Dark themes */}
       <section className="space-y-2">
