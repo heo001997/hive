@@ -210,6 +210,17 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     setPrMergeConflict(null)
   }, [storeAttachedPR?.number])
 
+  // --- Auto-detect a PR opened outside the app (e.g. by the Claude Code CLI) ---
+  // The Create-PR handoff runs `gh pr create` in its own terminal, so the app
+  // never receives the PR number directly. Whenever this worktree comes into view
+  // without a PR attached, ask `gh` whether one exists for the current branch and
+  // attach it if so — this is what flips the "Create PR" button to the "PR #N"
+  // badge after a CLI-driven creation (and recovers PRs opened manually too).
+  useEffect(() => {
+    if (!worktreeId || !worktree?.path || !isGitHub || hasAttachedPR) return
+    void useGitStore.getState().detectAndAttachPR(worktreeId, worktree.path)
+  }, [worktreeId, worktree?.path, isGitHub, hasAttachedPR])
+
   // --- Actions ---
 
   const createCodeReview = useCallback(
