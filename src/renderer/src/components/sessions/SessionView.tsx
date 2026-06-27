@@ -5651,38 +5651,6 @@ function LegacySessionView({ sessionId }: SessionViewProps): React.JSX.Element {
     [handleAttach]
   )
 
-  // Global Tab/Shift+Tab key handler — toggles Build/Plan mode or Super-Plan
-  const toggleSessionMode = useSessionStore((state) => state.toggleSessionMode)
-  const toggleSuperPlanShortcut = useSessionStore((state) => state.toggleSuperPlanShortcut)
-  useEffect(() => {
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return
-
-      // Don't intercept plain Tab inside the ticket creation modal — it needs
-      // natural tab navigation. Shift+Tab still toggles super-plan mode.
-      const createModal = document.querySelector('[data-testid="ticket-create-modal"]')
-      if (createModal?.contains(document.activeElement) && !e.shiftKey) return
-
-      // Don't intercept Tab when the xterm terminal is focused — it needs
-      // to reach the shell for tab completion.
-      const terminalContainer = document.querySelector('[data-testid="terminal-view-container"]')
-      if (terminalContainer?.contains(document.activeElement)) return
-
-      e.preventDefault()
-      e.stopPropagation()
-
-      if (e.shiftKey) {
-        toggleSuperPlanShortcut(sessionId)
-      } else {
-        toggleSessionMode(sessionId)
-      }
-    }
-    window.addEventListener('keydown', handler, true)
-    return () => {
-      window.removeEventListener('keydown', handler, true)
-    }
-  }, [sessionId, toggleSessionMode, toggleSuperPlanShortcut])
-
   // Listen for custom command prompt injection events
   useEffect(() => {
     const handler = (e: Event): void => {

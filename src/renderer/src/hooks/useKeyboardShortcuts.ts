@@ -434,26 +434,6 @@ function getShortcutHandlers(
       }
     },
     {
-      id: 'session:mode-toggle',
-      binding: getEffectiveBinding('session:mode-toggle'),
-      allowInInput: true, // Tab should work even in inputs
-      handler: () => {
-        const { activeSessionId } = useSessionStore.getState()
-        if (!activeSessionId) return
-        useSessionStore.getState().toggleSessionMode(activeSessionId)
-      }
-    },
-    {
-      id: 'session:super-plan-toggle',
-      binding: getEffectiveBinding('session:super-plan-toggle'),
-      allowInInput: true,
-      handler: () => {
-        const { activeSessionId } = useSessionStore.getState()
-        if (!activeSessionId) return
-        useSessionStore.getState().toggleSuperPlanShortcut(activeSessionId)
-      }
-    },
-    {
       id: 'project:run',
       binding: getEffectiveBinding('project:run'),
       allowInInput: true,

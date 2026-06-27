@@ -224,6 +224,12 @@ export interface AppSettings {
   // Review
   reviewPromptType: ReviewPromptType
 
+  // Plan mode auto-approve (Claude Code CLI). When enabled, the ExitPlanMode
+  // approval menu is auto-selected by matching the configured text against the
+  // rendered option labels.
+  autoApprovePlanEnabled: boolean
+  autoApprovePlanMatchText: string
+
   // Migration flags
   _boardModeMigratedToStickyTab?: boolean
 }
@@ -331,6 +337,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   codexJsonlLoggingEnabled: false,
   codexJsonlResetPerSession: true,
   reviewPromptType: 'standard',
+  autoApprovePlanEnabled: false,
+  autoApprovePlanMatchText: 'bypass permissions',
   _boardModeMigratedToStickyTab: false
 }
 
@@ -553,6 +561,8 @@ function extractSettings(state: SettingsState): AppSettings {
     codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
     codexJsonlResetPerSession: state.codexJsonlResetPerSession,
     reviewPromptType: state.reviewPromptType,
+    autoApprovePlanEnabled: state.autoApprovePlanEnabled,
+    autoApprovePlanMatchText: state.autoApprovePlanMatchText,
     _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
   }
 }
@@ -942,6 +952,8 @@ export const useSettingsStore = create<SettingsState>()(
         codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
         codexJsonlResetPerSession: state.codexJsonlResetPerSession,
         reviewPromptType: state.reviewPromptType,
+        autoApprovePlanEnabled: state.autoApprovePlanEnabled,
+        autoApprovePlanMatchText: state.autoApprovePlanMatchText,
         _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
       })
     }

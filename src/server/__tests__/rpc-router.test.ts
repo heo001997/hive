@@ -159,6 +159,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -266,6 +267,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -398,6 +400,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -497,6 +500,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -597,6 +601,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: true,
       goal_success_criteria: 'Build passes',
+      auto_approve_plan: false,
       note: 'Keep private',
       created_from_session: false,
       auto_approve_review: false
@@ -634,7 +639,8 @@ describe('rpc router', () => {
       goal_mode: true,
       goal_success_criteria: 'Build passes',
       note: 'Keep private',
-      auto_approve_review: false
+      auto_approve_review: false,
+      auto_approve_plan: false
     }
     const response = await Effect.runPromise(
       router.handle({
@@ -780,6 +786,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -951,6 +958,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -1051,6 +1059,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -1154,7 +1163,8 @@ describe('rpc router', () => {
       goal_success_criteria: null,
       note: null,
       created_from_session: false,
-      auto_approve_review: false
+      auto_approve_review: false,
+      auto_approve_plan: false
     }
     const calls: Array<{ projectId: string; id: string; targetProjectId: string }> = []
     const router = makeRpcRouter({
@@ -1328,6 +1338,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -1430,6 +1441,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -2197,6 +2209,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false
@@ -2310,6 +2323,7 @@ describe('rpc router', () => {
       pending_launch_config: null,
       goal_mode: false,
       goal_success_criteria: null,
+      auto_approve_plan: false,
       note: null,
       created_from_session: false,
       auto_approve_review: false

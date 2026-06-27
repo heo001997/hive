@@ -501,6 +501,8 @@ export interface KanbanTicket {
   pending_launch_config: string | null
   goal_mode: boolean
   goal_success_criteria: string | null
+  /** When true, plan-mode approval menus are auto-selected for this ticket's session. */
+  auto_approve_plan: boolean
   /** Personal annotation. MUST NOT be included in any LLM prompt. */
   note: string | null
   /** True when auto-created by the "automatically create ticket" setting on a session's first message. */
@@ -561,6 +563,7 @@ export interface KanbanTicketUpdate {
   pending_launch_config?: string | null
   goal_mode?: boolean
   goal_success_criteria?: string | null
+  auto_approve_plan?: boolean
   note?: string | null
   auto_approve_review?: boolean
   review_seen_at?: string | null
@@ -667,6 +670,7 @@ export interface PendingLaunchConfig {
   codexFastMode: boolean
   goalMode: boolean
   goalSuccessCriteria: string | null
+  autoApprovePlan: boolean
 }
 
 // Ticket followup message types

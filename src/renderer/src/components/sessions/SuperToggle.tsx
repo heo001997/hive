@@ -34,8 +34,8 @@ export const SuperToggle = memo(function SuperToggle({
           onClick={() => toggleSuperMode(sessionId)}
           disabled={disabled}
           aria-pressed={isOn}
-          aria-label={`Super mode ${isOn ? 'enabled' : 'disabled'} (Shift+Tab to toggle)`}
-          title="Toggle super-plan mode (Shift+Tab)"
+          aria-label={`Super mode ${isOn ? 'enabled' : 'disabled'}`}
+          title="Toggle super-plan mode"
           data-testid="super-toggle"
           className={cn(
             'flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors',

@@ -31,6 +31,7 @@ function ticket(overrides: Partial<KanbanTicket> = {}): KanbanTicket {
     note: null,
     created_from_session: true,
     auto_approve_review: false,
+    auto_approve_plan: false,
     ...overrides
   }
 }

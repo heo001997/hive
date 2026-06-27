@@ -103,7 +103,8 @@ const ticket: KanbanTicket = {
   goal_success_criteria: null,
   note: null,
   created_from_session: false,
-  auto_approve_review: false
+  auto_approve_review: false,
+  auto_approve_plan: false
 }
 
 const initialProjectState = useProjectStore.getState()

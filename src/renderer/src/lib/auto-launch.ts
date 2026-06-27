@@ -35,6 +35,7 @@ interface PendingLaunchConfig {
   codexFastMode: boolean
   goalMode: boolean
   goalSuccessCriteria: string | null
+  autoApprovePlan: boolean
 }
 
 function wrapGoalPrompt(prompt: string, criteria: string): string {
@@ -82,6 +83,7 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
   }
   const configGoalMode = config.goalMode === true
   const configGoalSuccessCriteria = config.goalSuccessCriteria?.trim() || null
+  const configAutoApprovePlan = config.autoApprovePlan === true
 
   const project = useProjectStore.getState().projects.find((p) => p.id === ticket.project_id)
   if (!project) {
@@ -138,6 +140,10 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     const sessionId = sessionResult.session.id
     const sessionAgentSdk = sessionResult.session.agent_sdk
 
+    // Seed the in-memory per-session auto-approve override so the runtime effect
+    // and live header toggle reflect the launch choice immediately.
+    useSessionStore.getState().setAutoApprovePlan(sessionId, configAutoApprovePlan)
+
     // 3. Set status tracking
     messageSendTimes.set(sessionId, Date.now())
     userExplicitSendTimes.set(sessionId, Date.now())
@@ -160,7 +166,8 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
       worktree_id: worktreeId,
       mode: config.mode,
       goal_mode: configGoalMode,
-      goal_success_criteria: configGoalMode ? configGoalSuccessCriteria : null
+      goal_success_criteria: configGoalMode ? configGoalSuccessCriteria : null,
+      auto_approve_plan: configAutoApprovePlan
     })
 
     // 6. Trigger usage refresh

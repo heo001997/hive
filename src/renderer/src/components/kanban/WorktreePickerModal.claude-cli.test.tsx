@@ -109,6 +109,7 @@ const baseTicket: KanbanTicket = {
   plan_ready: false,
   goal_mode: false,
   goal_success_criteria: null,
+  auto_approve_plan: false,
   pending_launch_config: null,
   created_from_session: false,
   auto_approve_review: false,
@@ -470,7 +471,8 @@ describe('WorktreePickerModal Claude CLI launch', () => {
       plan_ready: false,
       goal_mode: false,
       goal_success_criteria: null,
-      auto_approve_review: false
+      auto_approve_review: false,
+      auto_approve_plan: false
     })
     expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', {
       sessionId: 'connection-session-1',

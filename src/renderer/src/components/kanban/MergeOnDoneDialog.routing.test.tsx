@@ -110,7 +110,8 @@ const ticket: KanbanTicket = {
   goal_success_criteria: null,
   note: null,
   created_from_session: false,
-  auto_approve_review: false
+  auto_approve_review: false,
+  auto_approve_plan: false
 }
 
 const seedStores = (attachedPR: Map<string, { number: number; url: string }>): void => {
