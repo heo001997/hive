@@ -702,10 +702,15 @@ export const ProjectItem = memo(function ProjectItem({
                   their branches deleted. This cannot be undone, including any uncommitted or
                   unpushed changes.
                 </p>
-                <ul className="max-h-48 overflow-y-auto rounded bg-muted px-2 py-1 space-y-0.5">
+                <ul className="max-h-48 overflow-y-auto rounded bg-muted px-2 py-1 space-y-1">
                   {staleWorktrees.map((wt) => (
-                    <li key={wt.id} className="font-mono text-xs break-all">
-                      {wt.name}
+                    <li key={wt.id} className="text-xs break-all">
+                      <span className="font-medium">{wt.name}</span>
+                      {wt.branch_name && wt.branch_name !== wt.name && (
+                        <span className="ml-1 font-mono text-muted-foreground">
+                          ({wt.branch_name})
+                        </span>
+                      )}
                     </li>
                   ))}
                 </ul>
