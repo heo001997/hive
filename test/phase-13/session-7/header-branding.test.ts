@@ -38,8 +38,9 @@ describe('Session 7: Header Branding', () => {
     })
 
     test('renders logo image with correct attributes', () => {
-      expect(source).toContain('src={hiveLogo}')
-      expect(source).toContain('alt="Hive"')
+      // Logo supports a custom data URL, falling back to the bundled hiveLogo asset
+      expect(source).toContain('src={customLogoDataUrl || hiveLogo}')
+      expect(source).toContain('alt={appName}')
       expect(source).toContain('draggable={false}')
       expect(source).toContain('rounded')
     })
@@ -54,10 +55,11 @@ describe('Session 7: Header Branding', () => {
       expect(source).toContain('text-primary')
     })
 
-    test('shows "Hive" fallback when no project selected', () => {
-      // There should be a fallback that renders "Hive" text
-      const fallbackMatch = source.match(/:\s*\(\s*<span[^>]*>Hive<\/span>/)
+    test('shows app name fallback when no project selected', () => {
+      // Fallback renders the (customisable) app name, which defaults to "Hive"
+      const fallbackMatch = source.match(/:\s*\(\s*<span[^>]*>\{appName\}<\/span>/)
       expect(fallbackMatch).not.toBeNull()
+      expect(source).toContain("const appName = customAppName.trim() || 'Hive'")
     })
 
     test('does not show branch for default worktree (no-worktree)', () => {

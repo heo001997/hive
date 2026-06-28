@@ -48,6 +48,9 @@ export function Header(): React.JSX.Element {
   const vimMode = useVimModeStore((s) => s.mode)
   const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled)
   const boardMode = useSettingsStore((s) => s.boardMode)
+  const customLogoDataUrl = useSettingsStore((s) => s.customLogoDataUrl)
+  const customAppName = useSettingsStore((s) => s.customAppName)
+  const appName = customAppName.trim() || 'Hive'
   const keepAwakeEnabled = useSettingsStore((s) => s.keepAwakeEnabled)
   const streamingCount = useWorktreeStatusStore((state) =>
     Object.values(state.sessionStatuses).filter(
@@ -107,7 +110,12 @@ export function Header(): React.JSX.Element {
       {/* Spacer for macOS traffic lights */}
       {isMac() && <div className="w-16 flex-shrink-0" />}
       <div className="flex items-center gap-2 flex-1 min-w-0">
-        <img src={hiveLogo} alt="Hive" className="h-5 w-5 shrink-0 rounded" draggable={false} />
+        <img
+          src={customLogoDataUrl || hiveLogo}
+          alt={appName}
+          className="h-5 w-5 shrink-0 rounded object-contain"
+          draggable={false}
+        />
         {isConnectionMode && selectedConnection ? (
           <span className="text-sm font-medium truncate" data-testid="header-connection-info">
             {selectedConnection.name}
@@ -124,7 +132,7 @@ export function Header(): React.JSX.Element {
             )}
           </span>
         ) : (
-          <span className="text-sm font-medium">Hive</span>
+          <span className="text-sm font-medium">{appName}</span>
         )}
         {keepAwakeEnabled && (
           <ContextMenu>

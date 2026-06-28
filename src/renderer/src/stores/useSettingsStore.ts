@@ -225,6 +225,12 @@ export interface AppSettings {
   autoApprovePlanEnabled: boolean
   autoApprovePlanMatchText: string
 
+  // Branding (top bar)
+  /** Custom logo shown in the top-left of the title bar. Data URL (base64) of a small image; null → default Hive logo. */
+  customLogoDataUrl: string | null
+  /** Custom app name shown in the top-left of the title bar when no project/connection is selected. Empty → "Hive". */
+  customAppName: string
+
   // Migration flags
   _boardModeMigratedToStickyTab?: boolean
 }
@@ -333,6 +339,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   codexJsonlResetPerSession: true,
   autoApprovePlanEnabled: false,
   autoApprovePlanMatchText: 'bypass permissions',
+  customLogoDataUrl: null,
+  customAppName: '',
   _boardModeMigratedToStickyTab: false
 }
 
@@ -556,6 +564,8 @@ function extractSettings(state: SettingsState): AppSettings {
     codexJsonlResetPerSession: state.codexJsonlResetPerSession,
     autoApprovePlanEnabled: state.autoApprovePlanEnabled,
     autoApprovePlanMatchText: state.autoApprovePlanMatchText,
+    customLogoDataUrl: state.customLogoDataUrl,
+    customAppName: state.customAppName,
     _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
   }
 }
@@ -945,6 +955,8 @@ export const useSettingsStore = create<SettingsState>()(
         codexJsonlResetPerSession: state.codexJsonlResetPerSession,
         autoApprovePlanEnabled: state.autoApprovePlanEnabled,
         autoApprovePlanMatchText: state.autoApprovePlanMatchText,
+        customLogoDataUrl: state.customLogoDataUrl,
+        customAppName: state.customAppName,
         _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
       })
     }
