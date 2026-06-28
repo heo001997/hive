@@ -2666,6 +2666,37 @@ export class DatabaseService {
     return rows.map((row) => this.mapKanbanTicketRow(row))
   }
 
+  /**
+   * Fetch one page of ACTIVE (non-archived) tickets for a single column, ordered
+   * by sort_order. Backs the paginated board load so a busy column renders its
+   * first page without pulling every ticket.
+   */
+  getKanbanTicketsByProjectColumn(
+    projectId: string,
+    column: KanbanTicketColumn,
+    limit: number,
+    offset: number
+  ): KanbanTicket[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        'SELECT * FROM kanban_tickets WHERE project_id = ? AND "column" = ? AND archived_at IS NULL ORDER BY sort_order ASC LIMIT ? OFFSET ?'
+      )
+      .all(projectId, column, limit, offset) as Record<string, unknown>[]
+    return rows.map((row) => this.mapKanbanTicketRow(row))
+  }
+
+  /** Count ACTIVE (non-archived) tickets in a single column — drives "has more". */
+  countActiveKanbanTicketsByProjectColumn(projectId: string, column: KanbanTicketColumn): number {
+    const db = this.getDb()
+    const row = db
+      .prepare(
+        'SELECT COUNT(*) AS count FROM kanban_tickets WHERE project_id = ? AND "column" = ? AND archived_at IS NULL'
+      )
+      .get(projectId, column) as { count: number }
+    return row.count
+  }
+
   updateKanbanTicket(id: string, data: KanbanTicketUpdate): KanbanTicket | null {
     const db = this.getDb()
     const existing = this.getKanbanTicket(id)

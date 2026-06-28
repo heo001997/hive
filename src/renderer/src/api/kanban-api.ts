@@ -109,6 +109,26 @@ export const kanbanApi = {
         projectId,
         includeArchived
       }),
+    getColumnPages: async <TResult>(
+      projectId: string,
+      perPage: number
+    ): Promise<Record<string, { tickets: TResult[]; total: number }>> =>
+      getRendererRpcClient().request<Record<string, { tickets: TResult[]; total: number }>>(
+        'kanban.ticket.getColumnPages',
+        { projectId, perPage }
+      ),
+    getColumnPage: async <TResult>(
+      projectId: string,
+      column: string,
+      perPage: number,
+      offset: number
+    ): Promise<TResult[]> =>
+      getRendererRpcClient().request<TResult[]>('kanban.ticket.getColumnPage', {
+        projectId,
+        column,
+        perPage,
+        offset
+      }),
     getBySession: async <TResult>(sessionId: string): Promise<TResult[]> =>
       getRendererRpcClient().request<TResult[]>('kanban.ticket.getBySession', { sessionId }),
     attachPR: async (

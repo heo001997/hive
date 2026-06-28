@@ -199,6 +199,127 @@ async function loadProjectTicketsSnapshot(
   return { tickets, diagnostics }
 }
 
+// ── Paginated board load (fast first page + background streaming) ───────────
+/** Tickets fetched per column per page in the paginated board load. */
+const TICKETS_PER_PAGE = 20
+
+/** Columns streamed, in display order, by the paginated load. */
+const STREAM_COLUMNS: KanbanTicketColumn[] = ['todo', 'in_progress', 'review', 'done']
+
+type ColumnPagesResult = Record<string, { tickets: KanbanTicket[]; total: number }>
+
+/**
+ * Per-project load generation. `loadTickets` bumps it at the start of every
+ * (non-archived) load; in-flight background streams compare against it and bail
+ * the moment a newer load (reload / project switch) supersedes them.
+ */
+const loadGeneration = new Map<string, number>()
+
+/**
+ * Per-project set of ticket IDs removed locally (delete / move-to-project) since
+ * the current load began. A streamed page must not resurrect a ticket the user
+ * already removed, so merges skip any ID in this set.
+ */
+const removedTicketIds = new Map<string, Set<string>>()
+
+/** Start a fresh load generation for a project and reset its removed-id guard. */
+function beginLoadGeneration(projectId: string): number {
+  const next = (loadGeneration.get(projectId) ?? 0) + 1
+  loadGeneration.set(projectId, next)
+  removedTicketIds.set(projectId, new Set())
+  return next
+}
+
+/** True while `generation` is still the active load for `projectId`. */
+function isCurrentLoad(projectId: string, generation: number): boolean {
+  return loadGeneration.get(projectId) === generation
+}
+
+/** Record a locally-removed ticket so background pages can't resurrect it. */
+function trackRemovedTicket(projectId: string, ticketId: string): void {
+  let ids = removedTicketIds.get(projectId)
+  if (!ids) {
+    ids = new Set()
+    removedTicketIds.set(projectId, ids)
+  }
+  ids.add(ticketId)
+}
+
+/** Concatenate every column's first page into one tickets array (display order). */
+function flattenColumnPages(pages: ColumnPagesResult): KanbanTicket[] {
+  const out: KanbanTicket[] = []
+  for (const column of STREAM_COLUMNS) {
+    const page = pages[column]
+    if (page) out.push(...page.tickets)
+  }
+  return out
+}
+
+/**
+ * Merge a streamed page into a project's tickets, skipping IDs already present or
+ * removed locally. No-op (and no re-render) when the load was superseded or the
+ * page adds nothing.
+ */
+function mergeStreamedPage(
+  projectId: string,
+  generation: number,
+  batch: KanbanTicket[]
+): void {
+  useKanbanStore.setState((state) => {
+    if (!isCurrentLoad(projectId, generation)) return {}
+    const existing = state.tickets.get(projectId) ?? []
+    const existingIds = new Set(existing.map((t) => t.id))
+    const removed = removedTicketIds.get(projectId)
+    const additions = batch.filter((t) => !existingIds.has(t.id) && !removed?.has(t.id))
+    if (additions.length === 0) return {}
+    const merged = [...existing, ...additions]
+    const next = new Map(state.tickets)
+    next.set(projectId, merged)
+    const diagnostics = state.markdownDiagnostics.get(projectId) ?? []
+    const nextPlaceholders = new Map(state.markdownPlaceholders)
+    nextPlaceholders.set(projectId, placeholdersFromDiagnostics(projectId, diagnostics, merged))
+    return { tickets: next, markdownPlaceholders: nextPlaceholders }
+  })
+}
+
+/**
+ * Background phase of the paginated load: page through every column that has more
+ * tickets than the first page, merging each batch into the store. Columns run in
+ * parallel; offsets within a column run sequentially. Bails as soon as the load
+ * is superseded.
+ */
+async function streamRemainingTickets(
+  projectId: string,
+  generation: number,
+  pages: ColumnPagesResult
+): Promise<void> {
+  await Promise.all(
+    STREAM_COLUMNS.map(async (column) => {
+      const page = pages[column]
+      if (!page || page.total <= TICKETS_PER_PAGE) return
+      let offset = TICKETS_PER_PAGE
+      while (offset < page.total) {
+        if (!isCurrentLoad(projectId, generation)) return
+        let batch: KanbanTicket[]
+        try {
+          batch = await kanban.ticket.getColumnPage<KanbanTicket>(
+            projectId,
+            column,
+            TICKETS_PER_PAGE,
+            offset
+          )
+        } catch {
+          return
+        }
+        if (!isCurrentLoad(projectId, generation) || batch.length === 0) return
+        mergeStreamedPage(projectId, generation, batch)
+        offset += TICKETS_PER_PAGE
+        if (batch.length < TICKETS_PER_PAGE) return
+      }
+    })
+  )
+}
+
 // ── State interface ────────────────────────────────────────────────────
 /** Options for `moveTicket`. */
 export interface MoveTicketOptions {
@@ -1240,22 +1361,60 @@ export const useKanbanStore = create<KanbanState>()(
 
       // ── loadTickets ──────────────────────────────────────────────
       loadTickets: async (projectId: string) => {
+        const includeArchived = get().showArchivedByProject[projectId] ?? false
+
+        // Archived view stays a single full fetch: it's opt-in, and correctness
+        // (no interleaving of archived/active in the paginated sort order) wins
+        // over the first-paint speed the paginated path buys.
+        if (includeArchived) {
+          set({ isLoading: true })
+          try {
+            const { tickets, diagnostics } = await loadProjectTicketsSnapshot(projectId, true)
+            set((state) => {
+              const next = new Map(state.tickets)
+              const nextDiagnostics = new Map(state.markdownDiagnostics)
+              const nextPlaceholders = new Map(state.markdownPlaceholders)
+              next.set(projectId, tickets)
+              nextDiagnostics.set(projectId, diagnostics)
+              nextPlaceholders.set(
+                projectId,
+                placeholdersFromDiagnostics(projectId, diagnostics, tickets)
+              )
+              return {
+                tickets: next,
+                markdownDiagnostics: nextDiagnostics,
+                markdownPlaceholders: nextPlaceholders,
+                isLoading: false
+              }
+            })
+            get().loadDependencies(projectId)
+          } catch {
+            set({ isLoading: false })
+          }
+          return
+        }
+
+        // Fast path: first page per column in one round-trip → render now, then
+        // stream the remaining pages into the store in the background.
+        const generation = beginLoadGeneration(projectId)
         set({ isLoading: true })
         try {
-          const includeArchived = get().showArchivedByProject[projectId] ?? false
-          const { tickets, diagnostics } = await loadProjectTicketsSnapshot(
-            projectId,
-            includeArchived
-          )
+          const [pages, diagnostics] = await Promise.all([
+            kanban.ticket.getColumnPages<KanbanTicket>(projectId, TICKETS_PER_PAGE),
+            kanban.diagnostics.get<MarkdownCardDiagnostic>(projectId).catch(() => [])
+          ])
+          // A newer load (reload / project switch) superseded us mid-flight.
+          if (!isCurrentLoad(projectId, generation)) return
+          const firstPage = flattenColumnPages(pages)
           set((state) => {
             const next = new Map(state.tickets)
             const nextDiagnostics = new Map(state.markdownDiagnostics)
             const nextPlaceholders = new Map(state.markdownPlaceholders)
-            next.set(projectId, tickets)
+            next.set(projectId, firstPage)
             nextDiagnostics.set(projectId, diagnostics)
             nextPlaceholders.set(
               projectId,
-              placeholdersFromDiagnostics(projectId, diagnostics, tickets)
+              placeholdersFromDiagnostics(projectId, diagnostics, firstPage)
             )
             return {
               tickets: next,
@@ -1266,8 +1425,10 @@ export const useKanbanStore = create<KanbanState>()(
           })
           // Load dependencies for this project
           get().loadDependencies(projectId)
+          // Phase 2: page in the rest without blocking first paint.
+          void streamRemainingTickets(projectId, generation, pages)
         } catch {
-          set({ isLoading: false })
+          if (isCurrentLoad(projectId, generation)) set({ isLoading: false })
         }
       },
 
@@ -1407,6 +1568,9 @@ export const useKanbanStore = create<KanbanState>()(
         const prev = get().tickets.get(projectId) ?? []
         const snapshot = prev.map((t) => ({ ...t }))
 
+        // Guard against a still-streaming background page resurrecting this ticket.
+        trackRemovedTicket(projectId, ticketId)
+
         // Optimistic local delete
         set((state) => {
           const next = new Map(state.tickets)
@@ -1455,6 +1619,9 @@ export const useKanbanStore = create<KanbanState>()(
         const moved = prevSource.find((t) => t.id === ticketId)
         if (!moved) return null
         const sourceSnapshot = prevSource.map((t) => ({ ...t }))
+
+        // Guard against a still-streaming source-board page resurrecting this ticket.
+        trackRemovedTicket(sourceProjectId, ticketId)
 
         // Optimistic: remove from the source project's list
         set((state) => {

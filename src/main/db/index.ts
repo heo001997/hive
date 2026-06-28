@@ -36,6 +36,8 @@ export type {
   KanbanTicketBatchCreateResult,
   KanbanTicketUpdate,
   KanbanTicketColumn,
+  KanbanColumnPage,
+  KanbanColumnPages,
   KanbanMarkdownConfig,
   KanbanStorageConfig,
   KanbanStorageMode,

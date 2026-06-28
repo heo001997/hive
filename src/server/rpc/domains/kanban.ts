@@ -2,6 +2,7 @@ import { Effect } from 'effect'
 import { z } from 'zod'
 import { isDesktopCommandResult, makeDesktopCommandRequest } from '../../../shared/desktop-command'
 import type {
+  KanbanColumnPages,
   KanbanMarkdownConfig,
   KanbanStorageConfig,
   KanbanStorageMode,
@@ -64,6 +65,16 @@ export interface KanbanRpcService {
   readonly getTicketsByProject: (
     projectId: string,
     includeArchived?: boolean
+  ) => Effect.Effect<KanbanTicket[], unknown, never>
+  readonly getTicketColumnPages?: (
+    projectId: string,
+    perPage: number
+  ) => Effect.Effect<KanbanColumnPages, unknown, never>
+  readonly getTicketColumnPage?: (
+    projectId: string,
+    column: KanbanTicket['column'],
+    perPage: number,
+    offset: number
   ) => Effect.Effect<KanbanTicket[], unknown, never>
   readonly updateTicket: (
     projectId: string,
@@ -279,6 +290,21 @@ const getTicketsByProjectParamsSchema = z
   .object({
     projectId: z.string(),
     includeArchived: z.boolean().optional()
+  })
+  .strict()
+const kanbanColumnSchema = z.enum(['todo', 'in_progress', 'review', 'done'])
+const getTicketColumnPagesParamsSchema = z
+  .object({
+    projectId: z.string(),
+    perPage: z.number().int().positive()
+  })
+  .strict()
+const getTicketColumnPageParamsSchema = z
+  .object({
+    projectId: z.string(),
+    column: kanbanColumnSchema,
+    perPage: z.number().int().positive(),
+    offset: z.number().int().nonnegative()
   })
   .strict()
 const projectIdParamsSchema = z.object({ projectId: z.string() }).strict()
@@ -516,6 +542,27 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
       try: async () => {
         const { getKanbanBackendForProject } = await import('../../../main/services/kanban-backend')
         return getKanbanBackendForProject(projectId).list(projectId, includeArchived ?? false)
+      },
+      catch: (cause) => cause
+    }),
+  getTicketColumnPages: (projectId, perPage) =>
+    Effect.tryPromise({
+      try: async () => {
+        const { getKanbanBackendForProject } = await import('../../../main/services/kanban-backend')
+        return getKanbanBackendForProject(projectId).listColumnPages(projectId, perPage)
+      },
+      catch: (cause) => cause
+    }),
+  getTicketColumnPage: (projectId, column, perPage, offset) =>
+    Effect.tryPromise({
+      try: async () => {
+        const { getKanbanBackendForProject } = await import('../../../main/services/kanban-backend')
+        return getKanbanBackendForProject(projectId).listColumnPage(
+          projectId,
+          column,
+          perPage,
+          offset
+        )
       },
       catch: (cause) => cause
     }),
@@ -1088,6 +1135,38 @@ export const makeKanbanRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.getTicketsByProject(projectId, includeArchived)
+        })
+    ],
+    [
+      'kanban.ticket.getColumnPages',
+      (params) =>
+        Effect.gen(function* () {
+          const { projectId, perPage } = yield* Effect.try({
+            try: () => getTicketColumnPagesParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          if (!service.getTicketColumnPages) {
+            return yield* Effect.die(
+              new Error('kanban.ticket.getColumnPages service is not implemented')
+            )
+          }
+          return yield* service.getTicketColumnPages(projectId, perPage)
+        })
+    ],
+    [
+      'kanban.ticket.getColumnPage',
+      (params) =>
+        Effect.gen(function* () {
+          const { projectId, column, perPage, offset } = yield* Effect.try({
+            try: () => getTicketColumnPageParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          if (!service.getTicketColumnPage) {
+            return yield* Effect.die(
+              new Error('kanban.ticket.getColumnPage service is not implemented')
+            )
+          }
+          return yield* service.getTicketColumnPage(projectId, column, perPage, offset)
         })
     ],
     [

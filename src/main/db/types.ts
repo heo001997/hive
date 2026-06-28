@@ -524,6 +524,16 @@ export interface KanbanTicket {
   review_seen_at?: string | null
 }
 
+/** One column's slice of tickets plus the total active count in that column. */
+export interface KanbanColumnPage {
+  tickets: KanbanTicket[]
+  /** Total number of active (non-archived) tickets in this column. */
+  total: number
+}
+
+/** First-page-per-column snapshot used by the paginated board load. */
+export type KanbanColumnPages = Record<KanbanTicketColumn, KanbanColumnPage>
+
 export interface KanbanTicketCreate {
   id?: string
   project_id: string
