@@ -68,7 +68,6 @@ interface GitStoreState {
   // Remote info - keyed by worktree ID
   remoteInfo: Map<string, RemoteInfo>
   prTargetBranch: Map<string, string>
-  reviewTargetBranch: Map<string, string>
 
   // PR lifecycle - keyed by worktree ID
   attachedPR: Map<string, AttachedPR>
@@ -113,7 +112,6 @@ interface GitStoreState {
   // Remote info actions
   checkRemoteInfo: (worktreeId: string, worktreePath: string) => Promise<void>
   setPrTargetBranch: (worktreeId: string, branch: string) => void
-  setReviewTargetBranch: (worktreeId: string, branch: string) => void
 
   // PR lifecycle actions
   setAttachedPR: (worktreeId: string, pr: AttachedPR | null) => void
@@ -178,7 +176,6 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
   // Remote info
   remoteInfo: new Map(),
   prTargetBranch: new Map(),
-  reviewTargetBranch: new Map(),
 
   // PR lifecycle
   attachedPR: new Map(),
@@ -649,15 +646,6 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
       const newPrTargetBranch = new Map(state.prTargetBranch)
       newPrTargetBranch.set(worktreeId, branch)
       return { prTargetBranch: newPrTargetBranch }
-    })
-  },
-
-  // Set review target branch for a worktree
-  setReviewTargetBranch: (worktreeId: string, branch: string) => {
-    set((state) => {
-      const newMap = new Map(state.reviewTargetBranch)
-      newMap.set(worktreeId, branch)
-      return { reviewTargetBranch: newMap }
     })
   },
 

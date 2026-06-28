@@ -334,10 +334,6 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
     // after the push changes branchInfo.tracking
     const normalizedTarget = targetRef
     useGitStore.getState().setPrTargetBranch(worktreeId, normalizedTarget)
-    // Also pin the review dropdown so it doesn't shift to the pushed branch
-    if (!useGitStore.getState().reviewTargetBranch.get(worktreeId)) {
-      useGitStore.getState().setReviewTargetBranch(worktreeId, normalizedTarget)
-    }
 
     // Close modal — PR creation continues in the new CLI terminal.
     setOpen(false)

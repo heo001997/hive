@@ -8707,99 +8707,6 @@ describe('renderer API cleanup', () => {
     expect(mainSource).not.toContain("ipcMain.handle('notification:setSessionQueuedState'")
   })
 
-  it('routes code review background connect through opencodeApi', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/hooks/useLifecycleActions.ts'),
-      'utf-8'
-    )
-    const reviewStart = source.indexOf('const createCodeReview = useCallback')
-    const connectStart = source.indexOf(
-      'const connectResult = unwrapEnvelope(await opencodeApi.connect(worktreePath, sessionId))',
-      reviewStart
-    )
-    const promptStart = source.indexOf('await opencodeApi.prompt(', connectStart)
-    const reviewConnectSource = source.slice(connectStart, promptStart)
-
-    expect(reviewStart).toBeGreaterThan(-1)
-    expect(connectStart).toBeGreaterThan(reviewStart)
-    expect(promptStart).toBeGreaterThan(connectStart)
-    expect(source).toContain("import { opencodeApi } from '@/api/opencode-api'")
-    expect(reviewConnectSource).toContain(
-      'const connectResult = unwrapEnvelope(await opencodeApi.connect(worktreePath, sessionId))'
-    )
-    expect(reviewConnectSource).toContain('connectResult.success && connectResult.sessionId')
-    expect(reviewConnectSource).toContain(
-      'sessionStore.setOpenCodeSessionId(sessionId, connectResult.sessionId)'
-    )
-    expect(source).toContain("import { dbApi } from '@/api/db-api'")
-    expect(reviewConnectSource).toContain(
-      'dbApi.session\n              .update(sessionId, { opencode_session_id: connectResult.sessionId })'
-    )
-    expect(source).not.toContain('const db = unwrapEnvelopeApi(() => window.db)')
-    expect(reviewConnectSource).not.toContain('db.session')
-    expect(reviewConnectSource).not.toContain('window.opencodeOps.connect')
-  })
-
-  it('routes code review background prompt through opencodeApi', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../src/renderer/src/hooks/useLifecycleActions.ts'),
-      'utf-8'
-    )
-    const reviewStart = source.indexOf('const createCodeReview = useCallback')
-    const bumpStart = source.indexOf('bumpWorktreeLastMessage({ worktreeId })', reviewStart)
-    const promptStart = source.indexOf('await opencodeApi.prompt(', bumpStart)
-    const catchStart = source.indexOf('} catch {', promptStart)
-    const reviewPromptSource = source.slice(bumpStart, catchStart)
-
-    expect(reviewStart).toBeGreaterThan(-1)
-    expect(bumpStart).toBeGreaterThan(reviewStart)
-    expect(promptStart).toBeGreaterThan(bumpStart)
-    expect(catchStart).toBeGreaterThan(promptStart)
-    expect(source).toContain("import { opencodeApi } from '@/api/opencode-api'")
-    expect(reviewPromptSource).toContain('worktreePath')
-    expect(reviewPromptSource).toContain('connectResult.sessionId')
-    expect(reviewPromptSource).toContain("[{ type: 'text', text: prompt }]")
-    expect(reviewPromptSource).toContain('sessionModel')
-    expect(reviewPromptSource).toContain('bumpWorktreeLastMessage({ worktreeId })')
-    expect(reviewPromptSource).not.toContain('window.opencodeOps.prompt')
-  })
-
-  it('keeps code review tests on opencodeApi mocks instead of window opencode globals', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../test/phase-7/session-4/code-review.test.ts'),
-      'utf-8'
-    )
-
-    expect(source).toContain("vi.mock('@/api/opencode-api'")
-    expect(source).toContain('vi.mocked(opencodeApi.connect).mockResolvedValue')
-    expect(source).toContain('vi.mocked(opencodeApi.prompt).mockResolvedValue')
-    expect(source).toContain('expect(opencodeApi.connect).toHaveBeenCalledWith')
-    expect(source).toContain('expect(opencodeApi.prompt).toHaveBeenCalledWith')
-    expect(source).not.toContain('window.opencodeOps')
-    expect(source).not.toContain("Object.defineProperty(window, 'opencodeOps'")
-  })
-
-  it('keeps code review tests on injected RPC mocks instead of legacy window fixtures', () => {
-    const source = fs.readFileSync(
-      path.resolve(__dirname, '../../test/phase-7/session-4/code-review.test.ts'),
-      'utf-8'
-    )
-
-    expect(source).toContain('setRendererRpcClient({')
-    expect(source).toContain("method === 'db.setting.get'")
-    expect(source).toContain("method === 'gitOps.listBranchesWithStatus'")
-    expect(source).not.toContain("Object.defineProperty(window, 'gitOps'")
-    expect(source).not.toContain("Object.defineProperty(window, 'fileOps'")
-    expect(source).not.toContain("Object.defineProperty(window, 'db'")
-    expect(source).not.toContain("Object.defineProperty(window, 'worktreeOps'")
-    expect(source).not.toContain("Object.defineProperty(window, 'projectOps'")
-    expect(source).not.toContain('window.gitOps')
-    expect(source).not.toContain('window.fileOps')
-    expect(source).not.toContain('window.db')
-    expect(source).not.toContain('window.worktreeOps')
-    expect(source).not.toContain('window.projectOps')
-  })
-
   it('routes lifecycle remote branch loading through gitApi', () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, '../../src/renderer/src/hooks/useLifecycleActions.ts'),
@@ -18714,7 +18621,6 @@ describe('renderer API cleanup', () => {
     expect(actionSource).toContain(
       'await kanbanApi.ticket.move<KanbanTicket | null>(ticketId, column, sortOrder)'
     )
-    expect(actionSource).toContain('useWorktreeStatusStore.getState().clearCompletedReviewSession')
     expect(actionSource).toContain('autoLaunchTicket(depTicket)')
     expect(actionSource).not.toContain('kanban.ticket.move')
   })

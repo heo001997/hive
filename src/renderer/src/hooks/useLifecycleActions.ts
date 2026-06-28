@@ -6,17 +6,13 @@ import { useProjectStore } from '@/stores/useProjectStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { toast } from '@/lib/toast'
 import { copyTextToClipboard } from '@/lib/clipboard'
-import { REVIEW_PROMPTS, DEFAULT_REVIEW_PROMPT_TYPE } from '@/constants/reviewPrompts'
 import { buildAutoResolveConflictPrompt } from '@/lib/autoResolveConflictPrompt'
-import { resolveSessionCreationSelection } from '@/lib/handoffSelection'
-import { useSettingsStore, resolveModelForSdk } from '@/stores/useSettingsStore'
+import { useSettingsStore } from '@/stores/useSettingsStore'
 import { messageSendTimes, userExplicitSendTimes, lastSendMode } from '@/lib/message-send-times'
 import { bumpWorktreeLastMessage } from '@/lib/last-message-utils'
 import { snapshotTokenBaseline } from '@/lib/token-baselines'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { systemApi } from '@/api/system-api'
-import { opencodeApi } from '@/api/opencode-api'
-import { dbApi } from '@/api/db-api'
 import { gitApi } from '@/api/git-api'
 import { terminalApi } from '@/api/terminal-api'
 
@@ -44,14 +40,12 @@ interface LifecycleActions {
   branchInfo: { name?: string; tracking?: string | null } | null
   remoteBranches: { name: string }[]
   prTargetBranch: string | undefined
-  reviewTargetBranch: string | undefined
   isCleanTree: boolean
   isDefault: boolean
   // Set when the last mergePR() failed because the PR branch conflicts with its base.
   prMergeConflict: { prNumber: number; baseBranch?: string } | null
 
   // Actions
-  createCodeReview: (targetBranch?: string) => Promise<string | null>
   mergePR: () => Promise<boolean>
   rebasePR: () => Promise<boolean>
   // Inject the auto-resolve prompt into the ticket's Claude CLI terminal and run it.
@@ -64,7 +58,6 @@ interface LifecycleActions {
   loadPRList: () => Promise<PRListItem[]>
   loadPRState: () => Promise<void>
   setPrTargetBranch: (branch: string) => void
-  setReviewTargetBranch: (branch: string) => void
 }
 
 // Resolve projectId from worktreeId by searching worktreesByProject
@@ -110,7 +103,6 @@ function resolveClaudeCliSessionId(worktreeId: string, override?: string): strin
   return cli[cli.length - 1].id
 }
 
-const noopString = async () => null
 const noopBool = async () => false
 const noopVoid = () => {}
 const noopPRList = async (): Promise<PRListItem[]> => []
@@ -135,10 +127,6 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
 
   const storePrTargetBranch = useGitStore((s) =>
     worktreeId ? s.prTargetBranch.get(worktreeId) : undefined
-  )
-
-  const storeReviewTargetBranch = useGitStore((s) =>
-    worktreeId ? s.reviewTargetBranch.get(worktreeId) : undefined
   )
 
   const branchInfo = useGitStore((s) =>
@@ -222,148 +210,6 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
   }, [worktreeId, worktree?.path, isGitHub, hasAttachedPR])
 
   // --- Actions ---
-
-  const createCodeReview = useCallback(
-    async (targetBranch?: string): Promise<string | null> => {
-      if (!worktreeId || !worktree?.path) return null
-
-      const projectId = resolveProjectId(worktreeId)
-      if (!projectId) {
-        toast.error('Could not find project for worktree')
-        return null
-      }
-
-      const currentBranchInfo = useGitStore.getState().branchInfoByWorktree.get(worktree.path)
-      const currentReviewTarget = useGitStore.getState().reviewTargetBranch.get(worktreeId)
-      const target =
-        targetBranch || currentReviewTarget || currentBranchInfo?.tracking || 'origin/main'
-      const branchName = currentBranchInfo?.name || 'unknown'
-
-      const promptType = useSettingsStore.getState().reviewPromptType || DEFAULT_REVIEW_PROMPT_TYPE
-      const reviewDefaultModel = useSettingsStore.getState().defaultModels?.review ?? undefined
-      const reviewTemplate = REVIEW_PROMPTS[promptType]
-
-      const prompt = [
-        reviewTemplate,
-        '',
-        '---',
-        '',
-        `Compare the current branch (${branchName}) against ${target}.`,
-        `Use \`git diff ${target}...HEAD\` to see all changes.`
-      ].join('\n')
-
-      const sessionStore = useSessionStore.getState()
-      // Resolve the effective SDK the same way createSession will, so the
-      // prompt is queued atomically with session insertion even when no
-      // review default model is configured. Queuing it later loses the race
-      // against ClaudeCliSessionView mounting and spawning a promptless PTY.
-      const effectiveSelection = resolveSessionCreationSelection({
-        worktreeId,
-        agentSdkOverride: reviewDefaultModel?.agentSdk,
-        modelOverride: reviewDefaultModel
-      })
-      const result = await sessionStore.createSession(
-        worktreeId,
-        projectId,
-        reviewDefaultModel?.agentSdk,
-        undefined,
-        {
-          autoFocus: false,
-          modelOverride: reviewDefaultModel,
-          ...(effectiveSelection.agentSdk === 'claude-code-cli' ? { pendingMessage: prompt } : {})
-        }
-      )
-      if (!result.success || !result.session) {
-        toast.error('Failed to create review session')
-        return null
-      }
-
-      await sessionStore.updateSessionName(
-        result.session.id,
-        `Code Review — ${branchName} vs ${target}`
-      )
-      // Register the review session so ticket cards can show "Reviewing" indicator
-      useWorktreeStatusStore.getState().setReviewSession(worktreeId, result.session.id)
-
-      // Fire-and-forget: eagerly connect and send the review prompt in the background
-      // so it starts without waiting for SessionView to mount.
-      const sessionId = result.session.id
-      const worktreePath = worktree.path
-      const agentSdk = result.session.agent_sdk
-      const sessionModel =
-        result.session.model_provider_id && result.session.model_id
-          ? {
-              providerID: result.session.model_provider_id,
-              modelID: result.session.model_id,
-              variant: result.session.model_variant ?? undefined
-            }
-          : (resolveModelForSdk(agentSdk || 'opencode') ?? undefined)
-
-      void (async () => {
-        try {
-          if (agentSdk === 'claude-code-cli') {
-            messageSendTimes.set(sessionId, Date.now())
-            userExplicitSendTimes.set(sessionId, Date.now())
-            snapshotTokenBaseline(sessionId)
-            lastSendMode.set(sessionId, 'build')
-            useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'working')
-            bumpWorktreeLastMessage({ worktreeId })
-
-            // The pending-message queue is the single source of truth for the
-            // prompt: ClaudeCliSessionView dequeues it when its terminal
-            // mounts, so exactly one of the two racing createClaudeCli calls
-            // carries it. Sending `prompt` directly here would let the backend
-            // drop it when the view's promptless call won the PTY spawn.
-            const pendingPrompt = sessionStore.dequeuePendingMessage(sessionId)
-            try {
-              const cliResult = unwrapEnvelope(
-                await terminalApi.createClaudeCli(sessionId, { pendingPrompt })
-              )
-              if (!cliResult.success && pendingPrompt) {
-                sessionStore.requeuePendingMessage(sessionId, pendingPrompt)
-              }
-            } catch {
-              if (pendingPrompt) {
-                sessionStore.requeuePendingMessage(sessionId, pendingPrompt)
-              }
-            }
-            return
-          }
-
-          const connectResult = unwrapEnvelope(await opencodeApi.connect(worktreePath, sessionId))
-          if (connectResult.success && connectResult.sessionId) {
-            sessionStore.setOpenCodeSessionId(sessionId, connectResult.sessionId)
-            dbApi.session
-              .update(sessionId, { opencode_session_id: connectResult.sessionId })
-              .catch(() => {})
-
-            messageSendTimes.set(sessionId, Date.now())
-            userExplicitSendTimes.set(sessionId, Date.now())
-            snapshotTokenBaseline(sessionId)
-            lastSendMode.set(sessionId, 'build')
-            useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'working')
-            bumpWorktreeLastMessage({ worktreeId })
-
-            unwrapEnvelope(
-              await opencodeApi.prompt(
-                worktreePath,
-                connectResult.sessionId,
-                [{ type: 'text', text: prompt }],
-                sessionModel
-              )
-            )
-          } else {
-            sessionStore.setPendingMessage(sessionId, prompt)
-          }
-        } catch {
-          sessionStore.setPendingMessage(sessionId, prompt)
-        }
-      })()
-
-      return result.session.id
-    },
-    [worktreeId, worktree?.path]
-  )
 
   const mergePR = useCallback(async (): Promise<boolean> => {
     if (!worktreeId || !worktree?.path) return false
@@ -598,14 +444,6 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     [worktreeId]
   )
 
-  const setReviewTargetBranchAction = useCallback(
-    (branch: string) => {
-      if (!worktreeId) return
-      useGitStore.getState().setReviewTargetBranch(worktreeId, branch)
-    },
-    [worktreeId]
-  )
-
   // When worktreeId is null, return safe defaults with no-op actions
   if (!worktreeId) {
     return {
@@ -619,11 +457,9 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
       branchInfo: null,
       remoteBranches: [],
       prTargetBranch: undefined,
-      reviewTargetBranch: undefined,
       isCleanTree: true,
       isDefault: false,
       prMergeConflict: null,
-      createCodeReview: noopString,
       mergePR: noopBool,
       rebasePR: noopBool,
       autoResolvePrMergeConflict: noopBool,
@@ -634,8 +470,7 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
       copyPRUrl: noopVoid,
       loadPRList: noopPRList,
       loadPRState: noopLoadState,
-      setPrTargetBranch: noopVoid,
-      setReviewTargetBranch: noopVoid
+      setPrTargetBranch: noopVoid
     }
   }
 
@@ -651,13 +486,11 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     branchInfo,
     remoteBranches,
     prTargetBranch: storePrTargetBranch,
-    reviewTargetBranch: storeReviewTargetBranch,
     isCleanTree,
     isDefault,
     prMergeConflict,
 
     // Actions
-    createCodeReview,
     mergePR,
     rebasePR,
     autoResolvePrMergeConflict,
@@ -668,7 +501,6 @@ export function useLifecycleActions(worktreeId: string | null): LifecycleActions
     copyPRUrl,
     loadPRList,
     loadPRState,
-    setPrTargetBranch: setPrTargetBranchAction,
-    setReviewTargetBranch: setReviewTargetBranchAction
+    setPrTargetBranch: setPrTargetBranchAction
   }
 }

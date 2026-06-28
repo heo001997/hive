@@ -32,10 +32,6 @@ interface WorktreeStatusState {
   sessionStatuses: Record<string, SessionStatusEntry | null>
   // worktreeId → epoch ms of last message activity
   lastMessageTimeByWorktree: Record<string, number>
-  // worktreeId → sessionId for active review sessions
-  reviewSessionByWorktree: Record<string, string>
-  // worktreeId → sessionId for completed review sessions (in-memory only)
-  completedReviewSessionByWorktree: Record<string, string>
   // worktreeId → sessionId for active conflict-fix sessions
   mergeConflictSessionByWorktree: Record<string, string>
   // worktreeId → current conflict-fix flow phase
@@ -65,14 +61,10 @@ interface WorktreeStatusState {
   getWorktreeCompletedEntry: (worktreeId: string) => SessionStatusEntry | null
   setLastMessageTime: (worktreeId: string, timestamp: number) => void
   getLastMessageTime: (worktreeId: string) => number | null
-  setReviewSession: (worktreeId: string, sessionId: string) => void
-  clearReviewSession: (worktreeId: string) => void
-  clearCompletedReviewSession: (worktreeId: string) => void
   setMergeConflictSession: (worktreeId: string, sessionId: string) => void
   clearMergeConflictSession: (worktreeId: string) => void
   setMergeConflictFlow: (worktreeId: string, flow: MergeConflictFlow | null) => void
   setMergeConflictWorktreeForTicket: (ticketId: string, worktreeId: string | null) => void
-  isWorktreeBeingReviewed: (worktreeId: string) => boolean
 }
 
 // Priority ranking for status aggregation (higher number = higher priority)
@@ -99,8 +91,6 @@ function higherPriority(
 export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => ({
   sessionStatuses: {},
   lastMessageTimeByWorktree: {},
-  reviewSessionByWorktree: {},
-  completedReviewSessionByWorktree: {},
   mergeConflictSessionByWorktree: {},
   mergeConflictFlowByWorktree: {},
   mergeConflictWorktreeByTicket: {},
@@ -124,24 +114,6 @@ export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => 
         sessionStatuses: {
           ...state.sessionStatuses,
           [sessionId]: status ? { status, timestamp: Date.now(), ...metadata } : null
-        }
-      }
-
-      // Auto-clear review session when its session completes or is cleared
-      if (status === 'completed' || status === null) {
-        for (const [wtId, sId] of Object.entries(state.reviewSessionByWorktree)) {
-          if (sId === sessionId) {
-            const { [wtId]: _, ...rest } = state.reviewSessionByWorktree
-            next.reviewSessionByWorktree = rest
-            // When a review completes, save its session ID so the card can show "Go to review"
-            if (status === 'completed') {
-              next.completedReviewSessionByWorktree = {
-                ...state.completedReviewSessionByWorktree,
-                [wtId]: sessionId
-              }
-            }
-            break
-          }
         }
       }
 
@@ -345,34 +317,6 @@ export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => 
     return get().lastMessageTimeByWorktree[worktreeId] ?? null
   },
 
-  setReviewSession: (worktreeId: string, sessionId: string) => {
-    set((state) => {
-      // Clear any completed review for this worktree when a new review starts
-      const { [worktreeId]: _, ...restCompleted } = state.completedReviewSessionByWorktree
-      return {
-        reviewSessionByWorktree: {
-          ...state.reviewSessionByWorktree,
-          [worktreeId]: sessionId
-        },
-        completedReviewSessionByWorktree: restCompleted
-      }
-    })
-  },
-
-  clearReviewSession: (worktreeId: string) => {
-    set((state) => {
-      const { [worktreeId]: _, ...rest } = state.reviewSessionByWorktree
-      return { reviewSessionByWorktree: rest }
-    })
-  },
-
-  clearCompletedReviewSession: (worktreeId: string) => {
-    set((state) => {
-      const { [worktreeId]: _, ...rest } = state.completedReviewSessionByWorktree
-      return { completedReviewSessionByWorktree: rest }
-    })
-  },
-
   setMergeConflictSession: (worktreeId: string, sessionId: string) => {
     set((state) => ({
       mergeConflictSessionByWorktree: {
@@ -417,10 +361,6 @@ export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => 
         }
       }
     })
-  },
-
-  isWorktreeBeingReviewed: (worktreeId: string): boolean => {
-    return worktreeId in get().reviewSessionByWorktree
   }
 }))
 

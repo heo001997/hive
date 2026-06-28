@@ -1469,8 +1469,6 @@ function EditModeContent({
   const [autoApproveReview, setAutoApproveReview] = useState(ticket.auto_approve_review)
   const [isSaving, setIsSaving] = useState(false)
   const lifecycle = useLifecycleActions(ticket.worktree_id)
-  const { pinAndActivate: pinAndActivateSession, lifecycleLoading } =
-    usePinAndActivateSession(onClose)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const isDirty =
     normalizeDraftText(title) !== normalizeDraftText(ticket.title) ||
@@ -1828,18 +1826,6 @@ function EditModeContent({
           )}
         </div>
         <div className="flex gap-2 flex-wrap">
-          {ticket.column === 'done' && ticket.worktree_id && (
-            <Button
-              type="button"
-              variant="outline"
-              className="gap-1.5"
-              disabled={lifecycleLoading}
-              onClick={() => pinAndActivateSession(() => lifecycle.createCodeReview())}
-            >
-              <FileSearch className="h-3.5 w-3.5" />
-              Review
-            </Button>
-          )}
           {ticket.column === 'done' &&
             ticket.worktree_id &&
             isTerminalTicket &&
@@ -3083,8 +3069,7 @@ function ReviewModeContent({
   const isCreatingPR = useGitStore((s) =>
     ticket.worktree_id ? s.creatingPRByWorktreeId.get(ticket.worktree_id) === true : false
   )
-  const { pinAndActivate: pinAndActivateSession, lifecycleLoading } =
-    usePinAndActivateSession(onClose)
+  const { lifecycleLoading } = usePinAndActivateSession(onClose)
 
   // Load live PR state so merge-button guard works (hide if already merged/closed)
   useEffect(() => {
@@ -3520,18 +3505,6 @@ function ReviewModeContent({
           Cancel
         </Button>
         <TicketRunButton state={runScriptState} testId="review-run-btn" />
-        {ticket.worktree_id && (
-          <Button
-            type="button"
-            variant="outline"
-            className="gap-1.5"
-            disabled={lifecycleLoading}
-            onClick={() => pinAndActivateSession(() => lifecycle.createCodeReview())}
-          >
-            <FileSearch className="h-3.5 w-3.5" />
-            Review
-          </Button>
-        )}
         {ticket.worktree_id &&
           lifecycle.isGitHub &&
           !lifecycle.hasAttachedPR &&

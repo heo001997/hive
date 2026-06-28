@@ -241,8 +241,6 @@ function seedStores(ticket = makeTicket()): void {
 
   useWorktreeStatusStore.setState({
     sessionStatuses: {},
-    reviewSessionByWorktree: {},
-    completedReviewSessionByWorktree: {},
     mergeConflictSessionByWorktree: {},
     mergeConflictFlowByWorktree: {},
     mergeConflictWorktreeByTicket: {}
@@ -511,9 +509,7 @@ describe('merge conflicts ticket button', () => {
     useWorktreeStatusStore.setState({
       sessionStatuses: {
         'session-1': { status: 'working', timestamp: Date.now() }
-      },
-      reviewSessionByWorktree: { 'wt-1': 'review-session-1' },
-      completedReviewSessionByWorktree: { 'wt-1': 'review-session-2' }
+      }
     })
 
     renderCard(

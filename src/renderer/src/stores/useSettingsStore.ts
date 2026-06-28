@@ -11,7 +11,6 @@ import {
   DEFAULT_STRICT_VERIFY_PROMPT,
   type CompletionCheckProvider
 } from '@shared/types/completion'
-import type { ReviewPromptType } from '@/constants/reviewPrompts'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { systemApi } from '@/api/system-api'
 import { dbApi } from '@/api/db-api'
@@ -61,7 +60,6 @@ export interface ModeDefaultModels {
   build: SelectedModel | null
   plan: SelectedModel | null
   ask: SelectedModel | null
-  review: SelectedModel | null
 }
 
 export type QuickActionType = 'cursor' | 'terminal' | 'copy-path' | 'finder'
@@ -221,9 +219,6 @@ export interface AppSettings {
   codexJsonlLoggingEnabled: boolean
   codexJsonlResetPerSession: boolean
 
-  // Review
-  reviewPromptType: ReviewPromptType
-
   // Plan mode auto-approve (Claude Code CLI). When enabled, the ExitPlanMode
   // approval menu is auto-selected by matching the configured text against the
   // rendered option labels.
@@ -336,7 +331,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   perfDiagnosticsEnabled: false,
   codexJsonlLoggingEnabled: false,
   codexJsonlResetPerSession: true,
-  reviewPromptType: 'standard',
   autoApprovePlanEnabled: false,
   autoApprovePlanMatchText: 'bypass permissions',
   _boardModeMigratedToStickyTab: false
@@ -368,11 +362,11 @@ interface SettingsState extends AppSettings {
     options?: { skipBackendPush?: boolean }
   ) => Promise<void>
   setModeDefaultModel: (
-    mode: 'build' | 'plan' | 'ask' | 'review',
+    mode: 'build' | 'plan' | 'ask',
     model: SelectedModel | null
   ) => Promise<void>
   getModelForMode: (
-    mode: 'build' | 'plan' | 'super-plan' | 'ask' | 'review'
+    mode: 'build' | 'plan' | 'super-plan' | 'ask'
   ) => SelectedModel | null
   setLastHandoffOverride: (value: AppSettings['lastHandoffOverride']) => void
   toggleFavoriteModel: (providerID: string, modelID: string) => void
@@ -560,7 +554,6 @@ function extractSettings(state: SettingsState): AppSettings {
     perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
     codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
     codexJsonlResetPerSession: state.codexJsonlResetPerSession,
-    reviewPromptType: state.reviewPromptType,
     autoApprovePlanEnabled: state.autoApprovePlanEnabled,
     autoApprovePlanMatchText: state.autoApprovePlanMatchText,
     _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
@@ -749,14 +742,13 @@ export const useSettingsStore = create<SettingsState>()(
       },
 
       setModeDefaultModel: async (
-        mode: 'build' | 'plan' | 'ask' | 'review',
+        mode: 'build' | 'plan' | 'ask',
         model: SelectedModel | null
       ) => {
         const currentDefaults = get().defaultModels || {
           build: null,
           plan: null,
-          ask: null,
-          review: null
+          ask: null
         }
         const updated = { ...currentDefaults, [mode]: model }
         set({ defaultModels: updated })
@@ -766,7 +758,7 @@ export const useSettingsStore = create<SettingsState>()(
         await saveToDatabase(settings)
       },
 
-      getModelForMode: (mode: 'build' | 'plan' | 'super-plan' | 'ask' | 'review') => {
+      getModelForMode: (mode: 'build' | 'plan' | 'super-plan' | 'ask') => {
         // Return only the mode-specific default (no global fallback).
         // Callers that need a fallback chain should check selectedModel separately.
         const key = mode === 'super-plan' ? 'plan' : mode
@@ -951,7 +943,6 @@ export const useSettingsStore = create<SettingsState>()(
         perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
         codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
         codexJsonlResetPerSession: state.codexJsonlResetPerSession,
-        reviewPromptType: state.reviewPromptType,
         autoApprovePlanEnabled: state.autoApprovePlanEnabled,
         autoApprovePlanMatchText: state.autoApprovePlanMatchText,
         _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
