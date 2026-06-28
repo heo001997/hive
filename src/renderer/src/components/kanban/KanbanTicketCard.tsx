@@ -511,27 +511,6 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
     )
   )
 
-  // ── Review session active on this ticket's worktree ────────────
-  const isBeingReviewed = useWorktreeStatusStore(
-    useCallback(
-      (state) => {
-        if (!ticket.worktree_id || ticket.column !== 'review') return false
-        return ticket.worktree_id in state.reviewSessionByWorktree
-      },
-      [ticket.worktree_id, ticket.column]
-    )
-  )
-
-  const completedReviewSessionId = useWorktreeStatusStore(
-    useCallback(
-      (state) => {
-        if (!ticket.worktree_id) return null
-        return state.completedReviewSessionByWorktree[ticket.worktree_id] ?? null
-      },
-      [ticket.worktree_id]
-    )
-  )
-
   // ── Detect pending questions for this ticket's session ─────────
   const isAskingFromQuestionStore = useQuestionStore(
     useCallback(
@@ -554,26 +533,21 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
   )
   const isAsking = isAskingFromQuestionStore || isAskingFromStatus
 
-  const rightAlignedSlot: 'conflicts' | 'busy' | 'reviewing' | 'completed-review' | null =
-    useMemo(() => {
-      if (!isArchived && hasConflicts && ticket.worktree_id) return 'conflicts'
-      if ((isBusy || isAsking) && ticket.mode && !isBlocked && ticket.column === 'in_progress')
-        return 'busy'
-      if (isBeingReviewed) return 'reviewing'
-      if (completedReviewSessionId) return 'completed-review'
-      return null
-    }, [
-      completedReviewSessionId,
-      hasConflicts,
-      isArchived,
-      isAsking,
-      isBeingReviewed,
-      isBlocked,
-      isBusy,
-      ticket.column,
-      ticket.mode,
-      ticket.worktree_id
-    ])
+  const rightAlignedSlot: 'conflicts' | 'busy' | null = useMemo(() => {
+    if (!isArchived && hasConflicts && ticket.worktree_id) return 'conflicts'
+    if ((isBusy || isAsking) && ticket.mode && !isBlocked && ticket.column === 'in_progress')
+      return 'busy'
+    return null
+  }, [
+    hasConflicts,
+    isArchived,
+    isAsking,
+    isBlocked,
+    isBusy,
+    ticket.column,
+    ticket.mode,
+    ticket.worktree_id
+  ])
   const hasRightAlignedStatus = rightAlignedSlot !== null
 
   const timerText = useSessionTimer(
@@ -940,18 +914,6 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
       }
     }
   }, [ticket.current_session_id, ticket.worktree_id, ticket.project_id, connectionId, connectionSession, isPinnedMode])
-
-  const handleGoToReview = useCallback(() => {
-    if (!completedReviewSessionId) return
-    const kanbanStore = useKanbanStore.getState()
-    if (kanbanStore.isBoardViewActive) kanbanStore.toggleBoardView()
-    if (kanbanStore.isPinnedBoardActive) kanbanStore.togglePinnedBoard()
-    if (ticket.worktree_id) {
-      useWorktreeStore.getState().selectWorktree(ticket.worktree_id)
-      useSessionStore.getState().setActiveWorktree(ticket.worktree_id)
-    }
-    useSessionStore.getState().setActiveSession(completedReviewSessionId)
-  }, [completedReviewSessionId, ticket.worktree_id])
 
   const isSimpleTicket = ticket.current_session_id === null
   const isFlowTicket = ticket.current_session_id !== null
@@ -1422,22 +1384,6 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                             </span>
                           )}
                         </span>
-                      )
-                    case 'reviewing':
-                      return (
-                        <span data-testid="kanban-ticket-reviewing" className="ml-auto flex items-center gap-1.5">
-                          <IndeterminateProgressBar mode={ticket.mode || 'build'} isReviewing className="w-20" />
-                        </span>
-                      )
-                    case 'completed-review':
-                      return (
-                        <button
-                          data-testid="kanban-ticket-go-to-review"
-                          onClick={(e) => { e.stopPropagation(); handleGoToReview() }}
-                          className="ml-auto text-green-500 hover:text-green-400 text-xs cursor-pointer"
-                        >
-                          Go to review
-                        </button>
                       )
                     default:
                       return null

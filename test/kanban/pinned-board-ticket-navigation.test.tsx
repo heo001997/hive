@@ -224,8 +224,6 @@ function seedStores(): void {
         timestamp: Date.now()
       }
     },
-    reviewSessionByWorktree: {},
-    completedReviewSessionByWorktree: {},
     mergeConflictSessionByWorktree: {},
     mergeConflictFlowByWorktree: {}
   })

@@ -299,40 +299,6 @@ export function useVimNavigation(): void {
         return
       }
 
-      // --- Header action shortcuts ---
-      if (event.key === 'r') {
-        const btn = document.querySelector<HTMLElement>('[data-testid="review-button"]')
-        if (btn) {
-          btn.click()
-          event.preventDefault()
-          return
-        }
-      }
-      if (event.key === 'p') {
-        const btn = document.querySelector<HTMLElement>('[data-testid="pr-button"]')
-        if (btn) {
-          btn.click()
-          event.preventDefault()
-          return
-        }
-      }
-      if (event.key === 'm') {
-        const btn = document.querySelector<HTMLElement>('[data-testid="pr-merge-button"]')
-        if (btn) {
-          btn.click()
-          event.preventDefault()
-          return
-        }
-      }
-      if (event.key === 'a') {
-        const btn = document.querySelector<HTMLElement>('[data-testid="pr-archive-button"]')
-        if (btn) {
-          btn.click()
-          event.preventDefault()
-          return
-        }
-      }
-
       // --- Hint dispatch: idle mode → uppercase starts pending ---
       if (hint.mode === 'idle' && /^[A-Z]$/.test(event.key)) {
         hint.enterPending(event.key)

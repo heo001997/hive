@@ -100,8 +100,7 @@ describe('resolveSessionCreationSelection', () => {
           variant: 'max'
         },
         plan: null,
-        ask: null,
-        review: null
+        ask: null
       }
     })
 

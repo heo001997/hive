@@ -27,7 +27,6 @@ describe('useGitStore git metadata loading', () => {
       conflictsByWorktree: {},
       remoteInfo: new Map(),
       prTargetBranch: new Map(),
-      reviewTargetBranch: new Map(),
       attachedPR: new Map(),
       creatingPRByWorktreeId: new Map(),
       defaultMergeBranch: new Map(),

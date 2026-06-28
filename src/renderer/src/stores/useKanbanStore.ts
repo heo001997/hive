@@ -1736,11 +1736,7 @@ export const useKanbanStore = create<KanbanState>()(
           return { tickets: next }
         })
 
-        // Clear "Go to review" indicator when ticket moves columns (optimistic)
         const movedTicket = prev.find((t) => t.id === ticketId)
-        if (movedTicket?.worktree_id) {
-          useWorktreeStatusStore.getState().clearCompletedReviewSession(movedTicket.worktree_id)
-        }
 
         try {
           await kanban.ticket.move(projectId, ticketId, column, sortOrder)
