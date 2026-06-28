@@ -1160,6 +1160,18 @@ function KanbanTicketModalContent({
     [setTicketActiveView, ticket.id]
   )
 
+  // Follow external view changes that bypass the tab strip — e.g. "Create PR"
+  // opens a fresh Claude Code CLI terminal and points this ticket's view at it
+  // via setTicketActiveView (store-only). Mirror that into local state so the
+  // session pane switches to the new terminal and the user can watch the PR
+  // being created. selectTicketView already keeps store and local in sync for
+  // user-driven tab picks, so the equality guard makes this a no-op for those.
+  useEffect(() => {
+    if (persistedTicketView && persistedTicketView !== activeViewSessionId) {
+      setActiveViewSessionId(persistedTicketView)
+    }
+  }, [persistedTicketView, activeViewSessionId])
+
   // Clamp the viewed tab back to the primary if the session it points at has
   // disappeared (e.g. closed from the board while this modal is open). Gated on
   // the worktree's session list actually being loaded so we never reset a valid
