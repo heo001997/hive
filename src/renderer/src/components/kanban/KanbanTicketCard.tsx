@@ -30,6 +30,7 @@ import {
   Hammer,
   Map as MapIcon,
   FolderInput,
+  Copy,
   Code,
   MessageCircleQuestion,
   Clock
@@ -847,6 +848,22 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
       toast.error('Failed to archive ticket')
     }
   }, [ticket.id, ticket.project_id])
+
+  // Duplicate copies only the title and attachments — no description, mark,
+  // worktree/session links, or other per-ticket options. New card lands in Todo.
+  const handleDuplicate = useCallback(async () => {
+    try {
+      await useKanbanStore.getState().createTicket(ticket.project_id, {
+        project_id: ticket.project_id,
+        title: ticket.title,
+        attachments: ticket.attachments ?? [],
+        column: 'todo'
+      })
+      toast.success('Ticket duplicated')
+    } catch {
+      toast.error('Failed to duplicate ticket')
+    }
+  }, [ticket.project_id, ticket.title, ticket.attachments])
 
   const handleMoveToProject = useCallback(
     async (project: { id: string; name: string }) => {
@@ -1696,6 +1713,17 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
               )}
             </ContextMenuSubContent>
           </ContextMenuSub>
+
+          {!isExternalTicket && (
+            <ContextMenuItem
+              data-testid="ctx-duplicate-ticket"
+              onClick={handleDuplicate}
+              className="gap-2"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              Duplicate
+            </ContextMenuItem>
+          )}
 
           {!isExternalTicket && (
             <ContextMenuItem
