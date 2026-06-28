@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   GitPullRequest,
   GitBranch,
@@ -119,8 +119,21 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
   }, [worktreePath, fileStatusesByWorktree])
 
   // ── Reset on open ───────────────────────────────────────────────
+  // Guarded so it runs ONCE per open transition. Without this guard the effect
+  // re-fires whenever a dependency changes by reference while the modal is open
+  // (e.g. `sessionTitles` is a fresh array from JSON.parse on every worktree-
+  // store update), which would synchronously reset `phase` back to 'form' and
+  // clobber the async `setPhase('commit')` below — so the commit step would
+  // never appear first.
+  const openedKeyRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      openedKeyRef.current = null
+      return
+    }
+    const openKey = `${worktreeId}:${worktreePath}`
+    if (openedKeyRef.current === openKey) return
+    openedKeyRef.current = openKey
 
     // Reset all state
     setTitle('')
@@ -181,7 +194,7 @@ export function CreatePRModal({ worktreeId, worktreePath }: CreatePRModalProps):
       .catch(() => {
         // Non-critical — fall through to form phase
       })
-  }, [open, worktreePath, prTargetBranch, loadFileStatuses, sessionTitles])
+  }, [open, worktreeId, worktreePath, prTargetBranch, loadFileStatuses, sessionTitles])
 
   // ── Comparison ref: the remote-qualified base, e.g. "upstream/main" ──
   const comparisonRef = useMemo(
