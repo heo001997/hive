@@ -1,42 +1,21 @@
-import { useEffect, useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { isMac } from '@/lib/platform'
 import {
   PanelRightClose,
   PanelRightOpen,
   History,
   Settings,
-  AlertTriangle,
-  Loader2,
-  GitPullRequest,
-  GitMerge,
-  Archive,
-  ChevronDown,
   Coffee,
-  X,
-  ExternalLink,
-  Copy,
-  Hammer,
-  Map,
-  MoonStar,
-  Wand2
+  MoonStar
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem
-} from '@/components/ui/dropdown-menu'
-import { Popover, PopoverTrigger, PopoverContent, PopoverAnchor } from '@/components/ui/popover'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import {
   ContextMenu,
   ContextMenuTrigger,
   ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuCheckboxItem,
-  ContextMenuSeparator
+  ContextMenuCheckboxItem
 } from '@/components/ui/context-menu'
 import { cn } from '@/lib/utils'
 import { useLayoutStore } from '@/stores/useLayoutStore'
@@ -45,7 +24,6 @@ import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useProjectStore } from '@/stores/useProjectStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useConnectionStore } from '@/stores/useConnectionStore'
-import { useGitStore } from '@/stores/useGitStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useSleepWhenIdleStore } from '@/stores/useSleepWhenIdleStore'
 import { useVimModeStore } from '@/stores/useVimModeStore'
@@ -55,12 +33,8 @@ import { BoardSearchControl } from '@/components/kanban/BoardSearchControl'
 import { useTipStore } from '@/stores/useTipStore'
 import { Tip } from '@/components/ui/Tip'
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
-import { QuickActions } from './QuickActions'
 import { HeaderTelegramToggle } from './HeaderTelegramToggle'
 import { HeaderDiscordToggle } from './HeaderDiscordToggle'
-import { useLifecycleActions } from '@/hooks/useLifecycleActions'
-import { usePinAndActivateSession } from '@/hooks/usePinAndActivateSession'
-import { useConflictFixFlow } from '@/hooks/useConflictFixFlow'
 import hiveLogo from '@/assets/icon.png'
 
 export function Header(): React.JSX.Element {
@@ -70,21 +44,9 @@ export function Header(): React.JSX.Element {
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId)
   const projects = useProjectStore((s) => s.projects)
   const { selectedWorktreeId, worktreesByProject } = useWorktreeStore()
-  const selectedWorktreePath = useMemo(() => {
-    if (!selectedWorktreeId) return null
-    for (const worktrees of worktreesByProject.values()) {
-      const wt = worktrees.find((w) => w.id === selectedWorktreeId)
-      if (wt) return wt.path
-    }
-    return null
-  }, [selectedWorktreeId, worktreesByProject])
-  // Lifecycle actions hook — PR/Review/Merge/Archive logic
-  const lifecycle = useLifecycleActions(selectedWorktreeId)
-  const { lifecycleLoading } = usePinAndActivateSession()
 
   const vimMode = useVimModeStore((s) => s.mode)
   const vimModeEnabled = useSettingsStore((s) => s.vimModeEnabled)
-  const mergeConflictMode = useSettingsStore((s) => s.mergeConflictMode)
   const boardMode = useSettingsStore((s) => s.boardMode)
   const keepAwakeEnabled = useSettingsStore((s) => s.keepAwakeEnabled)
   const streamingCount = useWorktreeStatusStore((state) =>
@@ -95,7 +57,6 @@ export function Header(): React.JSX.Element {
   const sleepWhenIdleArmed = useSleepWhenIdleStore((s) => s.armed)
   const toggleSleepWhenIdle = useSleepWhenIdleStore((s) => s.toggle)
   const mugIsOn = keepAwakeEnabled && streamingCount > 0
-  const showVimHints = vimModeEnabled && vimMode === 'normal'
   const isBoardViewActive = useKanbanStore((s) => s.isBoardViewActive)
   const boardSearchMounted = useBoardSearchStore((s) => s.mounted)
   const toggleBoardView = useKanbanStore((s) => s.toggleBoardView)
@@ -103,11 +64,6 @@ export function Header(): React.JSX.Element {
   const hatchFirstPetSeen = useTipStore((s) => s.isTipSeen('hatch-first-pet'))
   const nonDefaultProviderChosen = useTipStore((s) => s.nonDefaultProviderChosen)
   const petEnabled = useSettingsStore((s) => s.pet.enabled)
-  const {
-    isRunning: isFixConflictsRunning,
-    isFinalizing: isFixConflictsFinalizing,
-    startFixFlow
-  } = useConflictFixFlow(selectedWorktreeId)
 
   const showHatchTip = !hatchFirstPetSeen && !petEnabled
   const settingsTipId = showHatchTip ? 'hatch-first-pet' : 'settings-default-provider'
@@ -141,59 +97,6 @@ export function Header(): React.JSX.Element {
     s.selectedConnectionId ? s.connections.find((c) => c.id === s.selectedConnectionId) : null
   )
   const isConnectionMode = !!selectedConnectionId && !selectedWorktreeId
-
-  const hasConflicts = useGitStore(
-    (state) =>
-      (selectedWorktree?.path ? state.conflictsByWorktree[selectedWorktree.path] : false) ?? false
-  )
-
-  // Keep isOperating in Header (used for button disable state)
-  const isOperating = useGitStore((state) => state.isPushing || state.isPulling)
-
-  // Destructure lifecycle state for template use
-  const {
-    attachedPR, hasAttachedPR, prLiveState, isGitHub,
-    isMergingPR, isArchiving: isArchivingWorktree, branchInfo, remoteBranches,
-    prTargetBranch, isCleanTree
-  } = lifecycle
-
-  // PR picker popover state (UI-specific to Header)
-  const [prPickerOpen, setPrPickerOpen] = useState(false)
-  const [prList, setPrList] = useState<
-    Array<{ number: number; title: string; author: string; headRefName: string }>
-  >([])
-  const [prListLoading, setPrListLoading] = useState(false)
-
-  // Fetch PR list + live state when picker opens
-  useEffect(() => {
-    if (!prPickerOpen) return
-    setPrListLoading(true)
-
-    const fetchPRs = lifecycle.loadPRList().then((list) => {
-      setPrList(list)
-    })
-
-    const fetchState = lifecycle.hasAttachedPR
-      ? lifecycle.loadPRState()
-      : Promise.resolve()
-
-    Promise.all([fetchPRs, fetchState]).finally(() => setPrListLoading(false))
-  }, [prPickerOpen, lifecycle.hasAttachedPR])
-
-  // Thin wrappers for actions that also manage UI-local state (prPickerOpen)
-  const handleSelectPR = (pr: { number: number }) => {
-    lifecycle.attachPR(pr.number)
-    setPrPickerOpen(false)
-  }
-
-  const handleDetachPR = () => {
-    lifecycle.detachPR()
-    setPrPickerOpen(false)
-  }
-
-  const isFixConflictsLoading = isFixConflictsRunning || isFixConflictsFinalizing
-
-  const showFixConflictsButton = hasConflicts || isFixConflictsLoading
 
   return (
     <header
@@ -278,352 +181,10 @@ export function Header(): React.JSX.Element {
           </span>
         )}
       </div>
-      {/* Center: Quick Actions */}
-      <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-        <QuickActions />
-      </div>
-      {!isConnectionMode && showFixConflictsButton && (
-        <div style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-          {mergeConflictMode === 'always-ask' ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  className="h-7 text-xs font-semibold"
-                  disabled={isFixConflictsLoading}
-                  data-testid="fix-conflicts-button"
-                >
-                  {isFixConflictsLoading ? (
-                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                  ) : (
-                    <AlertTriangle className="h-3.5 w-3.5 mr-1" />
-                  )}
-                  {isFixConflictsLoading ? 'Fixing conflicts...' : 'Fix conflicts'}
-                  {!isFixConflictsLoading && <ChevronDown className="h-3 w-3 ml-1" />}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => startFixFlow('build')}>
-                  <Hammer className="h-4 w-4 mr-2" />
-                  Fix in Build mode
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => startFixFlow('plan')}>
-                  <Map className="h-4 w-4 mr-2" />
-                  Fix in Plan mode
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <Button
-              size="sm"
-              variant="destructive"
-              className="h-7 text-xs font-semibold"
-              onClick={() => startFixFlow()}
-              disabled={isFixConflictsLoading}
-              data-testid="fix-conflicts-button"
-            >
-              {isFixConflictsLoading ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-              ) : (
-                <AlertTriangle className="h-3.5 w-3.5 mr-1" />
-              )}
-              {isFixConflictsLoading ? 'Fixing conflicts...' : 'Fix conflicts'}
-            </Button>
-          )}
-        </div>
-      )}
-      <div className="flex-1" />
       <div
         className="flex items-center gap-2"
         style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       >
-        {!isConnectionMode &&
-          isGitHub &&
-          hasAttachedPR &&
-          prLiveState?.state === 'MERGED' &&
-          !lifecycle.isDefault && (
-            <Button
-              size="sm"
-              variant="destructive"
-              className="h-7 text-xs"
-              onClick={() => lifecycle.archiveWorktree()}
-              disabled={isArchivingWorktree}
-              title="Archive worktree"
-              data-testid="pr-archive-button"
-            >
-              {isArchivingWorktree ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-              ) : (
-                <Archive className="h-3.5 w-3.5 mr-1" />
-              )}
-              {isArchivingWorktree ? (
-                'Archiving...'
-              ) : showVimHints ? (
-                <span>
-                  <span className="text-primary font-bold">A</span>rchive
-                </span>
-              ) : (
-                'Archive'
-              )}
-            </Button>
-          )}
-        {!isConnectionMode &&
-          isGitHub &&
-          hasAttachedPR &&
-          prLiveState?.state !== 'MERGED' &&
-          prLiveState?.state !== 'CLOSED' &&
-          isCleanTree && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs bg-emerald-600/10 border-emerald-600/30 text-emerald-500 hover:bg-emerald-600/20"
-              onClick={() => lifecycle.mergePR()}
-              disabled={isMergingPR}
-              title="Merge Pull Request"
-              data-testid="pr-merge-button"
-            >
-              {isMergingPR ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-              ) : (
-                <GitMerge className="h-3.5 w-3.5 mr-1" />
-              )}
-              {isMergingPR ? (
-                'Merging...'
-              ) : showVimHints ? (
-                <span>
-                  <span className="text-primary font-bold">M</span>erge PR
-                </span>
-              ) : (
-                'Merge PR'
-              )}
-            </Button>
-          )}
-        {lifecycle.prMergeConflict && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-xs bg-amber-600/10 border-amber-600/30 text-amber-500 hover:bg-amber-600/20"
-            onClick={() => lifecycle.autoResolvePrMergeConflict()}
-            title="Send the conflict-resolution prompt to this ticket's Claude Code terminal"
-            data-testid="pr-auto-resolve-button"
-          >
-            <Wand2 className="h-3.5 w-3.5 mr-1" />
-            Auto Resolve Conflict &amp; Merge
-          </Button>
-        )}
-        {/* PR Badge with Popover Picker — shown when a PR is attached */}
-        {!isConnectionMode && isGitHub && hasAttachedPR && (
-          <ContextMenu>
-            <Popover open={prPickerOpen} onOpenChange={setPrPickerOpen}>
-              <ContextMenuTrigger asChild>
-                <PopoverTrigger asChild>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-7 text-xs"
-                    title={`PR #${attachedPR!.number} (right-click for options)`}
-                    data-testid="pr-badge"
-                  >
-                    <GitPullRequest className="h-3.5 w-3.5 mr-1" />
-                    PR #{attachedPR!.number}
-                    {prLiveState?.state === 'MERGED' && (
-                      <span className="text-muted-foreground ml-1">· merged</span>
-                    )}
-                    {prLiveState?.state === 'CLOSED' && (
-                      <span className="text-muted-foreground ml-1">· closed</span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
-              </ContextMenuTrigger>
-              <PopoverContent align="end" className="w-80 p-0">
-                {/* Attached PR header */}
-                <div className="px-3 py-2 border-b">
-                  <div className="text-xs font-medium text-muted-foreground">
-                    Attached: #{attachedPR!.number}
-                  </div>
-                  {prLiveState?.title && (
-                    <div className="text-sm truncate">
-                      {prLiveState.title}
-                      {prLiveState.state && (
-                        <span className="text-muted-foreground ml-1 text-xs">
-                          ({prLiveState.state.toLowerCase()})
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {/* PR list */}
-                <div className="max-h-48 overflow-y-auto">
-                  {prListLoading ? (
-                    <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin inline mr-1" />
-                      Loading PRs...
-                    </div>
-                  ) : prList.length === 0 ? (
-                    <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                      No open PRs found
-                    </div>
-                  ) : (
-                    prList.map((pr) => (
-                      <button
-                        key={pr.number}
-                        className={cn(
-                          'w-full text-left px-3 py-2 text-sm hover:bg-accent cursor-pointer',
-                          'flex items-center gap-2',
-                          pr.number === attachedPR!.number && 'bg-accent/50'
-                        )}
-                        onClick={() => handleSelectPR(pr)}
-                        data-testid={`pr-picker-item-${pr.number}`}
-                      >
-                        <span className={cn(
-                          'text-xs font-mono shrink-0',
-                          pr.number === attachedPR!.number && 'text-primary font-bold'
-                        )}>
-                          {pr.number === attachedPR!.number ? '●' : ' '} #{pr.number}
-                        </span>
-                        <span className="truncate">{pr.title}</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-                {/* Detach action */}
-                <div className="border-t">
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm text-destructive hover:bg-destructive/10 cursor-pointer flex items-center gap-1"
-                    onClick={handleDetachPR}
-                    data-testid="pr-detach-button"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    Detach PR
-                  </button>
-                </div>
-              </PopoverContent>
-            </Popover>
-            <ContextMenuContent>
-              <ContextMenuItem onClick={lifecycle.openPRInBrowser}>
-                <ExternalLink className="h-4 w-4 mr-2" />
-                Open PR in Browser
-              </ContextMenuItem>
-              <ContextMenuItem onClick={lifecycle.copyPRUrl}>
-                <Copy className="h-4 w-4 mr-2" />
-                Copy PR URL
-              </ContextMenuItem>
-              <ContextMenuSeparator />
-              <ContextMenuItem
-                onClick={handleDetachPR}
-                className="text-destructive focus:text-destructive focus:bg-destructive/10"
-              >
-                <X className="h-4 w-4 mr-2" />
-                Detach PR
-              </ContextMenuItem>
-            </ContextMenuContent>
-          </ContextMenu>
-        )}
-        {/* Create PR button — shown when no PR attached */}
-        {!isConnectionMode && isGitHub && !hasAttachedPR && (
-          <Popover open={prPickerOpen} onOpenChange={setPrPickerOpen}>
-            <PopoverAnchor asChild>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={() => {
-                  if (selectedWorktreeId && selectedWorktreePath) {
-                    useGitStore.getState().setCreatePRModalOpen(true, {
-                      worktreeId: selectedWorktreeId,
-                      worktreePath: selectedWorktreePath,
-                    })
-                  }
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  setPrPickerOpen(true)
-                }}
-                disabled={isOperating || lifecycleLoading}
-                title="Create Pull Request (right-click to attach existing)"
-                data-testid="pr-button"
-              >
-                {lifecycleLoading ? (
-                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                ) : (
-                  <GitPullRequest className="h-3.5 w-3.5 mr-1" />
-                )}
-                {showVimHints ? (
-                  <span>
-                    <span className="text-primary font-bold">P</span>R
-                  </span>
-                ) : (
-                  'PR'
-                )}
-              </Button>
-            </PopoverAnchor>
-            <PopoverContent align="end" className="w-80 p-0">
-              <div className="px-3 py-2 border-b">
-                <div className="text-xs font-medium text-muted-foreground">
-                  Attach existing PR
-                </div>
-              </div>
-              <div className="max-h-48 overflow-y-auto">
-                {prListLoading ? (
-                  <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin inline mr-1" />
-                    Loading PRs...
-                  </div>
-                ) : prList.length === 0 ? (
-                  <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                    No open PRs found
-                  </div>
-                ) : (
-                  prList.map((pr) => (
-                    <button
-                      key={pr.number}
-                      className={cn(
-                        'w-full text-left px-3 py-2 text-sm hover:bg-accent cursor-pointer',
-                        'flex items-center gap-2'
-                      )}
-                      onClick={() => handleSelectPR(pr)}
-                      data-testid={`pr-picker-item-${pr.number}`}
-                    >
-                      <span className="text-xs font-mono shrink-0">
-                        #{pr.number}
-                      </span>
-                      <span className="truncate">{pr.title}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </PopoverContent>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="text-xs text-muted-foreground px-2 h-7"
-                  data-testid="pr-target-branch-trigger"
-                >
-                  → {prTargetBranch || branchInfo?.tracking || 'origin/main'}
-                  <ChevronDown className="h-3 w-3 ml-1" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="max-h-60 overflow-y-auto">
-                {remoteBranches.length === 0 ? (
-                  <DropdownMenuItem disabled>No remote branches</DropdownMenuItem>
-                ) : (
-                  remoteBranches.map((branch) => (
-                    <DropdownMenuItem
-                      key={branch.name}
-                      onClick={() => lifecycle.setPrTargetBranch(branch.name)}
-                      data-testid={`pr-target-branch-${branch.name}`}
-                    >
-                      {branch.name}
-                    </DropdownMenuItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </Popover>
-        )}
         {boardMode === 'toggle' && (
           <Tip
             tipId={kanbanIconSeen ? 'kanban-reenter' : 'kanban-icon'}
