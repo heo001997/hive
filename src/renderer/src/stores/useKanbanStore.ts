@@ -43,12 +43,43 @@ export interface TicketRef {
 export type TicketKey = string
 
 /**
+ * A file/image attached to a queued prompt. Stored path-only — pasted/dropped
+ * images are materialized to disk on add — so the persisted queue stays small
+ * (no base64 in localStorage) and the dispatcher can hand the CLI a filesystem
+ * path it can read. `id` is a stable client id for the preview tray's remove.
+ */
+export interface QueuedAttachment {
+  id: string
+  name: string
+  mime: string
+  filePath: string
+}
+
+/**
  * One pending follow-up in a ticket's Queue prompts queue (claude-code-cli).
  * `id` is a stable client id for CRUD/reorder + React keys.
  */
 export interface QueuedPrompt {
   id: string
   content: string
+  /** Files/images delivered alongside this prompt when it's dispatched. */
+  attachments?: QueuedAttachment[]
+}
+
+/**
+ * Compose the text delivered to the CLI for a queued prompt. Attachments are
+ * prepended as an `<attached_files>` block of file paths — the same convention
+ * the SDK followup path emits via `buildMessageParts` — so the agent reads them
+ * before the prompt body. With no attachments the raw content is returned
+ * unchanged, so the dispatched text matches exactly what the user typed.
+ */
+export function buildQueuedPromptText(content: string, attachments?: QueuedAttachment[]): string {
+  if (!attachments || attachments.length === 0) return content
+  const xml =
+    '<attached_files>\n' +
+    attachments.map((a) => `<file path="${a.filePath}">${a.name}</file>`).join('\n') +
+    '\n</attached_files>'
+  return content ? `${xml}\n${content}` : xml
 }
 
 export interface MarkdownCardPlaceholder {
@@ -490,7 +521,8 @@ interface KanbanState {
   startClaudeCliFollowup: (
     projectId: string,
     ticketId: string,
-    prompt: string
+    prompt: string,
+    attachments?: QueuedAttachment[]
   ) => Promise<boolean>
   /**
    * Queue prompts (claude-code-cli only). Enter the next queued follow-up IFF
@@ -506,14 +538,27 @@ interface KanbanState {
    * complete in Review. CRUD actions back the queue management UI.
    */
   promptQueues: Record<TicketKey, QueuedPrompt[]>
-  /** Append `content` to the ticket's queue (trimmed; no-op when empty). */
-  addQueuedPrompt: (projectId: string, ticketId: string, content: string) => void
-  /** Replace the text of one queued prompt (trimmed; removes it when empty). */
+  /**
+   * Append `content` (+ optional attachments) to the ticket's queue. Trimmed;
+   * no-op only when both the text and attachments are empty.
+   */
+  addQueuedPrompt: (
+    projectId: string,
+    ticketId: string,
+    content: string,
+    attachments?: QueuedAttachment[]
+  ) => void
+  /**
+   * Replace the text of one queued prompt (trimmed). When `attachments` is
+   * omitted the prompt's existing attachments are kept. Removes the prompt only
+   * when it would end up with neither text nor attachments.
+   */
   updateQueuedPrompt: (
     projectId: string,
     ticketId: string,
     promptId: string,
-    content: string
+    content: string,
+    attachments?: QueuedAttachment[]
   ) => void
   /** Remove one queued prompt by id. */
   removeQueuedPrompt: (projectId: string, ticketId: string, promptId: string) => void
@@ -1139,7 +1184,10 @@ async function maybeDispatchClaudeCliQueue(
   if (!head) return false
 
   const { dispatchClaudeCliFollowup } = await import('@/lib/claude-cli-followup')
-  const delivered = await dispatchClaudeCliFollowup(sessionId, head.content)
+  const delivered = await dispatchClaudeCliFollowup(
+    sessionId,
+    buildQueuedPromptText(head.content, head.attachments)
+  )
   if (!delivered) return false
 
   get().removeQueuedPrompt(projectId, ticketId, head.id)
@@ -2853,13 +2901,22 @@ export const useKanbanStore = create<KanbanState>()(
         return stored
       },
 
-      addQueuedPrompt: (projectId: string, ticketId: string, content: string): void => {
+      addQueuedPrompt: (
+        projectId: string,
+        ticketId: string,
+        content: string,
+        attachments?: QueuedAttachment[]
+      ): void => {
         const text = content.trim()
-        if (!text) return
+        // An attachment-only prompt (e.g. just an image) is valid — only bail
+        // when there's nothing at all to send.
+        if (!text && !attachments?.length) return
         const key = ticketKey(projectId, ticketId)
         set((state) => {
           const next = { ...state.promptQueues }
-          next[key] = [...(next[key] ?? []), { id: crypto.randomUUID(), content: text }]
+          const entry: QueuedPrompt = { id: crypto.randomUUID(), content: text }
+          if (attachments?.length) entry.attachments = attachments
+          next[key] = [...(next[key] ?? []), entry]
           return { promptQueues: next }
         })
       },
@@ -2868,17 +2925,35 @@ export const useKanbanStore = create<KanbanState>()(
         projectId: string,
         ticketId: string,
         promptId: string,
-        content: string
+        content: string,
+        attachments?: QueuedAttachment[]
       ): void => {
         const text = content.trim()
         const key = ticketKey(projectId, ticketId)
         set((state) => {
           const list = state.promptQueues[key]
           if (!list) return {}
-          // Empty text removes the prompt rather than leaving a blank entry.
-          const updated = text
-            ? list.map((p) => (p.id === promptId ? { ...p, content: text } : p))
-            : list.filter((p) => p.id !== promptId)
+          const target = list.find((p) => p.id === promptId)
+          if (!target) return {}
+          // Keep existing attachments unless the caller passed a new set.
+          const nextAttachments = attachments ?? target.attachments
+          const hasAttachments = !!nextAttachments?.length
+          // Removing the text of an attachment-less prompt drops it; a prompt
+          // that still has attachments survives even with empty text.
+          const updated =
+            !text && !hasAttachments
+              ? list.filter((p) => p.id !== promptId)
+              : list.map((p) =>
+                  p.id === promptId
+                    ? {
+                        ...p,
+                        content: text,
+                        ...(hasAttachments
+                          ? { attachments: nextAttachments }
+                          : { attachments: undefined })
+                      }
+                    : p
+                )
           const next = { ...state.promptQueues }
           if (updated.length === 0) delete next[key]
           else next[key] = updated
@@ -2932,10 +3007,11 @@ export const useKanbanStore = create<KanbanState>()(
       startClaudeCliFollowup: async (
         projectId: string,
         ticketId: string,
-        prompt: string
+        prompt: string,
+        attachments?: QueuedAttachment[]
       ): Promise<boolean> => {
         const text = prompt.trim()
-        if (!text) return false
+        if (!text && !attachments?.length) return false
         const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
         const sessionId = current?.current_session_id
         if (!current || !sessionId) return false
@@ -2948,7 +3024,7 @@ export const useKanbanStore = create<KanbanState>()(
           await get().moveTicket(ticketId, projectId, 'in_progress', sortOrder).catch(() => {})
         }
         const { dispatchClaudeCliFollowup } = await import('@/lib/claude-cli-followup')
-        return dispatchClaudeCliFollowup(sessionId, text)
+        return dispatchClaudeCliFollowup(sessionId, buildQueuedPromptText(text, attachments))
       },
 
       dispatchClaudeCliQueueIfReady: async (
