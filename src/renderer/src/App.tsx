@@ -6,6 +6,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { initPlatform } from '@/lib/platform'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useTipStore } from '@/stores/useTipStore'
+import { useFullscreenStore } from '@/stores/useFullscreenStore'
 import { PetStatusBridge } from '@/components/pet/PetStatusBridge'
 
 function App(): React.JSX.Element {
@@ -22,6 +23,10 @@ function App(): React.JSX.Element {
       setReady(true)
     })
   }, [])
+
+  // Track window fullscreen state so the header can drop the macOS traffic-light
+  // spacer (window buttons are hidden in fullscreen).
+  useEffect(() => useFullscreenStore.getState().initialize(), [])
 
   useEffect(() => {
     if (settingsLoading || didRefreshHiveOrg.current) return

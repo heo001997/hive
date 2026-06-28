@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/context-menu'
 import { cn } from '@/lib/utils'
 import { useLayoutStore } from '@/stores/useLayoutStore'
+import { useFullscreenStore } from '@/stores/useFullscreenStore'
 import { useSessionHistoryStore } from '@/stores/useSessionHistoryStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -39,6 +40,7 @@ import hiveLogo from '@/assets/icon.png'
 
 export function Header(): React.JSX.Element {
   const { rightSidebarCollapsed, toggleRightSidebar } = useLayoutStore()
+  const isFullscreen = useFullscreenStore((s) => s.isFullscreen)
   const { openPanel: openSessionHistory } = useSessionHistoryStore()
   const openSettings = useSettingsStore((s) => s.openSettings)
   const selectedProjectId = useProjectStore((s) => s.selectedProjectId)
@@ -105,16 +107,19 @@ export function Header(): React.JSX.Element {
     <header
       className={cn(
         'h-12 border-b bg-background flex items-center justify-between pr-4 flex-shrink-0 select-none',
-        // On macOS the traffic-light spacer below provides the left inset; on other
-        // platforms add the left padding so the logo isn't jammed into the corner.
-        !isMac() && 'pl-4'
+        // On macOS (windowed) the traffic-light spacer below provides the left
+        // inset; otherwise add the left padding so the logo isn't jammed into the
+        // corner. In macOS fullscreen the window buttons are hidden, so the logo
+        // goes flush-left like every other platform.
+        (!isMac() || isFullscreen) && 'pl-4'
       )}
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       data-testid="header"
     >
       {/* Spacer for macOS traffic lights: clears the window buttons (x:15 + ~52px
-          cluster) with a small gap so the logo sits flush-left right after them. */}
-      {isMac() && <div className="w-[72px] flex-shrink-0" />}
+          cluster) with a small gap so the logo sits flush-left right after them.
+          Hidden in fullscreen, where the traffic lights are not shown. */}
+      {isMac() && !isFullscreen && <div className="w-[72px] flex-shrink-0" />}
       <div className="flex items-center gap-2 flex-1 min-w-0">
         <img
           src={customLogoDataUrl || hiveLogo}
