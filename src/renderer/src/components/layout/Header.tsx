@@ -103,12 +103,18 @@ export function Header(): React.JSX.Element {
 
   return (
     <header
-      className="h-12 border-b bg-background flex items-center justify-between px-4 flex-shrink-0 select-none"
+      className={cn(
+        'h-12 border-b bg-background flex items-center justify-between pr-4 flex-shrink-0 select-none',
+        // On macOS the traffic-light spacer below provides the left inset; on other
+        // platforms add the left padding so the logo isn't jammed into the corner.
+        !isMac() && 'pl-4'
+      )}
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       data-testid="header"
     >
-      {/* Spacer for macOS traffic lights */}
-      {isMac() && <div className="w-16 flex-shrink-0" />}
+      {/* Spacer for macOS traffic lights: clears the window buttons (x:15 + ~52px
+          cluster) with a small gap so the logo sits flush-left right after them. */}
+      {isMac() && <div className="w-[72px] flex-shrink-0" />}
       <div className="flex items-center gap-2 flex-1 min-w-0">
         <img
           src={customLogoDataUrl || hiveLogo}
