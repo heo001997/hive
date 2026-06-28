@@ -99,7 +99,19 @@ vi.mock('@/lib/claude-cli-followup', () => ({
   dispatchClaudeCliFollowup: (...args: unknown[]) => hoisted.dispatch(...args)
 }))
 
-import { useKanbanStore, ticketKey } from './useKanbanStore'
+import {
+  useKanbanStore,
+  ticketKey,
+  buildQueuedPromptText,
+  type QueuedAttachment
+} from './useKanbanStore'
+
+const ATT: QueuedAttachment = {
+  id: 'att-1',
+  name: 'shot.png',
+  mime: 'image/png',
+  filePath: '/abs/shot.png'
+}
 
 const PROJECT_ID = 'proj-1'
 
@@ -519,5 +531,86 @@ describe('prompt queue CRUD actions', () => {
     expect(queueContents('ticket-2')).toEqual(['y', 'z'])
     useKanbanStore.getState().clearQueuedPrompts(PROJECT_ID, 'ticket-1')
     expect(queueContents('ticket-2')).toEqual(['y', 'z'])
+  })
+})
+
+describe('buildQueuedPromptText', () => {
+  it('returns the raw content unchanged when there are no attachments', () => {
+    expect(buildQueuedPromptText('do thing')).toBe('do thing')
+    expect(buildQueuedPromptText('do thing', [])).toBe('do thing')
+  })
+
+  it('prepends an <attached_files> block of file paths before the content', () => {
+    const out = buildQueuedPromptText('describe this', [ATT])
+    expect(out).toBe(
+      '<attached_files>\n<file path="/abs/shot.png">shot.png</file>\n</attached_files>\ndescribe this'
+    )
+  })
+
+  it('emits only the <attached_files> block for an attachment-only prompt', () => {
+    expect(buildQueuedPromptText('', [ATT])).toBe(
+      '<attached_files>\n<file path="/abs/shot.png">shot.png</file>\n</attached_files>'
+    )
+  })
+})
+
+describe('prompt queue attachments', () => {
+  it('addQueuedPrompt stores attachments alongside the content', () => {
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, 'ticket-1', 'look', [ATT])
+    const [p] = queueOf('ticket-1')
+    expect(p.content).toBe('look')
+    expect(p.attachments).toEqual([ATT])
+  })
+
+  it('addQueuedPrompt accepts an attachment-only prompt (empty text)', () => {
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, 'ticket-1', '   ', [ATT])
+    const [p] = queueOf('ticket-1')
+    expect(p.content).toBe('')
+    expect(p.attachments).toEqual([ATT])
+  })
+
+  it('updateQueuedPrompt keeps existing attachments when none are passed', () => {
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, 'ticket-1', 'before', [ATT])
+    const [p] = queueOf('ticket-1')
+    useKanbanStore.getState().updateQueuedPrompt(PROJECT_ID, 'ticket-1', p.id, 'after')
+    const [updated] = queueOf('ticket-1')
+    expect(updated.content).toBe('after')
+    expect(updated.attachments).toEqual([ATT])
+  })
+
+  it('updateQueuedPrompt with empty text keeps an attachment-bearing prompt', () => {
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, 'ticket-1', 'before', [ATT])
+    const [p] = queueOf('ticket-1')
+    useKanbanStore.getState().updateQueuedPrompt(PROJECT_ID, 'ticket-1', p.id, '   ')
+    const [updated] = queueOf('ticket-1')
+    expect(updated?.content).toBe('')
+    expect(updated?.attachments).toEqual([ATT])
+  })
+
+  it('startClaudeCliFollowup dispatches the prompt with the attachment XML prepended', async () => {
+    seed(makeTicket({ column: 'review' }))
+    const ok = await useKanbanStore
+      .getState()
+      .startClaudeCliFollowup(PROJECT_ID, 'ticket-1', 'go now', [ATT])
+    expect(ok).toBe(true)
+    expect(hoisted.dispatch).toHaveBeenCalledWith(SESSION_ID, buildQueuedPromptText('go now', [ATT]))
+  })
+
+  it('the Strict Verify drain dispatches the head with its attachments', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    seed(makeTicket({ column: 'in_progress' }))
+    useKanbanStore.getState().addQueuedPrompt(PROJECT_ID, 'ticket-1', 'with image', [ATT])
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.dispatch).toHaveBeenCalledWith(
+      SESSION_ID,
+      buildQueuedPromptText('with image', [ATT])
+    )
+    expect(queueContents('ticket-1')).toEqual([])
   })
 })
