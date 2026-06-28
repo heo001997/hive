@@ -32,6 +32,7 @@ import {
   suppressMarkdownKanbanWatch
 } from './markdown-kanban-watcher'
 import type {
+  KanbanColumnPages,
   KanbanMarkdownConfig,
   KanbanStorageConfig,
   KanbanStorageMode,
@@ -71,7 +72,17 @@ const HIVE_FRONTMATTER_FIELDS = new Set([
 ])
 
 const CARD_FILE_SIZE_LIMIT_BYTES = 1024 * 1024
-const VALID_COLUMNS = new Set<KanbanTicketColumn>(['todo', 'in_progress', 'review', 'done'])
+const KANBAN_COLUMNS: KanbanTicketColumn[] = ['todo', 'in_progress', 'review', 'done']
+const VALID_COLUMNS = new Set<KanbanTicketColumn>(KANBAN_COLUMNS)
+
+function emptyColumnPages(): KanbanColumnPages {
+  return {
+    todo: { tickets: [], total: 0 },
+    in_progress: { tickets: [], total: 0 },
+    review: { tickets: [], total: 0 },
+    done: { tickets: [], total: 0 }
+  }
+}
 const VALID_MODES = new Set(['build', 'plan', 'super-plan'])
 const VALID_MARKS = new Set(['common', 'rare', 'epic', 'legendary'])
 
@@ -164,6 +175,19 @@ class MarkdownCardError extends Error {
 export interface KanbanBackend {
   get(projectId: string, ticketId: string): Promise<KanbanTicket | null>
   list(projectId: string, includeArchived: boolean): Promise<KanbanTicket[]>
+  /**
+   * First page (`perPage` tickets) of ACTIVE tickets for every column, plus each
+   * column's total active count. One round-trip / one index build powers the
+   * board's fast initial paint.
+   */
+  listColumnPages(projectId: string, perPage: number): Promise<KanbanColumnPages>
+  /** One page of ACTIVE tickets for a single column — drives background streaming of the remainder. */
+  listColumnPage(
+    projectId: string,
+    column: KanbanTicketColumn,
+    perPage: number,
+    offset: number
+  ): Promise<KanbanTicket[]>
   create(projectId: string, data: KanbanTicketCreate): Promise<KanbanTicket>
   createBatch(
     projectId: string,
@@ -235,6 +259,27 @@ class InternalKanbanBackend implements KanbanBackend {
 
   async list(projectId: string, includeArchived: boolean): Promise<KanbanTicket[]> {
     return getDatabase().getKanbanTicketsByProject(projectId, includeArchived)
+  }
+
+  async listColumnPages(projectId: string, perPage: number): Promise<KanbanColumnPages> {
+    const db = getDatabase()
+    const pages = emptyColumnPages()
+    for (const column of KANBAN_COLUMNS) {
+      pages[column] = {
+        tickets: db.getKanbanTicketsByProjectColumn(projectId, column, perPage, 0),
+        total: db.countActiveKanbanTicketsByProjectColumn(projectId, column)
+      }
+    }
+    return pages
+  }
+
+  async listColumnPage(
+    projectId: string,
+    column: KanbanTicketColumn,
+    perPage: number,
+    offset: number
+  ): Promise<KanbanTicket[]> {
+    return getDatabase().getKanbanTicketsByProjectColumn(projectId, column, perPage, offset)
   }
 
   async create(projectId: string, data: KanbanTicketCreate): Promise<KanbanTicket> {
@@ -506,6 +551,41 @@ class MarkdownKanbanBackend implements KanbanBackend {
   async list(projectId: string, includeArchived: boolean): Promise<KanbanTicket[]> {
     const index = await this.reloadIndex(projectId)
     return index.tickets.filter((ticket) => includeArchived || !ticket.archived_at).sort(ticketSort)
+  }
+
+  async listColumnPages(projectId: string, perPage: number): Promise<KanbanColumnPages> {
+    // Markdown cards live as files, so the whole index must be read regardless;
+    // a single reload (which also refreshes the cache that listColumnPage reuses)
+    // then slices each column's first page. Refreshes on every board open so
+    // external file edits are picked up.
+    const index = await this.reloadIndex(projectId)
+    return this.sliceColumnPages(index, perPage)
+  }
+
+  async listColumnPage(
+    projectId: string,
+    column: KanbanTicketColumn,
+    perPage: number,
+    offset: number
+  ): Promise<KanbanTicket[]> {
+    // Reuse the cache populated by listColumnPages (rebuilt only if invalidated).
+    const index = await this.ensureIndex(projectId)
+    return this.activeColumnTickets(index, column).slice(offset, offset + perPage)
+  }
+
+  private activeColumnTickets(index: MarkdownIndex, column: KanbanTicketColumn): KanbanTicket[] {
+    return index.tickets
+      .filter((ticket) => !ticket.archived_at && ticket.column === column)
+      .sort(ticketSort)
+  }
+
+  private sliceColumnPages(index: MarkdownIndex, perPage: number): KanbanColumnPages {
+    const pages = emptyColumnPages()
+    for (const column of KANBAN_COLUMNS) {
+      const columnTickets = this.activeColumnTickets(index, column)
+      pages[column] = { tickets: columnTickets.slice(0, perPage), total: columnTickets.length }
+    }
+    return pages
   }
 
   async create(projectId: string, data: KanbanTicketCreate): Promise<KanbanTicket> {
