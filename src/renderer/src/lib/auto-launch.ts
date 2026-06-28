@@ -214,7 +214,24 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
       await useSessionStore.getState().setSessionModel(sessionId, config.model)
     }
 
-    // 5. Update ticket: clear pending config, set session + worktree
+    // 5. Update ticket: clear pending config, set session + worktree, and move the
+    // ticket into In Progress so it counts against the parallel-worktree cap. A
+    // concurrency-queued ticket waits in its origin column (e.g. Todo) until launch;
+    // a dependency-queued ticket already sits in In Progress, so don't reorder it.
+    const kanbanState = useKanbanStore.getState()
+    const currentColumn = kanbanState.tickets
+      .get(ticket.project_id)
+      ?.find((t) => t.id === ticket.id)?.column
+    const inProgressMove =
+      currentColumn === 'in_progress'
+        ? {}
+        : {
+            column: 'in_progress' as const,
+            sort_order: kanbanState.computeSortOrder(
+              kanbanState.getTicketsByColumn(ticket.project_id, 'in_progress'),
+              0
+            )
+          }
     await useKanbanStore.getState().updateTicket(ticket.id, ticket.project_id, {
       pending_launch_config: null,
       current_session_id: sessionId,
@@ -222,7 +239,8 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
       mode: config.mode,
       goal_mode: configGoalMode,
       goal_success_criteria: configGoalMode ? configGoalSuccessCriteria : null,
-      auto_approve_plan: configAutoApprovePlan
+      auto_approve_plan: configAutoApprovePlan,
+      ...inProgressMove
     })
 
     // 6. Trigger usage refresh

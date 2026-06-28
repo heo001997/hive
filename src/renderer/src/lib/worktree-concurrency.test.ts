@@ -260,6 +260,52 @@ describe('launchNextQueuedTickets', () => {
     expect(autoLaunchMocks.autoLaunchTicket).not.toHaveBeenCalled()
   })
 
+  it('serializes concurrent invocations so the cap is never exceeded', async () => {
+    setProject(1)
+    setTickets([
+      makeTicket({
+        id: 'q1',
+        column: 'todo',
+        created_at: '2026-01-01T00:00:00.000Z',
+        pending_launch_config: QUEUED_CONFIG
+      }),
+      makeTicket({
+        id: 'q2',
+        column: 'todo',
+        created_at: '2026-01-02T00:00:00.000Z',
+        pending_launch_config: QUEUED_CONFIG
+      })
+    ])
+
+    // Hold the q1 launch open so a second launchNextQueuedTickets call overlaps the
+    // first loop. With the per-project guard, the second call sets a rerun flag and
+    // returns instead of racing a concurrent drain that would launch q2 too.
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    autoLaunchMocks.autoLaunchTicket.mockImplementation(async (ticket: { id: string }) => {
+      if (ticket.id === 'q1') await gate
+      const map = new Map(useKanbanStore.getState().tickets)
+      const arr = (map.get(PROJECT_ID) ?? []).map((t) =>
+        t.id === ticket.id ? { ...t, column: 'in_progress' as KanbanTicketColumn, pending_launch_config: null } : t
+      )
+      map.set(PROJECT_ID, arr)
+      useKanbanStore.setState({ tickets: map })
+    })
+
+    const p1 = launchNextQueuedTickets(PROJECT_ID)
+    const p2 = launchNextQueuedTickets(PROJECT_ID)
+    await p2
+    release()
+    await p1
+
+    // Only the single free slot was filled, by the oldest ticket — the overlapping
+    // second call did not double-launch or exceed the cap.
+    expect(autoLaunchMocks.autoLaunchTicket).toHaveBeenCalledTimes(1)
+    expect(autoLaunchMocks.autoLaunchTicket.mock.calls[0][0].id).toBe('q1')
+  })
+
   it('launches a queued ticket once its blocker is satisfied', async () => {
     setProject(2)
     const blocked = makeTicket({

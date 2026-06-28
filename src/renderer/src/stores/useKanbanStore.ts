@@ -1644,6 +1644,13 @@ export const useKanbanStore = create<KanbanState>()(
           void import('./useSessionStore').then(({ useSessionStore }) => {
             useSessionStore.getState().setTicketActiveView(ticketId, null)
           })
+
+          // Deleting a running ticket frees a worktree slot (and unblocks any
+          // dependents it gated) without a column move — drive the launcher so a
+          // queued chain can take the slot. No-op for uncapped projects.
+          void import('../lib/worktree-concurrency').then(({ launchNextQueuedTickets }) =>
+            launchNextQueuedTickets(projectId).catch(() => {})
+          )
         } catch (err) {
           // Revert on failure
           set((state) => {
@@ -1726,6 +1733,13 @@ export const useKanbanStore = create<KanbanState>()(
             }
           })
 
+          // The ticket left the source board — if it was running there, a slot just
+          // freed. Drive the source project's launcher so its queue advances. No-op
+          // for uncapped projects.
+          void import('../lib/worktree-concurrency').then(({ launchNextQueuedTickets }) =>
+            launchNextQueuedTickets(sourceProjectId).catch(() => {})
+          )
+
           return updated
         } catch (err) {
           // Revert on failure
@@ -1766,6 +1780,13 @@ export const useKanbanStore = create<KanbanState>()(
           set((state) => {
             return { dependencyMap: removeDependencyLinksForTicket(state.dependencyMap, ticketKey(projectId, ticketId)) }
           })
+
+          // Archiving a running ticket frees a worktree slot (and unblocks any
+          // dependents it gated), but there's no column move to trigger the queue —
+          // so drive the concurrency launcher here. No-op for uncapped projects.
+          void import('../lib/worktree-concurrency').then(({ launchNextQueuedTickets }) =>
+            launchNextQueuedTickets(projectId).catch(() => {})
+          )
         } catch (err) {
           // Revert on failure
           set((state) => {
@@ -1959,7 +1980,15 @@ export const useKanbanStore = create<KanbanState>()(
           // When a ticket moves to done (or review, if that's the trigger), check if any dependents can be auto-launched
           const { useSettingsStore } = await import('./useSettingsStore')
           const { isBlockerSatisfied } = await import('../lib/blocker-utils')
+          const { getMaxParallelWorktrees, launchNextQueuedTickets } = await import(
+            '../lib/worktree-concurrency'
+          )
           const triggerColumn = useSettingsStore.getState().followUpTriggerColumn
+          // Capped projects route EVERY auto-launch (dependency-ready AND
+          // concurrency-queued) through the single serialized launchNextQueuedTickets
+          // call below — so a dependency launch and a freed-slot launch can't race and
+          // blow past the cap. Uncapped projects keep the direct dependency launch.
+          const capped = getMaxParallelWorktrees(projectId) > 0
           if (
             column === 'done' ||
             (triggerColumn === 'review' && column === 'review' && movedTicket?.mode === 'build')
@@ -1981,7 +2010,9 @@ export const useKanbanStore = create<KanbanState>()(
               }
               if (allSatisfied) {
                 const depTicket = findTicketByRef(allTickets, parseTicketKey(depKey))
-                if (depTicket?.pending_launch_config) {
+                // Capped projects defer to launchNextQueuedTickets (below) so the cap
+                // is honored; only uncapped projects launch the dependent directly.
+                if (!capped && depTicket?.pending_launch_config) {
                   // Auto-launch the dependent using its own pending_launch_config
                   // (worktree `new`/`existing` exactly as it was queued).
                   import('../lib/auto-launch')
@@ -1996,17 +2027,13 @@ export const useKanbanStore = create<KanbanState>()(
             }
           }
 
-          // A running worktree left In Progress → a slot may have freed. Start the
-          // next concurrency-queued ticket (respects the project's max-parallel cap).
-          if (movedTicket?.column === 'in_progress' && column !== 'in_progress') {
-            import('../lib/worktree-concurrency')
-              .then(({ launchNextQueuedTickets }) =>
-                launchNextQueuedTickets(projectId).catch((err) => {
-                  console.error('Concurrency dequeue failed for project:', projectId, err)
-                })
-              )
-              .catch(() => {})
-          }
+          // Drive the serialized launcher on EVERY move (no-op for uncapped projects).
+          // It covers both triggers at once: a freed slot (a ticket left In Progress)
+          // and a dependent becoming ready (a blocker reached its trigger column),
+          // launching queued tickets oldest-first up to the cap.
+          launchNextQueuedTickets(projectId).catch((err) => {
+            console.error('Concurrency dequeue failed for project:', projectId, err)
+          })
 
           // (Re)arm the settle pipeline for build tickets entering Review.
           // armSettleTimers picks Strict Verify (D1) when Feature A is on, else the
