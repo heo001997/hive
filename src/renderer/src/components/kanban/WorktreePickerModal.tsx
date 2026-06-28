@@ -38,6 +38,7 @@ import { opencodeApi } from '@/api/opencode-api'
 import { dbApi } from '@/api/db-api'
 import { terminalApi } from '@/api/terminal-api'
 import { gitApi } from '@/api/git-api'
+import { worktreeApi } from '@/api/worktree-api'
 import { startHivePromptTelemetry } from '@/lib/hive-enterprise-telemetry'
 import type { KanbanTicket, Session } from '../../../../main/db/types'
 import { canonicalizeTicketTitle } from '@shared/types/branch-utils'
@@ -196,6 +197,10 @@ export function WorktreePickerModal({
   const [autoApproveReview, setAutoApproveReview] = useState(false)
   const [moveChain, setMoveChain] = useState(false)
   const [autoApprovePlan, setAutoApprovePlan] = useState(false)
+  // When reusing an existing worktree, create a fresh ticket-named branch off a
+  // chosen base (default branch by default) so this ticket's commits don't pile
+  // onto whatever the worktree was last left on.
+  const [createNewBranch, setCreateNewBranch] = useState(true)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -314,9 +319,11 @@ export function WorktreePickerModal({
   const showChainOption = chainTodoTickets.length > 0
 
   // ── Lazy branch loading ────────────────────────────────────────
+  // Needed by both the New-worktree source picker and the reuse base picker.
   useEffect(() => {
+    const needsBranches = !isConnectionMode && (isNewWorktree || !!selectedWorktreeId)
     // branches.length guard: only fetch once per modal-open cycle (reset clears branches on close)
-    if (!isNewWorktree || !project?.path || branches.length > 0) return
+    if (!needsBranches || !project?.path || branches.length > 0) return
     setBranchesLoading(true)
     gitApi
       .listBranchesWithStatus(project.path)
@@ -334,7 +341,7 @@ export function WorktreePickerModal({
       })
       .finally(() => setBranchesLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isNewWorktree, project?.path])
+  }, [isNewWorktree, selectedWorktreeId, isConnectionMode, project?.path])
 
   // ── Reset state when modal opens ────────────────────────────────
   useEffect(() => {
@@ -349,6 +356,7 @@ export function WorktreePickerModal({
       setGoalCriteria('')
       setAutoApproveReview(ticket.auto_approve_review)
       setMoveChain(false)
+      setCreateNewBranch(true)
       // Seed the per-ticket auto-approve toggle from the global default.
       setAutoApprovePlan(useSettingsStore.getState().autoApprovePlanEnabled)
       setSelectedModel(null)
@@ -415,12 +423,45 @@ export function WorktreePickerModal({
   const handleSelectWorktree = useCallback((wtId: string) => {
     setSelectedWorktreeId(wtId)
     setIsNewWorktree(false)
+    // Reuse base defaults to the repo default branch, independent of the
+    // last-used New-worktree source branch.
+    setSourceBranch(null)
   }, [])
 
   const handleSelectNewWorktree = useCallback(() => {
     setSelectedWorktreeId(null)
     setIsNewWorktree(true)
-  }, [])
+    setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
+  }, [projectId])
+
+  // ── Create a fresh branch on a reused worktree ──────────────────
+  // Branches off the chosen base (default branch, the worktree's own branch, or
+  // any other ref) onto a ticket-named branch so this ticket starts clean.
+  // Returns false (and toasts) on failure so the caller can abort before
+  // creating a session on the wrong branch.
+  const branchWorktreeFromBase = useCallback(
+    async (worktreeId: string, baseBranch: string): Promise<boolean> => {
+      const wt = Array.from(useWorktreeStore.getState().worktreesByProject.values())
+        .flat()
+        .find((w) => w.id === worktreeId)
+      if (!wt?.path) return true
+      const result = await worktreeApi.branchFromBase({
+        worktreeId,
+        worktreePath: wt.path,
+        ticketTitle: ticket.title,
+        baseBranch
+      })
+      if (!result.success) {
+        toast.error(result.error || 'Failed to create the new branch')
+        return false
+      }
+      if (result.branch) {
+        useWorktreeStore.getState().updateWorktreeBranch(worktreeId, result.branch)
+      }
+      return true
+    },
+    [ticket.title]
+  )
 
   // ── Send flow ───────────────────────────────────────────────────
   const goalCriteriaValid = !goalMode || goalCriteria.trim().length > 0
@@ -632,7 +673,12 @@ export function WorktreePickerModal({
           codexFastMode,
           goalMode,
           goalSuccessCriteria: goalMode ? goalCriteria.trim() : null,
-          autoApprovePlan
+          autoApprovePlan,
+          // Reused-worktree only: branch off this base at launch time. Omitted
+          // (reuse as-is) for new worktrees or when the toggle is off.
+          ...(!isNewWorktree && createNewBranch
+            ? { reuseBranchBase: sourceBranch ?? defaultBranchName }
+            : {})
         }
 
         const sortOrder = useKanbanStore
@@ -686,6 +732,18 @@ export function WorktreePickerModal({
           toast.error('No worktree selected')
           setIsSending(false)
           return
+        }
+
+        // Reusing an existing worktree: branch off the chosen base first.
+        if (!isNewWorktree && createNewBranch) {
+          const checkedOut = await branchWorktreeFromBase(
+            worktreeId,
+            sourceBranch ?? defaultBranchName
+          )
+          if (!checkedOut) {
+            setIsSending(false)
+            return
+          }
         }
 
         // If the worktree already has sessions, auto-attach the most recent one
@@ -745,6 +803,19 @@ export function WorktreePickerModal({
         toast.error('No worktree selected')
         setIsSending(false)
         return
+      }
+
+      // Reusing an existing worktree: branch off the chosen base first so this
+      // ticket's work lands on a fresh, ticket-named branch.
+      if (!isNewWorktree && createNewBranch) {
+        const checkedOut = await branchWorktreeFromBase(
+          worktreeId,
+          sourceBranch ?? defaultBranchName
+        )
+        if (!checkedOut) {
+          setIsSending(false)
+          return
+        }
       }
 
       // Create session in the selected worktree
@@ -1019,7 +1090,9 @@ export function WorktreePickerModal({
     connectionId,
     moveChain,
     chainTodoTickets,
-    dependencyMap
+    dependencyMap,
+    createNewBranch,
+    branchWorktreeFromBase
   ])
 
   // ── Mode toggle chip ────────────────────────────────────────────
@@ -1030,9 +1103,9 @@ export function WorktreePickerModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         data-testid="worktree-picker-modal"
-        className="sm:max-w-[520px] overflow-visible"
+        className="sm:max-w-[520px] flex flex-col overflow-hidden"
       >
-        <DialogHeader className="space-y-2.5 pb-1">
+        <DialogHeader className="space-y-2.5 pb-1 shrink-0">
           <DialogTitle className="text-base">
             {saveConfigOnly
               ? 'Pre-configure Launch'
@@ -1098,7 +1171,7 @@ export function WorktreePickerModal({
           )}
         </DialogHeader>
 
-        <div className="space-y-5">
+        <div className="space-y-5 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
           {/* ── Worktree list (hidden in connection mode) ────── */}
           {!isConnectionMode && (
             <div className="space-y-2">
@@ -1245,6 +1318,109 @@ export function WorktreePickerModal({
                   )
                 })}
               </div>
+            </div>
+          )}
+
+          {/* ── Create a fresh branch off a chosen base when reusing ── */}
+          {!isConnectionMode && !isNewWorktree && selectedWorktreeId && (
+            <div
+              className="rounded-md border border-border/50 bg-muted/20"
+              data-testid="checkout-new-branch-row"
+            >
+              <div className="flex items-start gap-2.5 px-3 py-2.5">
+                <Checkbox
+                  checked={createNewBranch}
+                  onCheckedChange={(v) => setCreateNewBranch(v === true)}
+                  data-testid="checkout-new-branch-checkbox"
+                  className="mt-0.5"
+                  aria-label="Create a new branch when reusing this worktree"
+                />
+                <span
+                  className="text-sm text-foreground cursor-pointer select-none"
+                  onClick={() => setCreateNewBranch((v) => !v)}
+                >
+                  Check out a new branch for this ticket
+                  <span className="block text-xs text-muted-foreground">
+                    Creates a fresh ticket-named branch off the base below so this ticket&apos;s
+                    work doesn&apos;t pile onto the worktree&apos;s current branch. Uncheck to keep
+                    the current branch.
+                  </span>
+                </span>
+              </div>
+
+              {createNewBranch && (
+                <div className="flex items-center gap-2 px-3.5 py-2 border-t border-border/40">
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">from</span>
+                  <Popover open={branchPopoverOpen} onOpenChange={setBranchPopoverOpen}>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        data-testid="reuse-base-branch-trigger"
+                        className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md border border-border/60 hover:bg-muted/30 transition-colors"
+                      >
+                        <GitBranch className="h-3 w-3 text-muted-foreground" />
+                        <span className="truncate max-w-[180px]">
+                          {sourceBranch ?? defaultBranchName}
+                        </span>
+                        <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-72 p-0" align="start">
+                      <div className="p-2 border-b border-border/40">
+                        <div className="relative">
+                          <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                          <Input
+                            placeholder="Filter branches..."
+                            value={branchFilter}
+                            onChange={(e) => setBranchFilter(e.target.value)}
+                            className="pl-7 h-8 text-xs"
+                            autoFocus
+                          />
+                        </div>
+                      </div>
+                      <div className="max-h-[200px] overflow-y-auto py-1">
+                        {branchesLoading ? (
+                          <div className="flex items-center justify-center py-4">
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          </div>
+                        ) : filteredBranches.length === 0 ? (
+                          <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+                            No branches found
+                          </div>
+                        ) : (
+                          filteredBranches.map((branch) => (
+                            <button
+                              type="button"
+                              key={`${branch.name}-${branch.isRemote}`}
+                              data-testid={`reuse-base-branch-${branch.name}`}
+                              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-muted/30 transition-colors"
+                              onClick={() => {
+                                setSourceBranch(branch.name)
+                                setBranchPopoverOpen(false)
+                                setBranchFilter('')
+                              }}
+                            >
+                              <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" />
+                              <span className="flex-1 truncate">{branch.name}</span>
+                              {branch.isRemote && (
+                                <span className="text-[10px] text-muted-foreground">remote</span>
+                              )}
+                              {branch.isCheckedOut && (
+                                <span className="text-[10px] text-primary">active</span>
+                              )}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                  {worktreeNamePreview && (
+                    <span className="ml-auto text-xs text-muted-foreground font-mono truncate max-w-[180px]">
+                      {worktreeNamePreview}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -1457,7 +1633,7 @@ export function WorktreePickerModal({
           )}
         </div>
 
-        <DialogFooter className="pt-1">
+        <DialogFooter className="pt-1 shrink-0">
           <Button
             type="button"
             variant="outline"

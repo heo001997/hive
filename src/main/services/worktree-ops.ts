@@ -11,7 +11,7 @@ import { getRuntime as getDbRuntime } from '../effect/db/runtime'
 import { Db } from '../effect/db/service'
 import { type BreedType } from './breed-names'
 import { emitGitBranchChanged } from './git-events'
-import { createGitService, isAutoNamedBranch } from './git-service'
+import { canonicalizeBranchName, createGitService, isAutoNamedBranch } from './git-service'
 import { createLogger } from './logger'
 import { normalizeWorktreePath } from './path-utils'
 import { assignPort, releasePort } from './port-registry'
@@ -53,6 +53,22 @@ export interface RenameBranchParams {
   worktreePath: string
   oldBranch: string
   newBranch: string
+}
+
+export interface BranchFromBaseParams {
+  worktreeId: string
+  worktreePath: string
+  /** Raw ticket title — canonicalized into the new branch name backend-side. */
+  ticketTitle: string
+  /** Ref to branch off (a branch name like `main`, or `origin/main`). */
+  baseBranch: string
+}
+
+export interface BranchFromBaseResult {
+  success: boolean
+  /** The branch that was created (may carry a -2/-3 collision suffix). */
+  branch?: string
+  error?: string
 }
 
 export interface CreateFromBranchParams {
@@ -501,6 +517,91 @@ export const renameWorktreeBranchOpEffect = (
     'renameWorktreeBranchOp'
   )
 
+/**
+ * Reusing a worktree: create a fresh, ticket-named branch off a chosen base
+ * (default branch, the worktree's own branch, or any other ref) and check it
+ * out, so this ticket's work doesn't pile onto whatever the worktree was last
+ * left on. The branch is named after the ticket title (with -2/-3 collision
+ * suffixes) and `branch_renamed` is set so the session-title auto-rename leaves
+ * this deliberate name alone.
+ */
+export const branchWorktreeFromBaseOpEffect = (
+  params: BranchFromBaseParams
+): Effect.Effect<BranchFromBaseResult, never, Db> =>
+  Effect.gen(function* () {
+    const base = canonicalizeBranchName(params.ticketTitle)
+    if (!base) {
+      return { success: false, error: 'Could not derive a branch name from the ticket title' }
+    }
+    if (!params.baseBranch) {
+      return { success: false, error: 'No base branch to branch off' }
+    }
+
+    log.info('Branching reused worktree off base', {
+      worktreePath: params.worktreePath,
+      base,
+      baseBranch: params.baseBranch
+    })
+
+    const gitService = createGitService(params.worktreePath)
+
+    // Pick an available name (append -2, -3, ... on collision) then create it
+    // off the chosen base and check it out.
+    const newBranch = yield* Effect.tryPromise(async () => {
+      let target = base
+      if (await gitService.branchExists(target)) {
+        const maxSuffix = 9999
+        let suffix = 2
+        while (suffix <= maxSuffix) {
+          const candidate = `${base}-${suffix}`
+          if (!(await gitService.branchExists(candidate))) {
+            target = candidate
+            break
+          }
+          suffix += 1
+        }
+        if (suffix > maxSuffix) {
+          throw new Error('All branch name variants are taken')
+        }
+      }
+      const result = await gitService.createAndCheckoutBranch(target, params.baseBranch)
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to create the new branch')
+      }
+      return target
+    })
+
+    const worktree = yield* worktreeRepo.get(params.worktreeId)
+    const nameMatchesBranch = worktree?.name === worktree?.branch_name
+    const isAutoName = worktree ? isAutoNamedBranch(worktree.name.toLowerCase()) : false
+    const shouldUpdateName = nameMatchesBranch || isAutoName
+
+    yield* worktreeRepo.update(params.worktreeId, {
+      branch_name: newBranch,
+      branch_renamed: 1,
+      ...(shouldUpdateName
+        ? { name: getImportedWorktreeName(newBranch, params.worktreePath) }
+        : {})
+    })
+
+    emitWorktreeBranchRenamed({
+      worktreeId: params.worktreeId,
+      newBranch,
+      worktreePath: params.worktreePath
+    })
+    emitGitBranchChanged({ worktreePath: params.worktreePath })
+
+    return { success: true, branch: newBranch }
+  }).pipe(
+    Effect.catchAll((e) => {
+      log.error(
+        'branchWorktreeFromBaseOp failed',
+        e instanceof Error ? e : new Error(errMessage(e))
+      )
+      return Effect.succeed({ success: false, error: errMessage(e) })
+    })
+  )
+
 export const createWorktreeFromBranchOpEffect = (
   params: CreateFromBranchParams
 ): Effect.Effect<WorktreeResult, never, Db> =>
@@ -702,6 +803,20 @@ export function renameWorktreeBranchOp(
 export function renameWorktreeBranchOp(...args: LegacyOrCurrent<RenameBranchParams>): Promise<SimpleResult> {
   const { db, params } = parseArgs(args)
   return runWithOptionalDb(renameWorktreeBranchOpEffect(params), db)
+}
+
+export function branchWorktreeFromBaseOp(
+  params: BranchFromBaseParams
+): Promise<BranchFromBaseResult>
+export function branchWorktreeFromBaseOp(
+  db: DatabaseService,
+  params: BranchFromBaseParams
+): Promise<BranchFromBaseResult>
+export function branchWorktreeFromBaseOp(
+  ...args: LegacyOrCurrent<BranchFromBaseParams>
+): Promise<BranchFromBaseResult> {
+  const { db, params } = parseArgs(args)
+  return runWithOptionalDb(branchWorktreeFromBaseOpEffect(params), db)
 }
 
 export function createWorktreeFromBranchOp(

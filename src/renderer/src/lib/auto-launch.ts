@@ -14,6 +14,7 @@ import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { opencodeApi } from '@/api/opencode-api'
 import { dbApi } from '@/api/db-api'
 import { terminalApi } from '@/api/terminal-api'
+import { worktreeApi } from '@/api/worktree-api'
 import { startHivePromptTelemetry } from '@/lib/hive-enterprise-telemetry'
 import { autoPinBaseWorktree } from '@/lib/auto-pin'
 
@@ -36,6 +37,11 @@ interface PendingLaunchConfig {
   goalMode: boolean
   goalSuccessCriteria: string | null
   autoApprovePlan: boolean
+  /**
+   * Reused-worktree only: when set, branch off this base ref onto a fresh
+   * ticket-named branch before launching. Absent = reuse the worktree as-is.
+   */
+  reuseBranchBase?: string
 }
 
 function wrapGoalPrompt(prompt: string, criteria: string): string {
@@ -114,6 +120,33 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
       worktreeId = result.worktree.id
     } else {
       worktreeId = config.worktree.worktreeId
+
+      // Reusing an existing worktree: branch off the chosen base onto a fresh
+      // ticket-named branch before the session starts.
+      if (config.reuseBranchBase) {
+        const reusedWorktree = Array.from(
+          useWorktreeStore.getState().worktreesByProject.values()
+        )
+          .flat()
+          .find((w) => w.id === worktreeId)
+        if (reusedWorktree?.path) {
+          const branchResult = await worktreeApi.branchFromBase({
+            worktreeId,
+            worktreePath: reusedWorktree.path,
+            ticketTitle: ticket.title,
+            baseBranch: config.reuseBranchBase
+          })
+          if (!branchResult.success) {
+            toast.error(
+              `Auto-launch failed: ${branchResult.error || 'Could not create the new branch'}`
+            )
+            return
+          }
+          if (branchResult.branch) {
+            useWorktreeStore.getState().updateWorktreeBranch(worktreeId, branchResult.branch)
+          }
+        }
+      }
     }
 
     // 2. Create session

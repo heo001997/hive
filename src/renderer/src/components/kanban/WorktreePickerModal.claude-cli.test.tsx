@@ -375,6 +375,8 @@ describe('WorktreePickerModal Claude CLI launch', () => {
     resetRendererRpcClientForTests()
     request = vi.fn(async (method: string) => {
       if (method === 'terminalOps.createClaudeCli') return { success: true }
+      if (method === 'worktreeOps.branchFromBase')
+        return { success: true, branch: 'launch-claude-cli' }
       return null
     })
     setRendererRpcClient({ request, subscribe: vi.fn() })

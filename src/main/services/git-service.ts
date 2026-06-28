@@ -357,6 +357,17 @@ export class GitService {
     return gitEffectService.renameBranch(this.repoPath, worktreePath, oldBranch, newBranch)
   }
 
+  /**
+   * Create a new branch and check it out in the worktree. Branches off
+   * `startPoint` when given (any ref), otherwise off the current HEAD.
+   */
+  async createAndCheckoutBranch(
+    newBranch: string,
+    startPoint?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    return gitEffectService.createAndCheckoutBranch(this.repoPath, newBranch, startPoint)
+  }
+
   async listBranchesWithStatus(): Promise<
     Array<{
       name: string
