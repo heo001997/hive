@@ -11,6 +11,7 @@ import {
   DEFAULT_STRICT_VERIFY_PROMPT,
   type CompletionCheckProvider
 } from '@shared/types/completion'
+import { DEFAULT_CONTEXT_TEMPLATE } from '@/lib/worktree-context-constants'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { systemApi } from '@/api/system-api'
 import { dbApi } from '@/api/db-api'
@@ -225,6 +226,13 @@ export interface AppSettings {
   autoApprovePlanEnabled: boolean
   autoApprovePlanMatchText: string
 
+  // Worktree context injection (Claude Code CLI). When enabled, a claude-code-cli
+  // ticket launch holds the CLI spawn until the worktree's setup script resolves,
+  // then injects the worktree's live context (port, URL, branch, notes, setup tail,
+  // env) into the first prompt via the editable token template below.
+  injectWorktreeContextEnabled: boolean
+  worktreeContextTemplate: string
+
   // Branding (top bar)
   /** Custom logo shown in the top-left of the title bar. Data URL (base64) of a small image; null → default Hive logo. */
   customLogoDataUrl: string | null
@@ -339,6 +347,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   codexJsonlResetPerSession: true,
   autoApprovePlanEnabled: false,
   autoApprovePlanMatchText: 'bypass permissions',
+  injectWorktreeContextEnabled: false,
+  worktreeContextTemplate: DEFAULT_CONTEXT_TEMPLATE,
   customLogoDataUrl: null,
   customAppName: '',
   _boardModeMigratedToStickyTab: false
@@ -564,6 +574,8 @@ function extractSettings(state: SettingsState): AppSettings {
     codexJsonlResetPerSession: state.codexJsonlResetPerSession,
     autoApprovePlanEnabled: state.autoApprovePlanEnabled,
     autoApprovePlanMatchText: state.autoApprovePlanMatchText,
+    injectWorktreeContextEnabled: state.injectWorktreeContextEnabled,
+    worktreeContextTemplate: state.worktreeContextTemplate,
     customLogoDataUrl: state.customLogoDataUrl,
     customAppName: state.customAppName,
     _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab
@@ -955,6 +967,8 @@ export const useSettingsStore = create<SettingsState>()(
         codexJsonlResetPerSession: state.codexJsonlResetPerSession,
         autoApprovePlanEnabled: state.autoApprovePlanEnabled,
         autoApprovePlanMatchText: state.autoApprovePlanMatchText,
+        injectWorktreeContextEnabled: state.injectWorktreeContextEnabled,
+        worktreeContextTemplate: state.worktreeContextTemplate,
         customLogoDataUrl: state.customLogoDataUrl,
         customAppName: state.customAppName,
         _boardModeMigratedToStickyTab: state._boardModeMigratedToStickyTab

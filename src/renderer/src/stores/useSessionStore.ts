@@ -57,6 +57,19 @@ export interface PendingPlan {
   toolUseID: string
 }
 
+// Transient launch gate (claude-code-cli context injection). Holds the CLI spawn
+// while the worktree's setup script resolves. `awaiting` → the mount path renders
+// a waiting overlay and does a promptless create; `blocked` → setup failed, the
+// overlay offers "Launch anyway" with the pre-composed `launchAnywayPrompt`;
+// `ready` → the gate is cleared once the prompt is delivered. Memory-only.
+export interface LaunchGateEntry {
+  state: 'awaiting' | 'blocked' | 'ready'
+  worktreeId: string | null
+  error?: string
+  /** Prompt to enqueue + deliver when the user clicks "Launch anyway" (blocked). */
+  launchAnywayPrompt?: string
+}
+
 export interface CodexThreadGoal {
   threadId: string
   objective: string
@@ -104,6 +117,8 @@ interface SessionState {
   autoApprovePlanBySession: Map<string, boolean>
   // Pending initial messages - keyed by session ID (e.g., code review prompts)
   pendingMessages: Map<string, string>
+  // Transient claude-code-cli launch gates - keyed by session ID (memory only)
+  launchGate: Map<string, LaunchGateEntry>
   // Pending plan approvals - keyed by session ID (from ExitPlanMode blocking tool)
   pendingPlans: Map<string, PendingPlan>
   // Pending follow-up messages - keyed by session ID, ordered queue of messages to auto-send
@@ -210,6 +225,8 @@ interface SessionState {
   setClaudeSessionId: (sessionId: string, claudeSessionId: string | null) => void
   setPendingMessage: (sessionId: string, message: string) => void
   dequeuePendingMessage: (sessionId: string) => string | null
+  setLaunchGate: (sessionId: string, entry: LaunchGateEntry) => void
+  clearLaunchGate: (sessionId: string) => void
   requeuePendingMessage: (sessionId: string, message: string) => void
   consumePendingMessage: (sessionId: string) => string | null
   setPendingFollowUpMessages: (sessionId: string, messages: string[]) => void
@@ -337,6 +354,7 @@ export const useSessionStore = create<SessionState>()(
       superArmedBySession: new Map(),
       autoApprovePlanBySession: new Map(),
       pendingMessages: new Map(),
+      launchGate: new Map(),
       pendingPlans: new Map(),
       pendingFollowUpMessages: new Map(),
       codexGoalsBySession: new Map(),
@@ -1696,6 +1714,25 @@ export const useSessionStore = create<SessionState>()(
       // Consume (get and remove) a pending message for a session
       consumePendingMessage: (sessionId: string): string | null => {
         return get().dequeuePendingMessage(sessionId)
+      },
+
+      // Set/replace the transient launch gate for a session
+      setLaunchGate: (sessionId: string, entry: LaunchGateEntry) => {
+        set((state) => {
+          const newMap = new Map(state.launchGate)
+          newMap.set(sessionId, entry)
+          return { launchGate: newMap }
+        })
+      },
+
+      // Remove the launch gate once the prompt has been delivered (or abandoned)
+      clearLaunchGate: (sessionId: string) => {
+        set((state) => {
+          if (!state.launchGate.has(sessionId)) return state
+          const newMap = new Map(state.launchGate)
+          newMap.delete(sessionId)
+          return { launchGate: newMap }
+        })
       },
 
       // Set follow-up messages queue for a session (ordered, auto-sent after each idle)

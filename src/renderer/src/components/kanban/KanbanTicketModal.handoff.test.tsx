@@ -309,7 +309,17 @@ function setupStores(): {
   )
   const setActiveSession = vi.fn()
   const relinkTicketsForHandoff = vi.fn(async () => undefined)
-  const setPendingMessage = vi.fn()
+  // Mirror the real single-queue: setPendingMessage enqueues, dequeuePendingMessage
+  // claims, so the handoff prompt round-trips to createClaudeCli's pendingPrompt.
+  const pendingQueue = new Map<string, string>()
+  const setPendingMessage = vi.fn((sessionId: string, message: string) => {
+    pendingQueue.set(sessionId, message)
+  })
+  const dequeuePendingMessage = vi.fn((sessionId: string): string | null => {
+    const message = pendingQueue.get(sessionId)
+    pendingQueue.delete(sessionId)
+    return message ?? null
+  })
 
   useSettingsStore.setState({
     availableAgentSdks: { opencode: true, claude: true, codex: true },
@@ -371,7 +381,7 @@ function setupStores(): {
     createSession,
     setSessionMode: vi.fn(async () => undefined),
     setPendingMessage,
-    dequeuePendingMessage: vi.fn(),
+    dequeuePendingMessage,
     clearPendingPlan: vi.fn(),
     requestSessionMount: vi.fn(),
     releaseSessionMount: vi.fn(),

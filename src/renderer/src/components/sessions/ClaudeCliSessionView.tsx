@@ -15,9 +15,11 @@ import { useTelegramStore } from '@/stores/useTelegramStore'
 import { useClaudeCliSessionPortal } from '@/contexts/ClaudeCliSessionPortalContext'
 import { QuestionPrompt } from './QuestionPrompt'
 import { ClaudeCliEndedOverlay } from './ClaudeCliEndedOverlay'
+import { ClaudeCliAwaitingSetupOverlay } from './ClaudeCliAwaitingSetupOverlay'
 import { HandoffSplitButton } from './HandoffSplitButton'
 import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoffSelection'
 import { lastSendMode } from '@/lib/message-send-times'
+import { isPlanLike } from '@/lib/constants'
 import { bumpWorktreeLastMessage } from '@/lib/last-message-utils'
 import { startBackgroundSessionPrompt } from '@/lib/backgroundSessionStart'
 import { parsePlanMenu, findMatchingOption, buildSelectionKeystrokes } from '@/lib/plan-menu'
@@ -300,6 +302,10 @@ export function ClaudeCliSessionView({
   void portalRevision
   const isMountedInTicketModal = !!getTarget(sessionId)
   const sessionRecord = useSessionStore((state) => state.getSessionById(sessionId))
+  // Transient launch gate (claude-code-cli worktree-context injection). While the
+  // gate is awaiting/blocked the mount path does a promptless create and this view
+  // renders the waiting/error overlay instead of delivering a prompt.
+  const launchGate = useSessionStore((state) => state.launchGate.get(sessionId))
 
   // Resolve the effective auto-approve setting for THIS session:
   //   per-session override (live header toggle) ?? ticket flag ?? global default.
@@ -396,7 +402,15 @@ export function ClaudeCliSessionView({
   }, [isVisible, sessionId, terminalKey])
 
   const createClaudeTerminal = useCallback(async () => {
-    const pendingPrompt = useSessionStore.getState().dequeuePendingMessage(sessionId)
+    // Respect the launch gate's single-queue ownership: while a gated launch is
+    // still awaiting setup (or blocked on a failure), do NOT dequeue. We issue a
+    // promptless create so the PTY is live behind the overlay; the gating launch
+    // site delivers the transformed prompt once setup resolves.
+    const gateState = useSessionStore.getState().launchGate.get(sessionId)?.state
+    const gated = gateState === 'awaiting' || gateState === 'blocked'
+    const pendingPrompt = gated
+      ? null
+      : useSessionStore.getState().dequeuePendingMessage(sessionId)
     try {
       const envelope = await terminalApi.createClaudeCli(sessionId, {
         pendingPrompt
@@ -413,6 +427,23 @@ export function ClaudeCliSessionView({
       throw error
     }
   }, [sessionId])
+
+  // "Launch anyway" after a blocked (setup-failed) gate: enqueue the pre-composed
+  // failure prompt, flip the gate to ready, then deliver it to the live PTY.
+  const handleLaunchAnyway = useCallback(() => {
+    const store = useSessionStore.getState()
+    const gate = store.launchGate.get(sessionId)
+    if (gate?.launchAnywayPrompt) {
+      store.setPendingMessage(sessionId, gate.launchAnywayPrompt)
+    }
+    store.setLaunchGate(sessionId, { state: 'ready', worktreeId: gate?.worktreeId ?? null })
+    useWorktreeStatusStore
+      .getState()
+      .setSessionStatus(sessionId, isPlanLike(sessionRecord?.mode) ? 'planning' : 'working')
+    void createClaudeTerminal().finally(() => {
+      useSessionStore.getState().clearLaunchGate(sessionId)
+    })
+  }, [sessionId, sessionRecord?.mode, createClaudeTerminal])
 
   useEffect(() => {
     return terminalApi.onClaudeSessionId(sessionId, (claudeSessionId) => {
@@ -681,6 +712,14 @@ export function ClaudeCliSessionView({
             </div>
           </div>
         )}
+        {launchGate &&
+          (launchGate.state === 'awaiting' || launchGate.state === 'blocked') && (
+            <ClaudeCliAwaitingSetupOverlay
+              state={launchGate.state}
+              error={launchGate.error}
+              onLaunchAnyway={handleLaunchAnyway}
+            />
+          )}
         {ended && <ClaudeCliEndedOverlay onRestart={handleRestart} />}
       </div>
     </div>

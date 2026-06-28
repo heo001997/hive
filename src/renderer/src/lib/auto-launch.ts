@@ -17,6 +17,11 @@ import { terminalApi } from '@/api/terminal-api'
 import { worktreeApi } from '@/api/worktree-api'
 import { startHivePromptTelemetry } from '@/lib/hive-enterprise-telemetry'
 import { autoPinBaseWorktree } from '@/lib/auto-pin'
+import {
+  prepareWorktreeContextLaunch,
+  type WorktreeContextScanTarget
+} from '@/lib/worktree-context'
+import { DEFAULT_CONTEXT_TEMPLATE } from '@/lib/worktree-context-constants'
 
 type AutoLaunchMode = 'build' | 'plan' | 'super-plan'
 
@@ -42,6 +47,10 @@ interface PendingLaunchConfig {
    * ticket-named branch before launching. Absent = reuse the worktree as-is.
    */
   reuseBranchBase?: string
+  /** claude-code-cli: gate the spawn on setup + inject the worktree context. */
+  injectContext?: boolean
+  /** claude-code-cli: editable token template used when injectContext is on. */
+  contextTemplate?: string
 }
 
 function wrapGoalPrompt(prompt: string, criteria: string): string {
@@ -90,6 +99,10 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
   const configGoalMode = config.goalMode === true
   const configGoalSuccessCriteria = config.goalSuccessCriteria?.trim() || null
   const configAutoApprovePlan = config.autoApprovePlan === true
+  // When inject is on for claude-code-cli we defer the spawn until setup resolves:
+  // don't enqueue the raw prompt at createSession, hold the sidebar status, and run
+  // the gated flow (await setup → scan → inject → enqueue → spawn) below.
+  const willGate = config.sdk === 'claude-code-cli' && config.injectContext === true
 
   const project = useProjectStore.getState().projects.find((p) => p.id === ticket.project_id)
   if (!project) {
@@ -160,7 +173,9 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     const createOptions = {
       autoFocus: false,
       ...(modelOverride ? { modelOverride } : {}),
-      ...(cliPendingPrompt ? { pendingMessage: cliPendingPrompt } : {})
+      // When gating on setup, do NOT enqueue the raw prompt — the injected prompt
+      // is enqueued only after setup resolves (leak-proof, single-queue ownership).
+      ...(cliPendingPrompt && !willGate ? { pendingMessage: cliPendingPrompt } : {})
     }
     const sessionResult = await useSessionStore
       .getState()
@@ -182,9 +197,13 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     userExplicitSendTimes.set(sessionId, Date.now())
     snapshotTokenBaseline(sessionId)
     lastSendMode.set(sessionId, isPlanLike(config.mode) ? 'plan' : 'build')
-    useWorktreeStatusStore
-      .getState()
-      .setSessionStatus(sessionId, isPlanLike(config.mode) ? 'planning' : 'working')
+    // Defer the "working"/"planning" status while gating so the sidebar doesn't
+    // imply the agent is running during the setup wait; set it once setup resolves.
+    if (!willGate) {
+      useWorktreeStatusStore
+        .getState()
+        .setSessionStatus(sessionId, isPlanLike(config.mode) ? 'planning' : 'working')
+    }
 
     // 4. Apply model override
     const effectiveModel = config.model ?? undefined
@@ -212,8 +231,53 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     if (sessionAgentSdk === 'claude-code-cli') {
       if (config.mode === 'super-plan') {
         // Await so the persisted mode is committed before the main process
-        // reads it in buildClaudeCliPtySpawn (createClaudeCli).
+        // reads it in buildClaudeCliPtySpawn (createClaudeCli). Stays BEFORE the gate.
         await useSessionStore.getState().setSessionMode(sessionId, 'plan')
+      }
+
+      // inject ON → nothing was enqueued at createSession: set the gate, wait for
+      // setup, compose the injected prompt, enqueue it, then spawn (the mount path's
+      // promptless create is the harmless loser via single-queue ownership). On
+      // setup failure the gate goes `blocked` and the session view offers "Launch
+      // anyway". Chain members share the head's already-set-up worktree, so
+      // awaitWorktreeSetup resolves instantly for them.
+      if (willGate) {
+        useSessionStore.getState().setLaunchGate(sessionId, { state: 'awaiting', worktreeId })
+        const gateWorktrees = Array.from(
+          useWorktreeStore.getState().worktreesByProject.values()
+        ).flat()
+        const worktreeRow = gateWorktrees.find((w) => w.id === worktreeId)
+        const scanTarget: WorktreeContextScanTarget | null = worktreeRow?.path
+          ? {
+              id: worktreeId,
+              path: worktreeRow.path,
+              branch_name: worktreeRow.branch_name,
+              base_branch:
+                config.worktree.type === 'new' ? config.worktree.sourceBranch : undefined
+            }
+          : null
+        const prepared = await prepareWorktreeContextLaunch({
+          worktreeId,
+          scanTarget,
+          basePrompt: cliPendingPrompt ?? '',
+          template: config.contextTemplate || DEFAULT_CONTEXT_TEMPLATE
+        })
+        if (prepared.status === 'blocked') {
+          // Block: surface the failure + "Launch anyway". Nothing is enqueued, so
+          // there is nothing to requeue — the queue stays empty until the user acts.
+          useSessionStore.getState().setLaunchGate(sessionId, {
+            state: 'blocked',
+            worktreeId,
+            error: prepared.error,
+            launchAnywayPrompt: prepared.prompt
+          })
+          return
+        }
+        useSessionStore.getState().setPendingMessage(sessionId, prepared.prompt)
+        useSessionStore.getState().setLaunchGate(sessionId, { state: 'ready', worktreeId })
+        useWorktreeStatusStore
+          .getState()
+          .setSessionStatus(sessionId, isPlanLike(config.mode) ? 'planning' : 'working')
       }
 
       // Atomically claim the queued prompt before spawning. The session view's
@@ -239,6 +303,10 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
           useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
         }
         throw error
+      } finally {
+        if (willGate) {
+          useSessionStore.getState().clearLaunchGate(sessionId)
+        }
       }
       return
     }

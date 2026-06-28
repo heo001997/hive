@@ -60,6 +60,14 @@ vi.mock('@/lib/toast', () => ({
   }
 }))
 
+const worktreeContextMocks = vi.hoisted(() => ({
+  prepareWorktreeContextLaunch: vi.fn()
+}))
+
+vi.mock('@/lib/worktree-context', () => ({
+  prepareWorktreeContextLaunch: worktreeContextMocks.prepareWorktreeContextLaunch
+}))
+
 vi.mock('@/api/settings-api', () => ({
   settingsApi: {
     detectEditors: vi.fn(),
@@ -544,5 +552,65 @@ describe('WorktreePickerModal Claude CLI launch', () => {
       sdk: 'claude-code-cli'
     })
     expect(request).not.toHaveBeenCalledWith('terminalOps.createClaudeCli', expect.anything())
+  })
+
+  it('gates the worktree spawn on setup and injects the composed prompt when the context toggle is on', async () => {
+    const { createSession } = setupStores()
+    worktreeContextMocks.prepareWorktreeContextLaunch.mockResolvedValue({
+      status: 'done',
+      prompt: 'INJECTED WORKTREE PROMPT'
+    })
+    await renderAndSelectClaudeCli()
+
+    await userEvent.click(screen.getByTestId('model-selector-pick-opus'))
+    await userEvent.click(screen.getByTestId('inject-context-toggle'))
+    await userEvent.click(screen.getByTestId('worktree-item-worktree-1'))
+    await userEvent.click(screen.getByTestId('wt-picker-send-btn'))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', expect.any(Object))
+    )
+    // The raw prompt is NOT enqueued at createSession when gating — only the
+    // injected prompt is delivered, and only after setup resolves.
+    const createOpts = createSession.mock.calls.at(-1)?.[4] as Record<string, unknown> | undefined
+    expect(createOpts).toBeDefined()
+    expect(createOpts).not.toHaveProperty('pendingMessage')
+    expect(worktreeContextMocks.prepareWorktreeContextLaunch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreeId: 'worktree-1',
+        basePrompt: expect.stringContaining('Please implement the following ticket.')
+      })
+    )
+    expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', {
+      sessionId: 'session-1',
+      opts: { pendingPrompt: 'INJECTED WORKTREE PROMPT' }
+    })
+    expect(useSessionStore.getState().launchGate.get('session-1')).toBeUndefined()
+  })
+
+  it('blocks the worktree spawn and records the gate error when setup fails', async () => {
+    worktreeContextMocks.prepareWorktreeContextLaunch.mockResolvedValue({
+      status: 'blocked',
+      prompt: 'BASE\n\nSetup FAILED: boom',
+      error: 'boom'
+    })
+    await renderAndSelectClaudeCli()
+
+    await userEvent.click(screen.getByTestId('model-selector-pick-opus'))
+    await userEvent.click(screen.getByTestId('inject-context-toggle'))
+    await userEvent.click(screen.getByTestId('worktree-item-worktree-1'))
+    await userEvent.click(screen.getByTestId('wt-picker-send-btn'))
+
+    await waitFor(() =>
+      expect(worktreeContextMocks.prepareWorktreeContextLaunch).toHaveBeenCalled()
+    )
+    // Nothing spawned — the gate holds and the session view offers "Launch anyway".
+    expect(request).not.toHaveBeenCalledWith('terminalOps.createClaudeCli', expect.anything())
+    expect(useSessionStore.getState().launchGate.get('session-1')).toEqual({
+      state: 'blocked',
+      worktreeId: 'worktree-1',
+      error: 'boom',
+      launchAnywayPrompt: 'BASE\n\nSetup FAILED: boom'
+    })
   })
 })
