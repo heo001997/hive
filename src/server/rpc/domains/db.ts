@@ -224,6 +224,7 @@ const projectUpdateDataSchema = z.object({
   worktree_create_script: z.string().nullable().optional(),
   custom_commands: z.array(customProjectCommandSchema).nullable().optional(),
   auto_assign_port: z.boolean().optional(),
+  max_parallel_worktrees: z.number().int().min(0).optional(),
   last_accessed_at: z.string().optional()
 }) satisfies z.ZodType<ProjectUpdate>
 const projectUpdateParamsSchema = z.object({

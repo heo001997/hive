@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { useKanbanStore, ticketKey, parseTicketKey } from '@/stores/useKanbanStore'
 import { getChainTicketKeys, getChainExecutionOrder } from '@/lib/chain-utils'
 import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
+import { canLaunchWorktreeNow, getMaxParallelWorktrees } from '@/lib/worktree-concurrency'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useSessionStore } from '@/stores/useSessionStore'
 import { useProjectStore } from '@/stores/useProjectStore'
@@ -774,6 +775,44 @@ export function WorktreePickerModal({
         }
         onOpenChange(false)
         toast.success('Worktree assigned')
+        return
+      }
+
+      // ── Concurrency gate: queue instead of launching when the project is at its
+      // max-parallel-worktrees cap. The ticket keeps its launch config and stays put;
+      // launchNextQueuedTickets auto-starts it once a running worktree leaves In Progress.
+      if ((isNewWorktree || selectedWorktreeId) && !canLaunchWorktreeNow(projectId)) {
+        const pendingConfig = {
+          worktree: isNewWorktree
+            ? { type: 'new' as const, sourceBranch: sourceBranch ?? defaultBranchName }
+            : { type: 'existing' as const, worktreeId: selectedWorktreeId! },
+          prompt: promptText.trim() || buildPrompt(mode, ticket),
+          mode,
+          model: selectedModel ?? null,
+          sdk: agentSdk,
+          codexFastMode,
+          goalMode,
+          goalSuccessCriteria: goalMode ? goalCriteria.trim() : null,
+          autoApprovePlan
+        }
+
+        await updateTicket(ticket.id, projectId, {
+          pending_launch_config: JSON.stringify(pendingConfig),
+          mode,
+          goal_mode: goalMode,
+          goal_success_criteria: goalMode ? goalCriteria.trim() : null,
+          auto_approve_review: autoApproveReview,
+          auto_approve_plan: autoApprovePlan
+        })
+
+        onSendComplete?.()
+        onOpenChange(false)
+        const max = getMaxParallelWorktrees(projectId)
+        toast.success(
+          `Queued — project limit of ${max} running worktree${max === 1 ? '' : 's'} reached. ` +
+            'Will auto-start when a slot frees.'
+        )
+        setIsSending(false)
         return
       }
 

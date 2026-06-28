@@ -238,6 +238,7 @@ function setupStores(): {
         worktree_create_script: null,
         custom_commands: null,
         auto_assign_port: false,
+        max_parallel_worktrees: 0,
         sort_order: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         last_accessed_at: '2026-01-01T00:00:00.000Z'

@@ -1996,6 +1996,18 @@ export const useKanbanStore = create<KanbanState>()(
             }
           }
 
+          // A running worktree left In Progress → a slot may have freed. Start the
+          // next concurrency-queued ticket (respects the project's max-parallel cap).
+          if (movedTicket?.column === 'in_progress' && column !== 'in_progress') {
+            import('../lib/worktree-concurrency')
+              .then(({ launchNextQueuedTickets }) =>
+                launchNextQueuedTickets(projectId).catch((err) => {
+                  console.error('Concurrency dequeue failed for project:', projectId, err)
+                })
+              )
+              .catch(() => {})
+          }
+
           // (Re)arm the settle pipeline for build tickets entering Review.
           // armSettleTimers picks Strict Verify (D1) when Feature A is on, else the
           // legacy Auto Review Bypass (D2) for auto-approve tickets; any other

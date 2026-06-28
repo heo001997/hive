@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 38
+export const CURRENT_SCHEMA_VERSION = 39
 
 export const SCHEMA_SQL = `
 -- Projects table
@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS projects (
   detected_icon TEXT DEFAULT NULL,
   sort_order INTEGER NOT NULL DEFAULT 0,
   auto_assign_port INTEGER NOT NULL DEFAULT 0,
+  max_parallel_worktrees INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   last_accessed_at TEXT NOT NULL
 );
@@ -647,6 +648,16 @@ DROP TABLE IF EXISTS diff_comments;`
     name: 'add_ticket_auto_approve_plan',
     up: `
       ALTER TABLE kanban_tickets ADD COLUMN auto_approve_plan INTEGER NOT NULL DEFAULT 0;
+    `,
+    down: `
+      -- SQLite cannot drop columns safely; no-op.
+    `
+  },
+  {
+    version: 39,
+    name: 'add_project_max_parallel_worktrees',
+    up: `
+      ALTER TABLE projects ADD COLUMN max_parallel_worktrees INTEGER NOT NULL DEFAULT 0;
     `,
     down: `
       -- SQLite cannot drop columns safely; no-op.

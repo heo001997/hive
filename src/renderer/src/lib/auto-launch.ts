@@ -77,7 +77,23 @@ function composeAutoLaunchPrompt(
     : fullPrompt
 }
 
+// Tickets whose launch is in progress. Guards against two triggers (dependency
+// resolution + the concurrency dequeue) racing to launch the same ticket from a
+// stale snapshot — both would pass the pending_launch_config check and double-spawn.
+const inFlightLaunches = new Set<string>()
+
 export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> {
+  if (!ticket.pending_launch_config) return
+  if (inFlightLaunches.has(ticket.id)) return
+  inFlightLaunches.add(ticket.id)
+  try {
+    await runAutoLaunch(ticket)
+  } finally {
+    inFlightLaunches.delete(ticket.id)
+  }
+}
+
+async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
   if (!ticket.pending_launch_config) return
 
   let config: PendingLaunchConfig
@@ -96,6 +112,12 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     console.error('Project not found for auto-launch:', ticket.project_id)
     return
   }
+
+  // Concurrency gate: respect the project's max-parallel-worktrees cap. Over the
+  // limit → leave the pending_launch_config in place; launchNextQueuedTickets will
+  // retry this ticket once a running worktree leaves the In Progress column.
+  const { canLaunchWorktreeNow } = await import('./worktree-concurrency')
+  if (!canLaunchWorktreeNow(ticket.project_id)) return
 
   void autoPinBaseWorktree(ticket.project_id)
 

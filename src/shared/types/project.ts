@@ -15,6 +15,8 @@ export interface Project {
   worktree_create_script: string | null
   custom_commands: CustomProjectCommand[] | null
   auto_assign_port: boolean
+  /** Max worktrees allowed to run in parallel per project (In Progress column). 0 = unlimited. */
+  max_parallel_worktrees: number
   sort_order: number
   created_at: string
   last_accessed_at: string

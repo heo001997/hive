@@ -38,6 +38,7 @@ interface Project {
   worktree_create_script: string | null
   custom_commands: CustomProjectCommand[] | null
   auto_assign_port: boolean
+  max_parallel_worktrees?: number
   kanban_storage_mode?: 'internal' | 'markdown'
   kanban_markdown_config?: string | null
   is_remote?: boolean
@@ -92,6 +93,7 @@ export function ProjectSettingsDialog({
   const [customIcon, setCustomIcon] = useState<string | null>(null)
   const [customCommands, setCustomCommands] = useState<CustomProjectCommand[]>([])
   const [autoAssignPort, setAutoAssignPort] = useState(false)
+  const [maxParallelWorktrees, setMaxParallelWorktrees] = useState(0)
   const [kanbanMode, setKanbanMode] = useState<'internal' | 'markdown'>('internal')
   const [kanbanLayout, setKanbanLayout] = useState<MarkdownLayout>('single-folder')
   const [singleFolder, setSingleFolder] = useState('docs/kanban')
@@ -139,6 +141,7 @@ export function ProjectSettingsDialog({
     setCustomIcon(initialProject.custom_icon ?? null)
     setCustomCommands(initialProject.custom_commands ?? [])
     setAutoAssignPort(initialProject.auto_assign_port ?? false)
+    setMaxParallelWorktrees(initialProject.max_parallel_worktrees ?? 0)
     setKanbanMode(initialProject.kanban_storage_mode ?? 'internal')
     setKanbanConfigError(null)
     setCanCreateKanbanFolders(false)
@@ -311,7 +314,8 @@ export function ProjectSettingsDialog({
             (command) => command.name.trim() !== '' && command.prompt.trim() !== ''
           ),
           custom_icon: customIcon,
-          auto_assign_port: autoAssignPort
+          auto_assign_port: autoAssignPort,
+          max_parallel_worktrees: maxParallelWorktrees
         })
         if (!success) {
           toast.error('Failed to save project settings')
@@ -337,6 +341,10 @@ export function ProjectSettingsDialog({
 
       await loadProjects()
       await useKanbanStore.getState().loadTickets(project.id)
+      // Raising the cap may free slots for already-queued tickets — start them now.
+      import('@/lib/worktree-concurrency')
+        .then(({ launchNextQueuedTickets }) => launchNextQueuedTickets(project.id).catch(() => {}))
+        .catch(() => {})
       toast.success('Project settings saved')
       onOpenChange(false)
     } catch (error) {
@@ -446,6 +454,30 @@ export function ProjectSettingsDialog({
                     </p>
                   </div>
                   <Switch checked={autoAssignPort} onCheckedChange={setAutoAssignPort} />
+                </div>
+              </div>
+
+              {/* Max parallel worktrees */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <label className="text-sm font-medium">Max Parallel Worktrees</label>
+                    <p className="text-xs text-muted-foreground">
+                      Cap how many worktrees run at once (tickets in the In Progress column).
+                      Extra launches queue and auto-start as slots free. 0 = unlimited.
+                    </p>
+                  </div>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={1}
+                    className="w-20"
+                    value={maxParallelWorktrees}
+                    onChange={(e) => {
+                      const parsed = Number.parseInt(e.target.value, 10)
+                      setMaxParallelWorktrees(Number.isFinite(parsed) && parsed > 0 ? parsed : 0)
+                    }}
+                  />
                 </div>
               </div>
 
