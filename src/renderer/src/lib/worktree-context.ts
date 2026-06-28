@@ -2,6 +2,7 @@ import { scriptApi } from '@/api/script-api'
 import { worktreeApi } from '@/api/worktree-api'
 import { useScriptStore } from '@/stores/useScriptStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
+import { useWorktreeContextCacheStore } from '@/stores/useWorktreeContextCacheStore'
 import type { WorktreeContextToken } from './worktree-context-constants'
 
 export type { WorktreeContextToken } from './worktree-context-constants'
@@ -161,6 +162,31 @@ export async function scanWorktreeContext(
   return values
 }
 
+/** True when the template references the (expensive, opt-in) AI summary token. */
+export function templateWantsSummary(template: string): boolean {
+  return template.includes('{{WORKTREE_SUMMARY}}')
+}
+
+/**
+ * Get-or-generate the per-worktree AI summary via the single-flight cache.
+ * Concurrent tickets in the same worktree share one CLI gather; the result is
+ * cached + reused. Best-effort — returns absent on failure.
+ */
+async function resolveWorktreeSummary(
+  target: WorktreeContextScanTarget
+): Promise<string | undefined> {
+  try {
+    const summary = await useWorktreeContextCacheStore.getState().getOrGenerate({
+      worktreeId: target.id,
+      worktreePath: target.path,
+      branch: target.branch_name ?? ''
+    })
+    return summary || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Substitute `{{TOKEN}}` placeholders; unknown / missing tokens become ''. */
 export function renderContextTemplate(template: string, values: WorktreeContextValues): string {
   return template.replace(/\{\{([A-Z_]+)\}\}/g, (_match, token: string) => {
@@ -206,7 +232,17 @@ export async function prepareWorktreeContextLaunch(params: {
   const values = scanTarget ? await scanWorktreeContext(scanTarget) : {}
 
   if (setup.status === 'done') {
-    return { status: 'done', prompt: joinPrompt(basePrompt, renderContextTemplate(template, values)) }
+    // The AI summary is expensive, so only gather it when the template asks for
+    // it — and only after setup succeeded (no point summarizing a half-built
+    // worktree). The cache makes this run once per worktree, then reuse.
+    if (scanTarget && templateWantsSummary(template)) {
+      const summary = await resolveWorktreeSummary(scanTarget)
+      if (summary) values.WORKTREE_SUMMARY = summary
+    }
+    return {
+      status: 'done',
+      prompt: joinPrompt(basePrompt, renderContextTemplate(template, values))
+    }
   }
 
   const errorMessage =

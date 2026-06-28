@@ -10,7 +10,8 @@ export const WORKTREE_CONTEXT_TOKENS = [
   'WORKTREE_PATH',
   'WORKTREE_CONTEXT',
   'SETUP_OUTPUT',
-  'ENV'
+  'ENV',
+  'WORKTREE_SUMMARY'
 ] as const
 
 export type WorktreeContextToken = (typeof WORKTREE_CONTEXT_TOKENS)[number]
@@ -24,7 +25,9 @@ export const WORKTREE_CONTEXT_TOKEN_HELP: Record<WorktreeContextToken, string> =
   WORKTREE_PATH: 'Absolute path of the worktree',
   WORKTREE_CONTEXT: 'Notes you saved on the worktree',
   SETUP_OUTPUT: 'Tail of the setup-script output',
-  ENV: 'Environment variables (KEY=VALUE)'
+  ENV: 'Environment variables (KEY=VALUE)',
+  WORKTREE_SUMMARY:
+    'AI-generated project orientation (stack, how to run, key dirs). Generated once per worktree by Claude Code CLI, then cached + reused. Costs tokens — only fires when this token is present.'
 }
 
 /** Default template the agent prompt is augmented with when context injection is on. */
