@@ -114,6 +114,11 @@ export interface PetTicketInput {
   column: 'todo' | 'in_progress' | 'review' | 'done'
   title: string
   archived_at: string | null
+  /**
+   * ISO timestamp of when the user last opened the ticket while it sat in
+   * Review. NULL/undefined means it reached Review but hasn't been opened since.
+   */
+  review_seen_at?: string | null
 }
 
 export interface PetTicketsAggregateInput {
@@ -154,9 +159,10 @@ function ticketPetState(
   if (status === 'command_approval' || status === 'permission') return 'permission'
   if (status === 'plan_ready') return 'plan_ready'
 
-  // A ticket sitting in Review needs a human look — surface it as a question pet
-  // so clicking it jumps straight into the ticket detail.
-  if (ticket.column === 'review') return 'question'
+  // A Review ticket the user hasn't opened yet needs a human look — surface it
+  // as a question pet so clicking it jumps straight into the ticket detail.
+  // Once opened (review_seen_at set), the work has been seen, so drop the pet.
+  if (ticket.column === 'review') return ticket.review_seen_at ? null : 'question'
 
   // Any started ticket in the In Progress column is "running" — including the
   // idle gap between agent turns (status completed/unread), when the session

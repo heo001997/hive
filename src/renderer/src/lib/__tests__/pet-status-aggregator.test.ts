@@ -11,6 +11,7 @@ function ticket(overrides: Partial<PetTicketInput> & { id: string }): PetTicketI
     column: 'in_progress',
     title: overrides.id,
     archived_at: null,
+    review_seen_at: null,
     ...overrides
   }
 }
@@ -60,15 +61,51 @@ describe('computePetTickets', () => {
     expect(pets).toHaveLength(0)
   })
 
-  it('surfaces a Review-column ticket as a question pet', () => {
+  it('surfaces an unopened Review-column ticket as a question pet', () => {
     const pets = computePetTickets({
-      tickets: [ticket({ id: 'r', column: 'review', current_session_id: null })],
+      tickets: [
+        ticket({ id: 'r', column: 'review', current_session_id: null, review_seen_at: null })
+      ],
       sessionStatuses: {},
       pendingQuestionCountBySession: new Map()
     })
     expect(pets).toEqual([
       expect.objectContaining({ ticketId: 'r', state: 'question' })
     ])
+  })
+
+  it('does not give a pet to a Review ticket the user has already opened', () => {
+    const pets = computePetTickets({
+      tickets: [
+        ticket({
+          id: 'r',
+          column: 'review',
+          current_session_id: null,
+          review_seen_at: '2026-06-28T00:00:00.000Z'
+        })
+      ],
+      sessionStatuses: {},
+      pendingQuestionCountBySession: new Map()
+    })
+    expect(pets).toHaveLength(0)
+  })
+
+  it('keeps a question pet for an opened Review ticket that still needs an answer', () => {
+    // review_seen_at is set, but the session is actively asking — needs-input
+    // wins over the "already seen" gate.
+    const pets = computePetTickets({
+      tickets: [
+        ticket({
+          id: 'r',
+          column: 'review',
+          current_session_id: 'sr',
+          review_seen_at: '2026-06-28T00:00:00.000Z'
+        })
+      ],
+      sessionStatuses: { sr: status('answering') },
+      pendingQuestionCountBySession: new Map()
+    })
+    expect(pets[0]).toMatchObject({ ticketId: 'r', state: 'question' })
   })
 
   it('ranks needs-attention pets ahead of running pets', () => {
