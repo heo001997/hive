@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_PET_TICKETS } from '@shared/types/pet'
+import type { StoredCompletionVerdict } from '@shared/types/completion'
 import type { SessionStatusEntry, SessionStatusType } from '@/stores/useWorktreeStatusStore'
-import { computePetTickets, type PetTicketInput } from '../pet-status-aggregator'
+import { computePetTickets, petVerdictKey, type PetTicketInput } from '../pet-status-aggregator'
 
 function ticket(overrides: Partial<PetTicketInput> & { id: string }): PetTicketInput {
   return {
@@ -11,12 +12,30 @@ function ticket(overrides: Partial<PetTicketInput> & { id: string }): PetTicketI
     column: 'in_progress',
     title: overrides.id,
     archived_at: null,
+    review_seen_at: null,
     ...overrides
   }
 }
 
 function status(type: SessionStatusType): SessionStatusEntry {
   return { status: type, timestamp: 0 }
+}
+
+function verdict(overrides: Partial<StoredCompletionVerdict> & { sessionId: string }): StoredCompletionVerdict {
+  return {
+    complete: true,
+    needsInput: false,
+    confidence: 0.9,
+    reason: 'ok',
+    checkedAt: 0,
+    movedBack: false,
+    ...overrides
+  }
+}
+
+/** Build the per-ticket verdict map the aggregator reads, keyed for `t`. */
+function verdicts(t: PetTicketInput, v: StoredCompletionVerdict): Map<string, StoredCompletionVerdict> {
+  return new Map([[petVerdictKey(t.project_id, t.id), v]])
 }
 
 describe('computePetTickets', () => {
@@ -60,15 +79,108 @@ describe('computePetTickets', () => {
     expect(pets).toHaveLength(0)
   })
 
-  it('surfaces a Review-column ticket as a question pet', () => {
+  it('surfaces an unopened Review-column ticket as a question pet', () => {
     const pets = computePetTickets({
-      tickets: [ticket({ id: 'r', column: 'review', current_session_id: null })],
+      tickets: [
+        ticket({ id: 'r', column: 'review', current_session_id: null, review_seen_at: null })
+      ],
       sessionStatuses: {},
       pendingQuestionCountBySession: new Map()
     })
     expect(pets).toEqual([
       expect.objectContaining({ ticketId: 'r', state: 'question' })
     ])
+  })
+
+  it('does not give a pet to a Review ticket the user has already opened', () => {
+    const pets = computePetTickets({
+      tickets: [
+        ticket({
+          id: 'r',
+          column: 'review',
+          current_session_id: null,
+          review_seen_at: '2026-06-28T00:00:00.000Z'
+        })
+      ],
+      sessionStatuses: {},
+      pendingQuestionCountBySession: new Map()
+    })
+    expect(pets).toHaveLength(0)
+  })
+
+  it('drops the pet for an unopened Review ticket that PASSED Strict Verify', () => {
+    // complete && !movedBack for the current session = AI-confirmed done; it
+    // auto-advances or awaits a merge, so it should not nag as a question.
+    const t = ticket({ id: 'r', column: 'review', current_session_id: 'sr', review_seen_at: null })
+    const pets = computePetTickets({
+      tickets: [t],
+      sessionStatuses: { sr: status('completed') },
+      pendingQuestionCountBySession: new Map(),
+      completionVerdicts: verdicts(t, verdict({ sessionId: 'sr', complete: true, movedBack: false }))
+    })
+    expect(pets).toHaveLength(0)
+  })
+
+  it('keeps the question pet for an unopened Review ticket whose verdict did NOT pass', () => {
+    // movedBack verdict = bounced / not confirmed → still needs a human look.
+    const t = ticket({ id: 'r', column: 'review', current_session_id: 'sr', review_seen_at: null })
+    const pets = computePetTickets({
+      tickets: [t],
+      sessionStatuses: { sr: status('completed') },
+      pendingQuestionCountBySession: new Map(),
+      completionVerdicts: verdicts(
+        t,
+        verdict({ sessionId: 'sr', complete: false, movedBack: true })
+      )
+    })
+    expect(pets[0]).toMatchObject({ ticketId: 'r', state: 'question' })
+  })
+
+  it('ignores a passing verdict left over from a different session', () => {
+    // The verdict judged an old session; the ticket now points at a new one, so
+    // the pass must not hide the still-unverified Review ticket.
+    const t = ticket({ id: 'r', column: 'review', current_session_id: 'new', review_seen_at: null })
+    const pets = computePetTickets({
+      tickets: [t],
+      sessionStatuses: {},
+      pendingQuestionCountBySession: new Map(),
+      completionVerdicts: verdicts(t, verdict({ sessionId: 'old', complete: true, movedBack: false }))
+    })
+    expect(pets[0]).toMatchObject({ ticketId: 'r', state: 'question' })
+  })
+
+  it('raises a question pet for a needsInput verdict on an In Progress ticket', () => {
+    // A "waiting on you" verdict bounces the ticket to In Progress (movedBack).
+    // Without the verdict it would read as a plain working pet — wire it through.
+    const t = ticket({ id: 'w', column: 'in_progress', current_session_id: 'sw' })
+    const pets = computePetTickets({
+      tickets: [t],
+      sessionStatuses: { sw: status('completed') },
+      pendingQuestionCountBySession: new Map(),
+      completionVerdicts: verdicts(
+        t,
+        verdict({ sessionId: 'sw', complete: false, needsInput: true, movedBack: true })
+      )
+    })
+    expect(pets[0]).toMatchObject({ ticketId: 'w', state: 'question' })
+  })
+
+  it('keeps a question pet for an opened Review ticket that still needs an answer', () => {
+    // review_seen_at is set, but the session is actively asking — needs-input
+    // wins over the "already seen" gate.
+    const pets = computePetTickets({
+      tickets: [
+        ticket({
+          id: 'r',
+          column: 'review',
+          current_session_id: 'sr',
+          review_seen_at: '2026-06-28T00:00:00.000Z'
+        })
+      ],
+      sessionStatuses: { sr: status('answering') },
+      pendingQuestionCountBySession: new Map()
+    })
+    expect(pets[0]).toMatchObject({ ticketId: 'r', state: 'question' })
   })
 
   it('ranks needs-attention pets ahead of running pets', () => {
