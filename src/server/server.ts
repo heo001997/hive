@@ -11,6 +11,8 @@ import { resolveStaticFile, serveStaticFile } from './static'
 import { isDesktopBackendEventMessage } from '../shared/desktop-command'
 import { cleanupBranchWatchers } from '../main/services/branch-watcher'
 import { setGitEventPublisher } from '../main/services/git-events'
+import { systemMonitor } from '../main/services/system-monitor'
+import { APP_SETTINGS_DB_KEY } from '../shared/types/settings'
 import { setWorktreeEventPublisher } from '../main/services/worktree-events'
 import { cleanupWorktreeWatchers } from '../main/services/worktree-watcher'
 import {
@@ -95,6 +97,25 @@ export const startHiveServer = (
         })
       )
     )
+    // The system monitor samples the whole Hive process tree from this server
+    // child and streams snapshots/alerts to the renderer over the event bus
+    // (same wiring as the git/worktree publishers above).
+    systemMonitor.setPublisher((channel, payload) =>
+      Effect.runPromise(eventBus.publish({ channel, payload }))
+    )
+    try {
+      const raw = getDatabase().getSetting(APP_SETTINGS_DB_KEY)
+      const settings = raw ? (JSON.parse(raw) as { systemMonitorEnabled?: boolean }) : {}
+      // Default ON: background sampling for alerts + history even before the
+      // panel is opened. Only an explicit `false` disables it.
+      if (settings.systemMonitorEnabled !== false) {
+        systemMonitor.setEnabled(true)
+      }
+    } catch {
+      // setting may not exist yet — fall through with the default-on behaviour
+      systemMonitor.setEnabled(true)
+    }
+
     const authSessions = makeAuthSessionManager()
     const router = makeRpcRouter({ eventBus })
 
@@ -291,6 +312,8 @@ export const startHiveServer = (
                 await import('../main/services/discord-service')
                   .then(({ discordService }) => discordService.stopListening())
                   .catch(() => undefined)
+                systemMonitor.cleanup()
+                systemMonitor.setPublisher(null)
                 setGitEventPublisher(null)
                 setWorktreeEventPublisher(null)
                 setMarkdownKanbanEventPublisher(null)

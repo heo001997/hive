@@ -25,6 +25,8 @@ import { useKeepAwake } from '@/hooks/useKeepAwake'
 import { useSleepWhenIdle } from '@/hooks/useSleepWhenIdle'
 import { ErrorBoundary, ErrorFallback } from '@/components/error'
 import { CreatePRModal } from '@/components/pr/CreatePRModal'
+import { MonitorModal } from '@/components/monitor/MonitorModal'
+import { MonitorAlertsListener } from '@/components/monitor/MonitorAlertsListener'
 import { ProjectSettingsDialog } from '@/components/projects/ProjectSettingsDialog'
 import { TerminalPortalProvider, useTerminalPortal } from '@/contexts/TerminalPortalContext'
 import { ClaudeCliSessionPortalProvider } from '@/contexts/ClaudeCliSessionPortalContext'
@@ -302,6 +304,10 @@ export function AppLayout({ children }: AppLayoutProps): React.JSX.Element {
           <ErrorBoundary componentName="SettingsModal" fallback={null}>
             <SettingsModal />
           </ErrorBoundary>
+          <ErrorBoundary componentName="MonitorModal" fallback={null}>
+            <MonitorModal />
+          </ErrorBoundary>
+          <MonitorAlertsListener />
           <ErrorBoundary componentName="FileSearchDialog" fallback={null}>
             <FileSearchDialog />
           </ErrorBoundary>

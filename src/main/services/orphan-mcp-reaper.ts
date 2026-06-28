@@ -26,7 +26,8 @@ const DEFAULT_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
 // Matches the npm-exec wrapper and the node child for MCP servers, e.g.
 // "npm exec @delorenj/mcp-server-trello" and ".../mcp-server-trello/build/index.js".
-const MCP_COMMAND_PATTERN = /mcp-server|@modelcontextprotocol|modelcontextprotocol/i
+// Exported so the system monitor can reuse the same orphan-matching heuristic.
+export const MCP_COMMAND_PATTERN = /mcp-server|@modelcontextprotocol|modelcontextprotocol/i
 
 let timer: NodeJS.Timeout | undefined
 

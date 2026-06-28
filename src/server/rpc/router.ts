@@ -106,6 +106,11 @@ import {
   type SystemOpsRpcService
 } from './domains/system-ops'
 import {
+  makeLiveSystemMonitorOpsRpcService,
+  makeSystemMonitorOpsRpcHandlers,
+  type SystemMonitorOpsRpcService
+} from './domains/system-monitor-ops'
+import {
   makeLiveTicketImportRpcService,
   makeTicketImportRpcHandlers,
   type TicketImportRpcService
@@ -165,6 +170,7 @@ export interface RpcContext {
   readonly settingsOps?: SettingsOpsRpcService
   readonly storageOps?: StorageOpsRpcService
   readonly systemOps?: SystemOpsRpcService
+  readonly systemMonitorOps?: SystemMonitorOpsRpcService
   readonly terminalOps?: TerminalOpsRpcService
   readonly ticketImport?: TicketImportRpcService
   readonly telegramOps?: TelegramOpsRpcService
@@ -227,6 +233,9 @@ const makeDefaultRpcHandlers = (context: RpcContext): ReadonlyMap<string, RpcHan
     ...makeSettingsOpsRpcHandlers(context.settingsOps ?? makeLiveSettingsOpsRpcService()),
     ...makeStorageOpsRpcHandlers(context.storageOps ?? makeLiveStorageOpsRpcService()),
     ...makeSystemOpsRpcHandlers(context.systemOps ?? makeLiveSystemOpsRpcService()),
+    ...makeSystemMonitorOpsRpcHandlers(
+      context.systemMonitorOps ?? makeLiveSystemMonitorOpsRpcService()
+    ),
     ...makeTerminalOpsRpcHandlers(
       context.terminalOps ?? makeLiveTerminalOpsRpcService(context.eventBus)
     ),

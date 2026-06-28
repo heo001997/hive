@@ -11,6 +11,7 @@ import {
 } from '@/stores'
 
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
+import { useMonitorStore } from '@/stores/useMonitorStore'
 import { BOARD_TAB_ID } from '@/stores/useSessionStore'
 import { useGitStore } from '@/stores/useGitStore'
 import { useShortcutStore } from '@/stores/useShortcutStore'
@@ -393,6 +394,18 @@ export function useCommands() {
           closeCommandPalette()
         },
         isEnabled: () => activeWorktreeId !== null
+      },
+      {
+        id: 'action:open-system-monitor',
+        label: 'Open System Monitor',
+        description: 'View per-process CPU/memory, host totals, and active alerts',
+        category: 'action',
+        icon: 'Activity',
+        keywords: ['monitor', 'debug', 'cpu', 'memory', 'process', 'performance', 'alerts'],
+        action: () => {
+          useMonitorStore.getState().open()
+          closeCommandPalette()
+        }
       },
 
       // =====================
