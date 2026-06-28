@@ -1103,9 +1103,9 @@ export function WorktreePickerModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         data-testid="worktree-picker-modal"
-        className="sm:max-w-[520px] overflow-visible"
+        className="sm:max-w-[520px] flex flex-col overflow-hidden"
       >
-        <DialogHeader className="space-y-2.5 pb-1">
+        <DialogHeader className="space-y-2.5 pb-1 shrink-0">
           <DialogTitle className="text-base">
             {saveConfigOnly
               ? 'Pre-configure Launch'
@@ -1171,7 +1171,7 @@ export function WorktreePickerModal({
           )}
         </DialogHeader>
 
-        <div className="space-y-5">
+        <div className="space-y-5 flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
           {/* ── Worktree list (hidden in connection mode) ────── */}
           {!isConnectionMode && (
             <div className="space-y-2">
@@ -1633,7 +1633,7 @@ export function WorktreePickerModal({
           )}
         </div>
 
-        <DialogFooter className="pt-1">
+        <DialogFooter className="pt-1 shrink-0">
           <Button
             type="button"
             variant="outline"
