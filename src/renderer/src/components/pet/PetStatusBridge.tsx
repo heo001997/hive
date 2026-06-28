@@ -2,9 +2,11 @@ import { useEffect, useRef } from 'react'
 import type { PetStatusPayload, PetTicket } from '@shared/types/pet'
 import { petApi } from '@/api/pet-api'
 import { openTicketDetail } from '@/lib/navigate-to-ticket'
+import type { StoredCompletionVerdict } from '@shared/types/completion'
 import {
   aggregatePetStatus,
   computePetTickets,
+  petVerdictKey,
   type PetTicketInput
 } from '@/lib/pet-status-aggregator'
 import {
@@ -17,6 +19,7 @@ import {
   useWorktreeStatusStore,
   useWorktreeStore
 } from '@/stores'
+import { ticketKey } from '@/stores/useKanbanStore'
 
 function samePets(a: PetTicket[] | undefined, b: PetTicket[] | undefined): boolean {
   const left = a ?? []
@@ -48,8 +51,9 @@ function computePets(): PetTicket[] {
   const statusState = useWorktreeStatusStore.getState()
   const questionState = useQuestionStore.getState()
 
+  const kanbanState = useKanbanStore.getState()
   const tickets: PetTicketInput[] = []
-  for (const list of useKanbanStore.getState().tickets.values()) {
+  for (const list of kanbanState.tickets.values()) {
     for (const ticket of list) tickets.push(ticket)
   }
 
@@ -58,10 +62,19 @@ function computePets(): PetTicket[] {
     pendingQuestionCountBySession.set(sessionId, questions.length)
   }
 
+  // Re-key the store's Strict Verify verdicts (encoded ticketKey) onto the
+  // aggregator's pet-local key so the Review / needs-input gates can read them.
+  const completionVerdicts = new Map<string, StoredCompletionVerdict>()
+  for (const ticket of tickets) {
+    const verdict = kanbanState.completionVerdicts.get(ticketKey(ticket.project_id, ticket.id))
+    if (verdict) completionVerdicts.set(petVerdictKey(ticket.project_id, ticket.id), verdict)
+  }
+
   return computePetTickets({
     tickets,
     sessionStatuses: statusState.sessionStatuses,
-    pendingQuestionCountBySession
+    pendingQuestionCountBySession,
+    completionVerdicts
   })
 }
 

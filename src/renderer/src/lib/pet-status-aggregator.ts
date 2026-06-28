@@ -1,5 +1,6 @@
 import type { PetState, PetStatusPayload, PetTicket } from '@shared/types/pet'
 import { MAX_PET_TICKETS } from '@shared/types/pet'
+import type { StoredCompletionVerdict } from '@shared/types/completion'
 import type { SessionStatusEntry, SessionStatusType } from '@/stores/useWorktreeStatusStore'
 
 const STATUS_PRIORITY: Record<SessionStatusType, number> = {
@@ -126,6 +127,23 @@ export interface PetTicketsAggregateInput {
   sessionStatuses: Record<string, SessionStatusEntry | null>
   /** sessionId → number of pending questions awaiting the user. */
   pendingQuestionCountBySession: Map<string, number>
+  /**
+   * `petVerdictKey(projectId, id)` → the ticket's stored Strict Verify verdict,
+   * when one exists. Drives two Review-column gates: a verdict that PASSED
+   * (`complete && !movedBack`) drops the "needs review" pet, and a `needsInput`
+   * verdict raises a question pet regardless of column (the agent is waiting on
+   * the user — these tickets live in In Progress after being bounced back).
+   */
+  completionVerdicts?: Map<string, StoredCompletionVerdict>
+}
+
+/**
+ * Key for {@link PetTicketsAggregateInput.completionVerdicts}. A pet-local
+ * composite (NOT the store's `ticketKey`, which percent-encodes) so callers and
+ * the aggregator agree without coupling to the store.
+ */
+export function petVerdictKey(projectId: string, ticketId: string): string {
+  return `${projectId}:${ticketId}`
 }
 
 // Higher number = surfaced first and survives the cap. Mirrors the card's
@@ -144,7 +162,8 @@ const PET_TICKET_STATE_PRIORITY: Record<Exclude<PetState, 'idle'>, number> = {
 function ticketPetState(
   ticket: PetTicketInput,
   sessionStatuses: Record<string, SessionStatusEntry | null>,
-  pendingQuestionCountBySession: Map<string, number>
+  pendingQuestionCountBySession: Map<string, number>,
+  verdict: StoredCompletionVerdict | null
 ): Exclude<PetState, 'idle'> | null {
   if (ticket.archived_at || ticket.column === 'done' || ticket.column === 'todo') return null
 
@@ -153,16 +172,27 @@ function ticketPetState(
   const hasPendingQuestions = sessionId
     ? (pendingQuestionCountBySession.get(sessionId) ?? 0) > 0
     : false
+  // The verdict only speaks for the session it judged — ignore one left over
+  // from a prior session (a resume clears it store-side, but guard anyway).
+  const verdictForSession = verdict && verdict.sessionId === sessionId ? verdict : null
 
-  // Needs input — highest attention.
-  if (status === 'answering' || hasPendingQuestions) return 'question'
+  // Needs input — highest attention. Live "answering"/pending questions, OR a
+  // Strict Verify verdict that judged the agent to be waiting on the user
+  // (`needsInput` bounces the ticket to In Progress, so this fires off-Review).
+  if (status === 'answering' || hasPendingQuestions || verdictForSession?.needsInput) {
+    return 'question'
+  }
   if (status === 'command_approval' || status === 'permission') return 'permission'
   if (status === 'plan_ready') return 'plan_ready'
 
-  // A Review ticket the user hasn't opened yet needs a human look — surface it
-  // as a question pet so clicking it jumps straight into the ticket detail.
-  // Once opened (review_seen_at set), the work has been seen, so drop the pet.
-  if (ticket.column === 'review') return ticket.review_seen_at ? null : 'question'
+  // A Review ticket needs a human look UNTIL one of two things clears it: the
+  // user opens it (review_seen_at set), or Strict Verify passes it
+  // (complete && !movedBack) — a passed ticket is AI-confirmed done and either
+  // auto-advances or just awaits a merge, so it shouldn't nag as a question.
+  if (ticket.column === 'review') {
+    const passedStrictVerify = !!verdictForSession?.complete && !verdictForSession.movedBack
+    return ticket.review_seen_at || passedStrictVerify ? null : 'question'
+  }
 
   // Any started ticket in the In Progress column is "running" — including the
   // idle gap between agent turns (status completed/unread), when the session
@@ -185,10 +215,13 @@ export function computePetTickets(input: PetTicketsAggregateInput): PetTicket[] 
   const ranked: Array<{ pet: PetTicket; priority: number; order: number }> = []
 
   input.tickets.forEach((ticket, order) => {
+    const verdict =
+      input.completionVerdicts?.get(petVerdictKey(ticket.project_id, ticket.id)) ?? null
     const state = ticketPetState(
       ticket,
       input.sessionStatuses,
-      input.pendingQuestionCountBySession
+      input.pendingQuestionCountBySession,
+      verdict
     )
     if (!state) return
     ranked.push({
