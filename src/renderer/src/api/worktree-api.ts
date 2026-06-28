@@ -102,6 +102,12 @@ type WorktreeContextResult = {
   error?: string
 }
 
+type WorktreeContextSummaryResult = {
+  success: boolean
+  summary?: string
+  error?: string
+}
+
 type WorktreeBranchesResult = {
   success: boolean
   branches?: string[]
@@ -196,6 +202,11 @@ export const worktreeApi = {
       worktreeId,
       context
     }),
+  generateContextSummary: async (worktreePath: string): Promise<WorktreeContextSummaryResult> =>
+    getRendererRpcClient().request<WorktreeContextSummaryResult>(
+      'worktreeOps.generateContextSummary',
+      { worktreePath }
+    ),
   getBranches: async (projectPath: string): Promise<WorktreeBranchesResult> =>
     getRendererRpcClient().request<WorktreeBranchesResult>('worktreeOps.getBranches', {
       projectPath

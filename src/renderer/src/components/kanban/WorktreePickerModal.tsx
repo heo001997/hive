@@ -32,6 +32,14 @@ import { messageSendTimes, lastSendMode, userExplicitSendTimes } from '@/lib/mes
 import { bumpWorktreeLastMessage } from '@/lib/last-message-utils'
 import { snapshotTokenBaseline } from '@/lib/token-baselines'
 import { autoPinBaseWorktree } from '@/lib/auto-pin'
+import {
+  prepareWorktreeContextLaunch,
+  type WorktreeContextScanTarget
+} from '@/lib/worktree-context'
+import {
+  DEFAULT_CONTEXT_TEMPLATE,
+  WORKTREE_CONTEXT_TOKENS
+} from '@/lib/worktree-context-constants'
 import { PLAN_MODE_PREFIX, getSuperPlanModePrefix, isPlanLike } from '@/lib/constants'
 import { toast } from '@/lib/toast'
 import { opencodeApi } from '@/api/opencode-api'
@@ -201,6 +209,11 @@ export function WorktreePickerModal({
   // chosen base (default branch by default) so this ticket's commits don't pile
   // onto whatever the worktree was last left on.
   const [createNewBranch, setCreateNewBranch] = useState(true)
+  // Worktree context injection (claude-code-cli). Per-ticket toggle + editable
+  // token template, both seeded from the global settings default on open.
+  const [injectContext, setInjectContext] = useState(false)
+  const [contextTemplate, setContextTemplate] = useState(DEFAULT_CONTEXT_TEMPLATE)
+  const [contextPanelOpen, setContextPanelOpen] = useState(false)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -359,6 +372,12 @@ export function WorktreePickerModal({
       setCreateNewBranch(true)
       // Seed the per-ticket auto-approve toggle from the global default.
       setAutoApprovePlan(useSettingsStore.getState().autoApprovePlanEnabled)
+      // Seed the per-ticket worktree-context injection from the global default.
+      setInjectContext(useSettingsStore.getState().injectWorktreeContextEnabled)
+      setContextTemplate(
+        useSettingsStore.getState().worktreeContextTemplate || DEFAULT_CONTEXT_TEMPLATE
+      )
+      setContextPanelOpen(false)
       setSelectedModel(null)
       setSelectedSdk(null)
       setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
@@ -474,6 +493,82 @@ export function WorktreePickerModal({
     if (!canSend) return
     setIsSending(true)
 
+    // When context injection is on for claude-code-cli we defer the spawn until
+    // setup resolves; gate the sidebar "working" status on that too.
+    const willGateClaudeCli = injectContext && agentSdk === 'claude-code-cli'
+
+    // Shared claude-code-cli launch. inject OFF → the raw prompt was already
+    // enqueued at createSession; just dequeue + spawn (single-queue ownership).
+    // inject ON → nothing was enqueued: set the gate, wait for setup, compose the
+    // injected prompt, enqueue it, then spawn (the mount path's promptless create
+    // is the harmless loser). On setup failure the gate goes `blocked` and the
+    // session view's overlay offers "Launch anyway".
+    const launchClaudeCli = async (
+      sessionId: string,
+      opts: {
+        worktreeId: string | null
+        scanTarget: WorktreeContextScanTarget | null
+        basePrompt: string
+        bump: () => void
+      }
+    ): Promise<void> => {
+      if (mode === 'super-plan') {
+        // Await so the persisted mode is committed before the main process reads
+        // it in buildClaudeCliPtySpawn (createClaudeCli). Stays BEFORE the gate.
+        await useSessionStore.getState().setSessionMode(sessionId, 'plan')
+      }
+
+      if (willGateClaudeCli) {
+        useSessionStore
+          .getState()
+          .setLaunchGate(sessionId, { state: 'awaiting', worktreeId: opts.worktreeId })
+        const prepared = await prepareWorktreeContextLaunch({
+          worktreeId: opts.worktreeId,
+          scanTarget: opts.scanTarget,
+          basePrompt: opts.basePrompt,
+          template: contextTemplate || DEFAULT_CONTEXT_TEMPLATE
+        })
+        if (prepared.status === 'blocked') {
+          // Block: surface the failure + "Launch anyway". Nothing is enqueued, so
+          // there is nothing to requeue — the queue stays empty until the user acts.
+          useSessionStore.getState().setLaunchGate(sessionId, {
+            state: 'blocked',
+            worktreeId: opts.worktreeId,
+            error: prepared.error,
+            launchAnywayPrompt: prepared.prompt
+          })
+          return
+        }
+        useSessionStore.getState().setPendingMessage(sessionId, prepared.prompt)
+        useSessionStore
+          .getState()
+          .setLaunchGate(sessionId, { state: 'ready', worktreeId: opts.worktreeId })
+        useWorktreeStatusStore
+          .getState()
+          .setSessionStatus(sessionId, isPlanLike(mode) ? 'planning' : 'working')
+      }
+
+      const outboundPrompt = useSessionStore.getState().dequeuePendingMessage(sessionId)
+      opts.bump()
+      try {
+        const result = unwrapEnvelope(
+          await terminalApi.createClaudeCli(sessionId, { pendingPrompt: outboundPrompt })
+        )
+        if (!result.success && outboundPrompt) {
+          useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
+        }
+      } catch (error) {
+        if (outboundPrompt) {
+          useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
+        }
+        throw error
+      } finally {
+        if (willGateClaudeCli) {
+          useSessionStore.getState().clearLaunchGate(sessionId)
+        }
+      }
+    }
+
     // ── Connection mode path ──────────────────────────────────────
     if (isConnectionMode && connectionId) {
       try {
@@ -489,7 +584,9 @@ export function WorktreePickerModal({
             : null
         const createOptions = {
           ...(modelOverride ? { modelOverride } : {}),
-          ...(cliPendingPrompt ? { pendingMessage: cliPendingPrompt } : {})
+          // When gating on setup, do NOT enqueue the raw prompt — the injected
+          // prompt is enqueued only after setup resolves (leak-proof).
+          ...(cliPendingPrompt && !willGateClaudeCli ? { pendingMessage: cliPendingPrompt } : {})
         }
         const sessionResult = await createConnectionSession(connectionId, agentSdk, mode, {
           ...createOptions
@@ -512,9 +609,13 @@ export function WorktreePickerModal({
         userExplicitSendTimes.set(sessionId, Date.now())
         snapshotTokenBaseline(sessionId)
         lastSendMode.set(sessionId, completionSendMode(mode))
-        useWorktreeStatusStore
-          .getState()
-          .setSessionStatus(sessionId, isPlanLike(mode) ? 'planning' : 'working')
+        // Defer the "working" status when gating on setup so the sidebar doesn't
+        // imply the agent is running while it waits behind the overlay.
+        if (!willGateClaudeCli) {
+          useWorktreeStatusStore
+            .getState()
+            .setSessionStatus(sessionId, isPlanLike(mode) ? 'planning' : 'working')
+        }
 
         // Apply model override
         if (selectedModel) {
@@ -559,35 +660,20 @@ export function WorktreePickerModal({
         toast.success('Session started')
 
         if (sessionAgentSdk === 'claude-code-cli') {
-          if (mode === 'super-plan') {
-            // Await so the persisted mode is committed before the main process
-            // reads it in buildClaudeCliPtySpawn (createClaudeCli).
-            await useSessionStore.getState().setSessionMode(sessionId, 'plan')
-          }
-
-          // Atomically claim the queued prompt before spawning — same single-queue
-          // ownership the worktree path below relies on. Sending a private copy
-          // here while the queue still holds the prompt lets the session view's
-          // mount path (ClaudeCliSessionView.createClaudeTerminal) also deliver it,
-          // entering the prompt twice (spawn arg + paste on the live PTY).
-          const outboundPrompt = useSessionStore.getState().dequeuePendingMessage(sessionId)
-
-          bumpWorktreeLastMessage({ connectionId })
-          try {
-            const result = unwrapEnvelope(
-              await terminalApi.createClaudeCli(sessionId, {
-                pendingPrompt: outboundPrompt
-              })
-            )
-            if (!result.success && outboundPrompt) {
-              useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
-            }
-          } catch (error) {
-            if (outboundPrompt) {
-              useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
-            }
-            throw error
-          }
+          // Connection sessions have no per-worktree setup; the gate resolves
+          // instantly (worktreeId null) and we inject port/env scanned from the
+          // connection path.
+          const connectionScanPath = useConnectionStore
+            .getState()
+            .connections.find((c) => c.id === connectionId)?.path
+          await launchClaudeCli(sessionId, {
+            worktreeId: null,
+            scanTarget: connectionScanPath
+              ? { id: connectionId, path: connectionScanPath }
+              : null,
+            basePrompt: cliPendingPrompt ?? '',
+            bump: () => bumpWorktreeLastMessage({ connectionId })
+          })
           return
         }
 
@@ -674,6 +760,8 @@ export function WorktreePickerModal({
           goalMode,
           goalSuccessCriteria: goalMode ? goalCriteria.trim() : null,
           autoApprovePlan,
+          injectContext,
+          contextTemplate,
           // Reused-worktree only: branch off this base at launch time. Omitted
           // (reuse as-is) for new worktrees or when the toggle is off.
           ...(!isNewWorktree && createNewBranch
@@ -829,7 +917,9 @@ export function WorktreePickerModal({
           : null
       const createOptions = {
         ...(modelOverride ? { modelOverride } : {}),
-        ...(cliPendingPrompt ? { pendingMessage: cliPendingPrompt } : {})
+        // When gating on setup, do NOT enqueue the raw prompt — the injected
+        // prompt is enqueued only after setup resolves (leak-proof).
+        ...(cliPendingPrompt && !willGateClaudeCli ? { pendingMessage: cliPendingPrompt } : {})
       }
       const sessionResult = await createSession(
         worktreeId,
@@ -859,9 +949,13 @@ export function WorktreePickerModal({
       userExplicitSendTimes.set(sessionId, Date.now())
       snapshotTokenBaseline(sessionId)
       lastSendMode.set(sessionId, completionSendMode(mode))
-      useWorktreeStatusStore
-        .getState()
-        .setSessionStatus(sessionId, isPlanLike(mode) ? 'planning' : 'working')
+      // Defer the "working" status when gating on setup so the sidebar doesn't
+      // imply the agent is running while it waits behind the overlay.
+      if (!willGateClaudeCli) {
+        useWorktreeStatusStore
+          .getState()
+          .setSessionStatus(sessionId, isPlanLike(mode) ? 'planning' : 'working')
+      }
 
       // Apply user's model override to the session if they explicitly picked one
       if (selectedModel) {
@@ -925,7 +1019,11 @@ export function WorktreePickerModal({
               sdk: agentSdk,
               codexFastMode,
               goalMode: false,
-              goalSuccessCriteria: null
+              goalSuccessCriteria: null,
+              // Members inherit the head's context-injection choice so each one
+              // gets its (shared) worktree context injected when it auto-launches.
+              injectContext,
+              contextTemplate
             }
             return updateTicket(chainTicket.id, projectId, {
               pending_launch_config: JSON.stringify(chainConfig),
@@ -959,36 +1057,25 @@ export function WorktreePickerModal({
       toast.success('Session started')
 
       if (sessionAgentSdk === 'claude-code-cli') {
-        if (mode === 'super-plan') {
-          // Await so the persisted mode is committed before the main process
-          // reads it in buildClaudeCliPtySpawn (createClaudeCli).
-          await useSessionStore.getState().setSessionMode(sessionId, 'plan')
-        }
-
-        // Atomically claim the queued prompt before spawning. The session view's
-        // own mount path (ClaudeCliSessionView.createClaudeTerminal) races to send
-        // the same prompt; both read this single queue, so whichever dequeues first
-        // owns delivery and the other issues a promptless create. Sending a private
-        // copy here (instead of consuming the queue) delivers the prompt twice —
-        // once as a spawn arg and once as a paste injection on the already-live PTY.
-        const outboundPrompt = useSessionStore.getState().dequeuePendingMessage(sessionId)
-
-        bumpWorktreeLastMessage({ worktreeId })
-        try {
-          const result = unwrapEnvelope(
-            await terminalApi.createClaudeCli(sessionId, {
-              pendingPrompt: outboundPrompt
-            })
-          )
-          if (!result.success && outboundPrompt) {
-            useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
-          }
-        } catch (error) {
-          if (outboundPrompt) {
-            useSessionStore.getState().requeuePendingMessage(sessionId, outboundPrompt)
-          }
-          throw error
-        }
+        const allWorktrees = Array.from(
+          useWorktreeStore.getState().worktreesByProject.values()
+        ).flat()
+        const worktreeRow = allWorktrees.find((w) => w.id === worktreeId)
+        await launchClaudeCli(sessionId, {
+          worktreeId,
+          scanTarget: worktreeRow
+            ? {
+                id: worktreeRow.id,
+                path: worktreeRow.path,
+                branch_name: worktreeRow.branch_name,
+                // The store's worktree row omits base_branch; the launch context
+                // knows it (new → chosen source, existing → repo default).
+                base_branch: isNewWorktree ? (sourceBranch ?? defaultBranchName) : defaultBranchName
+              }
+            : null,
+          basePrompt: cliPendingPrompt ?? '',
+          bump: () => bumpWorktreeLastMessage({ worktreeId })
+        })
         return
       }
 
@@ -1086,6 +1173,8 @@ export function WorktreePickerModal({
     goalCriteria,
     autoApproveReview,
     autoApprovePlan,
+    injectContext,
+    contextTemplate,
     isConnectionMode,
     connectionId,
     moveChain,
@@ -1584,6 +1673,61 @@ export function WorktreePickerModal({
                       ? 'On by default (set in Settings).'
                       : 'When Claude finishes planning, auto-pick the menu option matching your Settings text.'}
                   </p>
+                </div>
+              )}
+              {agentSdk === 'claude-code-cli' && (
+                <div className="space-y-1.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-foreground">Worktree context</span>
+                    <Switch
+                      checked={injectContext}
+                      onCheckedChange={setInjectContext}
+                      data-testid="inject-context-toggle"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Wait for the worktree&apos;s setup script to finish, then inject its live
+                    context (port, URL, branch, notes, setup output, env) into the first prompt.
+                  </p>
+                  {injectContext && (
+                    <div className="space-y-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setContextPanelOpen((open) => !open)}
+                        className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                        data-testid="inject-context-template-toggle"
+                      >
+                        <ChevronDown
+                          className={cn(
+                            'h-3 w-3 transition-transform',
+                            contextPanelOpen ? '' : '-rotate-90'
+                          )}
+                        />
+                        Edit template
+                      </button>
+                      {contextPanelOpen && (
+                        <>
+                          <Textarea
+                            data-testid="inject-context-template"
+                            value={contextTemplate}
+                            onChange={(e) => setContextTemplate(e.target.value)}
+                            rows={8}
+                            className="resize-y font-mono text-xs leading-relaxed"
+                          />
+                          <div className="flex flex-wrap gap-1">
+                            {WORKTREE_CONTEXT_TOKENS.map((token) => (
+                              <code
+                                key={token}
+                                className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground"
+                              >
+                                {`{{${token}}}`}
+                              </code>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex items-center gap-2 flex-wrap">

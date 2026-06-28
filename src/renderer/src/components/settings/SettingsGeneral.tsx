@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT } from '@/lib/autoResolveConflictPrompt'
+import { DEFAULT_CONTEXT_TEMPLATE } from '@/lib/worktree-context-constants'
 import { useShortcutStore } from '@/stores/useShortcutStore'
 import { useAccountStore, useUsageStore } from '@/stores'
 import { toast } from '@/lib/toast'
@@ -152,6 +153,8 @@ export function SettingsGeneral(): React.JSX.Element {
     protectedBranches,
     autoApprovePlanEnabled,
     autoApprovePlanMatchText,
+    injectWorktreeContextEnabled,
+    worktreeContextTemplate,
     tipsEnabled,
     breedType,
     showModelIcons,
@@ -178,6 +181,7 @@ export function SettingsGeneral(): React.JSX.Element {
   }, [autoResolveConflictPrompt])
 
   const [autoApprovePlanDraft, setAutoApprovePlanDraft] = useState(autoApprovePlanMatchText)
+  const [worktreeContextDraft, setWorktreeContextDraft] = useState(worktreeContextTemplate)
   useEffect(() => {
     setAutoApprovePlanDraft(autoApprovePlanMatchText)
   }, [autoApprovePlanMatchText])
@@ -1179,6 +1183,86 @@ export function SettingsGeneral(): React.JSX.Element {
               </p>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* Inject worktree context */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <label className="text-sm font-medium">Inject worktree context</label>
+            <p className="text-xs text-muted-foreground">
+              For Claude Code CLI tickets, hold the agent until the worktree&apos;s setup script
+              finishes, then inject the live context (port, dev URL, branch, notes, setup output)
+              into the first prompt. Turn it on or off per ticket — this switch only sets the
+              default for newly started tickets.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={injectWorktreeContextEnabled}
+            onClick={() =>
+              updateSetting('injectWorktreeContextEnabled', !injectWorktreeContextEnabled)
+            }
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              injectWorktreeContextEnabled ? 'bg-primary' : 'bg-muted'
+            )}
+            data-testid="inject-worktree-context-toggle"
+          >
+            <span
+              className={cn(
+                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                injectWorktreeContextEnabled ? 'translate-x-4' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-muted-foreground">Context template</label>
+            <button
+              type="button"
+              onClick={() => {
+                setWorktreeContextDraft(DEFAULT_CONTEXT_TEMPLATE)
+                updateSetting('worktreeContextTemplate', DEFAULT_CONTEXT_TEMPLATE)
+              }}
+              className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+              data-testid="worktree-context-reset"
+            >
+              Reset to default
+            </button>
+          </div>
+          <Textarea
+            value={worktreeContextDraft}
+            onChange={(e) => setWorktreeContextDraft(e.target.value)}
+            onBlur={() => updateSetting('worktreeContextTemplate', worktreeContextDraft)}
+            rows={10}
+            className="font-mono text-xs"
+            data-testid="worktree-context-template-input"
+          />
+          <p className="text-xs text-muted-foreground">
+            Default template for new tickets; each ticket can override it in the worktree picker.
+            Tokens:{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{PORT}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{DEV_URL}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{BRANCH}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{BASE_BRANCH}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{WORKTREE_PATH}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">
+              {'{{WORKTREE_CONTEXT}}'}
+            </code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{SETUP_OUTPUT}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{ENV}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">
+              {'{{WORKTREE_SUMMARY}}'}
+            </code>
+            . Unknown or empty tokens render as blank.{' '}
+            <span className="text-foreground">{'{{WORKTREE_SUMMARY}}'}</span> is an AI-generated
+            project orientation — Claude Code CLI inspects the worktree once, then the result is
+            cached and reused by every ticket that shares it. It costs tokens, so it only runs when
+            you include that token in the template.
+          </p>
         </div>
       </div>
 

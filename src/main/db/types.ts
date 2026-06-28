@@ -681,6 +681,10 @@ export interface PendingLaunchConfig {
   goalMode: boolean
   goalSuccessCriteria: string | null
   autoApprovePlan: boolean
+  /** claude-code-cli: gate the spawn on setup + inject the worktree context. */
+  injectContext?: boolean
+  /** claude-code-cli: editable token template used when injectContext is on. */
+  contextTemplate?: string
 }
 
 // Ticket followup message types

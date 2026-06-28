@@ -39,6 +39,14 @@ const hiveTelemetryMocks = vi.hoisted(() => ({
 
 vi.mock('@/lib/hive-enterprise-telemetry', () => hiveTelemetryMocks)
 
+const worktreeContextMocks = vi.hoisted(() => ({
+  prepareWorktreeContextLaunch: vi.fn()
+}))
+
+vi.mock('@/lib/worktree-context', () => ({
+  prepareWorktreeContextLaunch: worktreeContextMocks.prepareWorktreeContextLaunch
+}))
+
 const initialSessionState = useSessionStore.getState()
 const initialWorktreeState = useWorktreeStore.getState()
 const initialKanbanState = useKanbanStore.getState()
@@ -81,16 +89,22 @@ function setupStores(): {
       worktreeId: string,
       projectId: string,
       sdk?: Session['agent_sdk'],
-      mode?: Session['mode']
-    ) => ({
-      success: true,
-      session: makeSession({
+      mode?: Session['mode'],
+      options?: { pendingMessage?: string | null }
+    ) => {
+      const session = makeSession({
         worktree_id: worktreeId,
         project_id: projectId,
         agent_sdk: sdk ?? 'opencode',
         mode: mode ?? 'build'
       })
-    })
+      // Mirror the real store: an initial prompt passed to createSession is
+      // enqueued so the launch site can dequeue + deliver it (single-queue model).
+      if (options?.pendingMessage) {
+        useSessionStore.getState().setPendingMessage(session.id, options.pendingMessage)
+      }
+      return { success: true, session }
+    }
   )
   const setSessionModel = vi.fn(async () => undefined)
   const setOpenCodeSessionId = vi.fn()
@@ -326,6 +340,91 @@ describe('autoLaunchTicket Claude CLI', () => {
     expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', {
       sessionId: 'session-1',
       opts: { pendingPrompt: '/goal Implement the ticket. Goal success criteria: Tests pass' }
+    })
+  })
+
+  it('gates the spawn on setup and injects the composed prompt when injectContext is on', async () => {
+    const { createSession } = setupStores()
+    worktreeContextMocks.prepareWorktreeContextLaunch.mockResolvedValue({
+      status: 'done',
+      prompt: 'Implement the ticket\n\n<ctx>3001</ctx>'
+    })
+
+    await autoLaunchTicket({
+      id: 'ticket-1',
+      project_id: 'project-1',
+      title: 'Launch Claude CLI',
+      pending_launch_config: JSON.stringify({
+        worktree: { type: 'existing', worktreeId: 'worktree-1' },
+        prompt: 'Implement the ticket',
+        mode: 'build',
+        model: null,
+        sdk: 'claude-code-cli',
+        codexFastMode: false,
+        goalMode: false,
+        goalSuccessCriteria: null,
+        injectContext: true,
+        contextTemplate: '<ctx>{{PORT}}</ctx>'
+      })
+    })
+
+    // The raw prompt is NOT enqueued at createSession when gating — the injected
+    // prompt is delivered only after setup resolves.
+    expect(createSession).toHaveBeenCalledWith('worktree-1', 'project-1', 'claude-code-cli', 'build', {
+      autoFocus: false
+    })
+    expect(worktreeContextMocks.prepareWorktreeContextLaunch).toHaveBeenCalledWith({
+      worktreeId: 'worktree-1',
+      scanTarget: {
+        id: 'worktree-1',
+        path: '/repo/feature',
+        branch_name: 'feature',
+        base_branch: undefined
+      },
+      basePrompt: 'Implement the ticket',
+      template: '<ctx>{{PORT}}</ctx>'
+    })
+    expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', {
+      sessionId: 'session-1',
+      opts: { pendingPrompt: 'Implement the ticket\n\n<ctx>3001</ctx>' }
+    })
+    // Gate is cleared once the spawn fires.
+    expect(useSessionStore.getState().launchGate.get('session-1')).toBeUndefined()
+  })
+
+  it('blocks the spawn and records the gate error when setup fails', async () => {
+    setupStores()
+    worktreeContextMocks.prepareWorktreeContextLaunch.mockResolvedValue({
+      status: 'blocked',
+      prompt: 'Implement the ticket\n\nSetup FAILED: boom',
+      error: 'boom'
+    })
+
+    await autoLaunchTicket({
+      id: 'ticket-1',
+      project_id: 'project-1',
+      title: 'Launch Claude CLI',
+      pending_launch_config: JSON.stringify({
+        worktree: { type: 'existing', worktreeId: 'worktree-1' },
+        prompt: 'Implement the ticket',
+        mode: 'build',
+        model: null,
+        sdk: 'claude-code-cli',
+        codexFastMode: false,
+        goalMode: false,
+        goalSuccessCriteria: null,
+        injectContext: true,
+        contextTemplate: '<ctx>{{PORT}}</ctx>'
+      })
+    })
+
+    // Nothing spawned — the gate holds and the session view offers "Launch anyway".
+    expect(request).not.toHaveBeenCalledWith('terminalOps.createClaudeCli', expect.anything())
+    expect(useSessionStore.getState().launchGate.get('session-1')).toEqual({
+      state: 'blocked',
+      worktreeId: 'worktree-1',
+      error: 'boom',
+      launchAnywayPrompt: 'Implement the ticket\n\nSetup FAILED: boom'
     })
   })
 })

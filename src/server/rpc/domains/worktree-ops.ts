@@ -43,6 +43,9 @@ export interface WorktreeOpsRpcService {
     worktreeId: string,
     context: string | null
   ) => Effect.Effect<SimpleResult, unknown, never>
+  readonly generateContextSummary?: (
+    worktreePath: string
+  ) => Effect.Effect<WorktreeContextSummaryResult, unknown, never>
 }
 
 export interface BranchesResult {
@@ -55,6 +58,12 @@ export interface BranchesResult {
 export interface WorktreeContextResult {
   readonly success: boolean
   readonly context?: string | null
+  readonly error?: string
+}
+
+export interface WorktreeContextSummaryResult {
+  readonly success: boolean
+  readonly summary?: string
   readonly error?: string
 }
 
@@ -289,6 +298,24 @@ export const makeLiveWorktreeOpsRpcService = (): WorktreeOpsRpcService => ({
         }
       },
       catch: (cause) => cause
+    }),
+  generateContextSummary: (worktreePath) =>
+    Effect.tryPromise({
+      try: async (): Promise<WorktreeContextSummaryResult> => {
+        try {
+          const { gatherWorktreeContextSummary } = await import(
+            '../../../main/services/worktree-context-gather'
+          )
+          const summary = await gatherWorktreeContextSummary(worktreePath)
+          return { success: true, summary }
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          }
+        }
+      },
+      catch: (cause) => cause
     })
 })
 
@@ -465,6 +492,20 @@ export const makeWorktreeOpsRpcHandlers = (
             return { success: false, error: 'worktreeOps.updateContext unavailable' }
           }
           return yield* service.updateContext(worktreeId, context)
+        })
+    ],
+    [
+      'worktreeOps.generateContextSummary',
+      (params) =>
+        Effect.gen(function* () {
+          const { worktreePath } = yield* Effect.try({
+            try: () => worktreePathParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          if (!service.generateContextSummary) {
+            return { success: false, error: 'worktreeOps.generateContextSummary unavailable' }
+          }
+          return yield* service.generateContextSummary(worktreePath)
         })
     ]
   ])
