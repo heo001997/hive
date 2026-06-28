@@ -202,18 +202,48 @@ class PtyService {
     }
   }
 
+  /**
+   * Signal the PTY's entire process group.
+   *
+   * node-pty's `kill()` only signals the session-leader process (e.g. the
+   * `claude` CLI). Any grandchildren it spawned — notably MCP servers that keep
+   * their event loop alive and never exit on stdin EOF (e.g.
+   * `@delorenj/mcp-server-trello`, whose `setInterval` is not `.unref()`'d) —
+   * survive as PID-1 orphans and leak memory/CPU indefinitely. Because forkpty
+   * makes the child a session/group leader (pgid === pid), signalling the
+   * negative pid reaps the whole group, parent and grandchildren together.
+   */
+  private killProcessGroup(pid: number | undefined, signal: NodeJS.Signals): void {
+    if (!pid || process.platform === 'win32') return
+    try {
+      process.kill(-pid, signal)
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      // ESRCH: the group is already gone — expected and harmless.
+      if (code !== 'ESRCH') {
+        log.warn('Failed to signal PTY process group', { pid, signal, code })
+      }
+    }
+  }
+
   destroy(id: string): void {
     const instance = this.ptys.get(id)
     if (!instance) {
       log.warn('PTY not found for destroy', { id })
       return
     }
-    log.info('Destroying PTY', { id })
+    const pid = instance.pty.pid
+    log.info('Destroying PTY', { id, pid })
     try {
       instance.pty.kill()
     } catch (err) {
       log.error('Error killing PTY', err instanceof Error ? err : new Error(String(err)), { id })
     }
+    // Reap the whole process group so grandchild MCP servers don't orphan to
+    // PID 1. SIGTERM first for a clean exit, then a SIGKILL backstop for any
+    // stragglers. The backstop timer is unref'd so it never keeps the app alive.
+    this.killProcessGroup(pid, 'SIGTERM')
+    setTimeout(() => this.killProcessGroup(pid, 'SIGKILL'), 2000).unref?.()
     this.ptys.delete(id)
   }
 

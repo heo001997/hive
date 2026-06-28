@@ -63,6 +63,7 @@ import { scriptRunner } from './services/script-runner'
 import { cleanupScripts } from './services/script-cleanup'
 import { cleanupFileTreeWatchers, getFileTreeWatcherCount } from './services/file-tree-watcher'
 import { cleanupTerminals } from './services/terminal-pty-bridge'
+import { startOrphanMcpReaper, stopOrphanMcpReaper } from './services/orphan-mcp-reaper'
 import { wireQuitCleanup } from './services/quit-cleanup'
 import { bashService } from './effect/bash/facade'
 import { disposeAllRuntimes } from './effect/_shared/runtime'
@@ -750,6 +751,11 @@ app
       // ignore - setting may not exist yet
     }
 
+    // Sweep MCP servers that orphaned to PID 1 when a buggy server kept its
+    // event loop alive after its parent `claude` exited (belt-and-suspenders
+    // behind the process-group kill in PtyService.destroy()).
+    startOrphanMcpReaper()
+
     // Auto-enable codex JSONL logging if setting is enabled.
     try {
       const raw = getDatabase().getSetting(APP_SETTINGS_DB_KEY)
@@ -896,6 +902,8 @@ wireQuitCleanup({
     { name: 'destroyPetWindow', run: () => destroyPetWindow() },
     { name: 'perfDiagnostics', run: () => perfDiagnostics.cleanup() },
     { name: 'updaterService', run: () => updaterService.cleanup() },
+    // Stop the orphan-MCP reaper before tearing down terminals
+    { name: 'stopOrphanMcpReaper', run: () => stopOrphanMcpReaper() },
     // Terminal PTYs and Ghostty runtime
     { name: 'cleanupTerminals', run: () => cleanupTerminals() },
     { name: 'closeClaudeHookServer', run: () => closeClaudeHookServer() },
