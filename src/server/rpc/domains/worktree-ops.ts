@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs'
 import { Effect } from 'effect'
 import { z } from 'zod'
 import type {
+  BranchFromBaseParams,
+  BranchFromBaseResult,
   CreateFromBranchParams,
   CreateWorktreeParams,
   DeleteWorktreeParams,
@@ -22,6 +24,9 @@ export interface WorktreeOpsRpcService {
     params: DuplicateWorktreeParams
   ) => Effect.Effect<WorktreeResult, unknown, never>
   readonly renameBranch: (params: RenameBranchParams) => Effect.Effect<SimpleResult, unknown, never>
+  readonly branchFromBase: (
+    params: BranchFromBaseParams
+  ) => Effect.Effect<BranchFromBaseResult, unknown, never>
   readonly createFromBranch: (
     params: CreateFromBranchParams
   ) => Effect.Effect<WorktreeResult, unknown, never>
@@ -102,6 +107,14 @@ const renameBranchParamsSchema = z
     newBranch: z.string().min(1)
   })
   .strict() satisfies z.ZodType<RenameBranchParams>
+const branchFromBaseParamsSchema = z
+  .object({
+    worktreeId: z.string().min(1),
+    worktreePath: z.string().min(1),
+    ticketTitle: z.string().min(1),
+    baseBranch: z.string().min(1)
+  })
+  .strict() satisfies z.ZodType<BranchFromBaseParams>
 const createFromBranchParamsSchema = z
   .object({
     projectId: z.string().min(1),
@@ -166,6 +179,14 @@ export const makeLiveWorktreeOpsRpcService = (): WorktreeOpsRpcService => ({
       try: async () => {
         const { worktreeOpsFacade } = await import('../../../main/effect/db/facade')
         return worktreeOpsFacade.renameBranch(params)
+      },
+      catch: (cause) => cause
+    }),
+  branchFromBase: (params) =>
+    Effect.tryPromise({
+      try: async () => {
+        const { worktreeOpsFacade } = await import('../../../main/effect/db/facade')
+        return worktreeOpsFacade.branchFromBase(params)
       },
       catch: (cause) => cause
     }),
@@ -339,6 +360,17 @@ export const makeWorktreeOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.renameBranch(renameParams)
+        })
+    ],
+    [
+      'worktreeOps.branchFromBase',
+      (params) =>
+        Effect.gen(function* () {
+          const branchParams = yield* Effect.try({
+            try: () => branchFromBaseParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.branchFromBase(branchParams)
         })
     ],
     [

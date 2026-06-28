@@ -73,6 +73,19 @@ type WorktreeRenameBranchParams = {
   newBranch: string
 }
 
+type WorktreeBranchFromBaseParams = {
+  worktreeId: string
+  worktreePath: string
+  ticketTitle: string
+  baseBranch: string
+}
+
+type WorktreeBranchFromBaseResult = {
+  success: boolean
+  branch?: string
+  error?: string
+}
+
 type WorktreeOpsResult = {
   success: boolean
   worktree?: WorktreeRow
@@ -164,6 +177,13 @@ export const worktreeApi = {
     getRendererRpcClient().request<boolean>('worktreeOps.exists', { worktreePath }),
   renameBranch: async (params: WorktreeRenameBranchParams): Promise<WorktreeMutationResult> =>
     getRendererRpcClient().request<WorktreeMutationResult>('worktreeOps.renameBranch', params),
+  branchFromBase: async (
+    params: WorktreeBranchFromBaseParams
+  ): Promise<WorktreeBranchFromBaseResult> =>
+    getRendererRpcClient().request<WorktreeBranchFromBaseResult>(
+      'worktreeOps.branchFromBase',
+      params
+    ),
   getContext: async (worktreeId: string): Promise<WorktreeContextResult> =>
     getRendererRpcClient().request<WorktreeContextResult>('worktreeOps.getContext', {
       worktreeId

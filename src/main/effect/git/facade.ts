@@ -281,6 +281,16 @@ class GitFacade {
     return runResult(Effect.flatMap(Git, (git) => git.branch.rename(repoPath, worktreePath, oldBranch, newBranch)))
   }
 
+  createAndCheckoutBranch(
+    worktreePath: string,
+    newBranch: string,
+    startPoint?: string
+  ): Promise<GitOperationResult> {
+    return runResult(
+      Effect.flatMap(Git, (git) => git.branch.createAndCheckout(worktreePath, newBranch, startPoint))
+    )
+  }
+
   listBranchesWithStatus(repoPath: string): Promise<GitBranchWithStatus[]> {
     return runValue(Effect.flatMap(Git, (git) => git.branch.listWithStatus(repoPath)), [])
   }

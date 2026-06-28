@@ -81,6 +81,11 @@ export class Git extends Context.Tag('GitIsland/Git')<
         oldBranch: string,
         newBranch: string
       ) => Eff<GitOperationResult>
+      readonly createAndCheckout: (
+        worktreePath: string,
+        newBranch: string,
+        startPoint?: string
+      ) => Eff<GitOperationResult>
       readonly delete: (repoPath: string, branchName: string) => Eff<GitOperationResult>
       readonly isMerged: (repoPath: string, branch: string) => Eff<{ success: boolean; isMerged: boolean }>
       readonly info: (repoPath: string) => Eff<GitBranchInfoResult>

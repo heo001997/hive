@@ -925,6 +925,16 @@ const make = Effect.gen(function* () {
         writeOp(worktreePath, `git branch -m ${oldBranch} ${newBranch}`, (git) =>
           git.branch(['-m', oldBranch, newBranch]).then(() => ({ success: true as const }))
         ),
+      createAndCheckout: (worktreePath, newBranch, startPoint) =>
+        writeOp(
+          worktreePath,
+          `git checkout -b ${newBranch}${startPoint ? ` ${startPoint}` : ''}`,
+          (git) =>
+            (startPoint
+              ? git.checkoutBranch(newBranch, startPoint)
+              : git.checkoutLocalBranch(newBranch)
+            ).then(() => ({ success: true as const }))
+        ),
       delete: (repoPath, branchName) =>
         writeOp(repoPath, `git branch -D ${branchName}`, (git) =>
           git.branch(['-D', branchName]).then(() => ({ success: true as const }))

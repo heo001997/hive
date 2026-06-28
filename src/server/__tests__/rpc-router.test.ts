@@ -38244,7 +38244,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38278,7 +38279,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38343,7 +38345,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38385,7 +38388,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38435,7 +38439,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38470,7 +38475,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38519,7 +38525,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38554,7 +38561,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38591,7 +38599,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38625,7 +38634,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38664,7 +38674,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38699,7 +38710,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38738,7 +38750,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38773,7 +38786,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38812,7 +38826,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38846,7 +38861,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38885,7 +38901,8 @@ describe('rpc router', () => {
           }),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38920,7 +38937,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -38982,7 +39000,8 @@ describe('rpc router', () => {
             return { success: true, worktree: duplicatedWorktree }
           }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -39025,7 +39044,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -39070,7 +39090,8 @@ describe('rpc router', () => {
             calls.push(params)
             return { success: true }
           }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -39111,7 +39132,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -39174,6 +39196,7 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false }),
         createFromBranch: (params) =>
           Effect.sync(() => {
             calls.push(params)
@@ -39229,7 +39252,8 @@ describe('rpc router', () => {
         branchExists: () => Effect.succeed(false),
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
-        createFromBranch: () => Effect.succeed({ success: false })
+        createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false })
       }
     })
 
@@ -39270,6 +39294,7 @@ describe('rpc router', () => {
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
         createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false }),
         getContext: (worktreeId) =>
           Effect.sync(() => {
             calls.push(worktreeId)
@@ -39310,6 +39335,7 @@ describe('rpc router', () => {
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
         createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false }),
         getContext: () => Effect.succeed({ success: false })
       }
     })
@@ -39346,6 +39372,7 @@ describe('rpc router', () => {
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
         createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false }),
         updateContext: (worktreeId, context) =>
           Effect.sync(() => {
             calls.push({ worktreeId, context })
@@ -39386,6 +39413,7 @@ describe('rpc router', () => {
         duplicate: () => Effect.succeed({ success: false }),
         renameBranch: () => Effect.succeed({ success: false }),
         createFromBranch: () => Effect.succeed({ success: false }),
+        branchFromBase: () => Effect.succeed({ success: false }),
         updateContext: () => Effect.succeed({ success: false })
       }
     })

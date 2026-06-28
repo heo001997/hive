@@ -1,4 +1,5 @@
 import type {
+  BranchFromBaseParams,
   CreateFromBranchParams,
   CreateWorktreeParams,
   DeleteWorktreeParams,
@@ -7,6 +8,7 @@ import type {
   SyncWorktreesParams
 } from '../../services/worktree-ops'
 import {
+  branchWorktreeFromBaseOpEffect,
   createWorktreeFromBranchOpEffect,
   createWorktreeOpEffect,
   deleteWorktreeOpEffect,
@@ -24,6 +26,8 @@ export const worktreeOpsFacade = {
     getRuntime().runPromise(duplicateWorktreeOpEffect(params)),
   renameBranch: (params: RenameBranchParams) =>
     getRuntime().runPromise(renameWorktreeBranchOpEffect(params)),
+  branchFromBase: (params: BranchFromBaseParams) =>
+    getRuntime().runPromise(branchWorktreeFromBaseOpEffect(params)),
   createFromBranch: (params: CreateFromBranchParams) =>
     getRuntime().runPromise(createWorktreeFromBranchOpEffect(params))
 }
