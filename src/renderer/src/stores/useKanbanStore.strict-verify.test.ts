@@ -39,12 +39,37 @@ const hoisted = vi.hoisted(() => ({
   sessionStatuses: {} as Record<string, { status: string; timestamp: number } | null>,
   followUpQueue: new Map<string, string[]>(),
   detect: vi.fn<(...args: unknown[]) => Promise<CompletionCheckResult>>(),
-  fingerprint: vi.fn<(...args: unknown[]) => Promise<SessionFingerprint>>()
+  fingerprint: vi.fn<(...args: unknown[]) => Promise<SessionFingerprint>>(),
+  toastError: vi.fn()
 }))
 
 vi.mock('./useSettingsStore', () => ({
   useSettingsStore: { getState: () => hoisted.settings }
 }))
+
+// Capture user-facing error toasts (the no-fail-open path surfaces detector failures here).
+vi.mock('@/lib/toast', () => {
+  const noop = (): undefined => undefined
+  const toast = {
+    error: (...args: unknown[]) => hoisted.toastError(...args),
+    success: noop,
+    warning: noop,
+    info: noop,
+    loading: noop,
+    dismiss: noop,
+    custom: noop,
+    promise: noop
+  }
+  return {
+    toast,
+    default: toast,
+    showResultToast: noop,
+    gitToast: {},
+    projectToast: {},
+    clipboardToast: {},
+    sessionToast: {}
+  }
+})
 
 vi.mock('@/api/db-api', () => ({
   dbApi: { worktree: { get: vi.fn().mockResolvedValue({ path: '/wt/path' }) } }
@@ -300,7 +325,7 @@ describe('Strict Verify — Gate 2 (the Watcher)', () => {
     expect(columnOf('ticket-1')).toBe('in_progress')
   })
 
-  it('fails open: a provider error leaves the verified ticket in Review', async () => {
+  it('no fail-open: a provider error leaves the ticket in Review with NO verdict, surfaced as a toast', async () => {
     hoisted.detect.mockResolvedValue({ success: false, error: 'provider down' })
     seed(makeTicket({ column: 'in_progress' }))
 
@@ -308,6 +333,10 @@ describe('Strict Verify — Gate 2 (the Watcher)', () => {
     await vi.runAllTimersAsync()
 
     expect(columnOf('ticket-1')).toBe('review')
+    // No fake "complete" verdict is fabricated — the error is real and visible.
+    expect(verdictOf('ticket-1')).toBeUndefined()
+    expect(hoisted.toastError).toHaveBeenCalledTimes(1)
+    expect(hoisted.toastError.mock.calls[0][0]).toContain('provider down')
   })
 
   it('does not re-call the provider on a replay for the same session (idempotent)', async () => {
@@ -447,6 +476,53 @@ describe('Strict Verify gates Auto Review Bypass (Feature B)', () => {
 
     expect(columnOf('ticket-1')).toBe('in_progress')
   })
+
+  // NO FAIL-OPEN. A Reviewer that THROWS (e.g. the judge returned non-JSON the
+  // detector couldn't parse) must NOT fabricate a "complete" verdict and must NOT
+  // advance the ticket. We trust the agent, but a detector failure is a real error:
+  // the ticket rests in Review with NO verdict, and the error is surfaced (toast)
+  // + logged so it can be traced — never silently swallowed into Done.
+  it('does NOT advance when the Reviewer throws — stays in Review, error surfaced (auto-approve on)', async () => {
+    hoisted.detect.mockRejectedValue(new Error('Could not extract JSON from AI response'))
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+    // No verdict fabricated — Feature B has nothing to act on, so nothing advances.
+    expect(verdictOf('ticket-1')).toBeUndefined()
+    expect(hoisted.toastError).toHaveBeenCalledTimes(1)
+    expect(hoisted.toastError.mock.calls[0][0]).toContain('Could not extract JSON from AI response')
+  })
+
+  it('does NOT advance when the Reviewer returns no verdict — stays in Review, error surfaced (auto-approve on)', async () => {
+    hoisted.detect.mockResolvedValue({ success: false, error: 'provider down' })
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')).toBeUndefined()
+    expect(hoisted.toastError).toHaveBeenCalledTimes(1)
+    expect(hoisted.toastError.mock.calls[0][0]).toContain('provider down')
+  })
+
+  it('a Reviewer error on a NON-opted-in ticket just rests in Review with NO verdict', async () => {
+    hoisted.detect.mockRejectedValue(new Error('boom'))
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: false }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')).toBeUndefined()
+    expect(hoisted.toastError).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('Legacy path — Strict Verify off, Auto Review Bypass on', () => {
@@ -528,6 +604,81 @@ describe('completion verdict actions', () => {
     const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
     expect(verdict).toBeNull()
     expect(hoisted.detect).not.toHaveBeenCalled()
+  })
+
+  it('recheckTicketCompletion surfaces a toast and returns null when the detector throws (no fail-open)', async () => {
+    hoisted.detect.mockRejectedValue(new Error('judge unreachable'))
+    seed(makeTicket({ column: 'review', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(verdict).toBeNull()
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')).toBeUndefined()
+    expect(hoisted.toastError).toHaveBeenCalledTimes(1)
+    expect(hoisted.toastError.mock.calls[0][0]).toContain('judge unreachable')
+  })
+
+  it('recheckTicketCompletion surfaces a toast and returns null when the detector returns no verdict', async () => {
+    hoisted.detect.mockResolvedValue({ success: false, error: 'provider down' })
+    seed(makeTicket({ column: 'review', auto_approve_review: true }))
+
+    const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(verdict).toBeNull()
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(hoisted.toastError).toHaveBeenCalledTimes(1)
+    expect(hoisted.toastError.mock.calls[0][0]).toContain('provider down')
+  })
+
+  // Regression: a manual "Verify with AI" that PASSED used to store the verdict
+  // but never hand off to Feature B, so an auto-approve chain ticket just sat in
+  // Review (no commit, no advance). It must now finalize like the automatic pass.
+  it('recheckTicketCompletion advances an auto-approve chain ticket to Done when verified', async () => {
+    hoisted.settings.kanbanAutoCommitOnReview = true
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'all done' }
+    })
+    seed(makeTicket({ column: 'review', worktree_id: 'wt-1', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(verdict).toMatchObject({ complete: true, movedBack: false })
+    expect(columnOf('ticket-1')).toBe('done')
+  })
+
+  it('recheckTicketCompletion leaves a verified terminal ticket in Review (no dependent)', async () => {
+    hoisted.settings.kanbanAutoCommitOnReview = true
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    seed(makeTicket({ column: 'review', worktree_id: 'wt-1', auto_approve_review: true }))
+
+    await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+  })
+
+  it('recheckTicketCompletion does NOT advance a verified ticket that opted out of auto-approve', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    seed(makeTicket({ column: 'review', auto_approve_review: false }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
   })
 })
 

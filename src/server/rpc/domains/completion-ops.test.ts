@@ -7,6 +7,7 @@ import type { CompletionVerdict } from '@shared/types/completion'
 import {
   makeCompletionOpsRpcHandlers,
   makeLiveCompletionOpsRpcService,
+  serializeEntryForReview,
   type CompletionOpsDatabase
 } from './completion-ops'
 
@@ -348,6 +349,131 @@ describe('completionOps transcript source resolution', () => {
 
     await Effect.runPromise(service.detectTicketCompletion({ sessionId: 's1', ticketId: 't1' }))
     expect(buildTail).toHaveBeenCalledWith([], undefined)
+  })
+
+  it('folds tool activity into the JSONL tail so tool-only turns are not dropped (the false-incomplete fix)', async () => {
+    // Regression for "ticket in Review judged Not done despite being finished":
+    // a build agent typically FINISHES with tool work (write files, run tests,
+    // commit) and little/no trailing prose. The reader's text-only `content` field
+    // is then blank for those turns, so they were filtered out and the tail ended on
+    // stale mid-work narration → the Watcher read "incomplete" → bounce loop. The
+    // tool calls + results must survive so the judge sees the real final state.
+    const buildTail = vi.fn(() => 'TAIL')
+    const readClaudeTranscript = vi.fn(async () => [
+      { role: 'assistant', content: 'Let me check the timezone wiring.', parts: [] },
+      {
+        role: 'assistant',
+        content: '', // text-only view: empty — would have been dropped before the fix
+        parts: [
+          {
+            type: 'tool_use',
+            toolUse: {
+              name: 'Write',
+              input: { file_path: '/repo/quickstart.md', content: '# Quickstart' },
+              output: 'File created successfully at: /repo/quickstart.md',
+              status: 'success'
+            }
+          }
+        ]
+      }
+    ])
+    const service = makeLiveCompletionOpsRpcService({
+      loadDatabase: () =>
+        fakeDb({
+          getSession: () =>
+            session({
+              agent_sdk: 'claude-code-cli',
+              claude_session_id: 'cs-tools'
+            } as Partial<Session>),
+          getSessionMessages: () => []
+        }),
+      detect: async () => goodVerdict,
+      buildTail,
+      readLiveness: noLiveness,
+      readClaudeTranscript
+    })
+
+    await Effect.runPromise(service.detectTicketCompletion({ sessionId: 's1', ticketId: 't1' }))
+    const passed = (buildTail.mock.calls[0] as unknown[])[0] as Array<{
+      role: string
+      content: string
+    }>
+    // The tool-only turn survived (2 messages, not 1).
+    expect(passed).toHaveLength(2)
+    const last = passed[passed.length - 1]
+    expect(last.role).toBe('assistant')
+    expect(last.content).toContain('⏺ Write(')
+    expect(last.content).toContain('quickstart.md')
+    expect(last.content).toContain('→ File created successfully')
+  })
+})
+
+describe('serializeEntryForReview', () => {
+  it('returns the plain content when there are no parts (codex/opencode-style entry)', () => {
+    expect(serializeEntryForReview({ content: '  all done  ' })).toBe('all done')
+    expect(serializeEntryForReview({ content: '   ' })).toBe('')
+    expect(serializeEntryForReview({})).toBe('')
+  })
+
+  it('renders text parts as-is and folds in tool calls with their results', () => {
+    const out = serializeEntryForReview({
+      content: 'ignored when parts present',
+      parts: [
+        { type: 'text', text: 'Implemented the feature.' },
+        {
+          type: 'tool_use',
+          toolUse: { name: 'Bash', input: { command: 'pnpm test' }, output: '37 passed, 0 failed' }
+        }
+      ]
+    })
+    expect(out).toContain('Implemented the feature.')
+    expect(out).toContain('⏺ Bash({"command":"pnpm test"})')
+    expect(out).toContain('→ 37 passed, 0 failed')
+  })
+
+  it('renders a tool error with the ✗ marker instead of an output line', () => {
+    const out = serializeEntryForReview({
+      parts: [
+        {
+          type: 'tool_use',
+          toolUse: { name: 'Bash', input: { command: 'pnpm test' }, error: '3 tests failed' }
+        }
+      ]
+    })
+    expect(out).toContain('✗ error: 3 tests failed')
+    expect(out).not.toContain('→')
+  })
+
+  it('omits thinking/reasoning parts (internal monologue, noisy)', () => {
+    const out = serializeEntryForReview({
+      parts: [
+        { type: 'reasoning', text: 'I should probably double check the edge cases here…' },
+        { type: 'text', text: 'Done.' }
+      ]
+    })
+    expect(out).toBe('Done.')
+  })
+
+  it('clips a huge tool input and output so one payload cannot eat the whole tail budget', () => {
+    const out = serializeEntryForReview({
+      parts: [
+        {
+          type: 'tool_use',
+          toolUse: {
+            name: 'Write',
+            input: { content: 'x'.repeat(5000) },
+            output: 'y'.repeat(5000)
+          }
+        }
+      ]
+    })
+    // 300-char input cap + 800-char output cap + framing — far below the raw 10k.
+    expect(out.length).toBeLessThan(1300)
+    expect(out).toContain('…')
+  })
+
+  it('drops a thinking-only turn to an empty string (so it is filtered from the tail)', () => {
+    expect(serializeEntryForReview({ parts: [{ type: 'reasoning', text: 'hmm' }] })).toBe('')
   })
 })
 
