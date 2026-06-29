@@ -28,6 +28,7 @@ import { useConnectionStore } from './useConnectionStore'
 import { usePinnedStore } from './usePinnedStore'
 import { useWorktreeStatusStore } from './useWorktreeStatusStore'
 import { kanbanApi as kanban } from '@/api/kanban-api'
+import { toast } from '@/lib/toast'
 
 export interface BoardTelegramTarget {
   ticketId: string
@@ -1036,33 +1037,44 @@ interface StrictVerifySettings {
  * we neither re-call the model nor re-store — this absorbs the `session_completed`
  * status replays that fire on app relaunch/focus. A genuine resume of work clears
  * the verdict (see `session_working`), so the next settle re-checks the now-longer
- * transcript. Detection errors fail open (return `false`) so a flaky provider
- * never traps a ticket.
+ * transcript. A detection error does NOT fail open: it surfaces the error and
+ * leaves the ticket in Review (outcome `'error'`) so the cause can be traced.
  */
 /**
- * Record a fail-open verdict when the Reviewer can't produce a real one (it
- * threw, or returned no verdict). The engine already fails open here — it does
- * NOT bounce the ticket, leaving it in Review "as if complete". Persisting that
- * decision as a verdict keeps Feature B consistent: without it, `onAutoBypassSettled`
- * finds no verdict and aborts, stranding an auto-approve ticket in Review forever
- * (never bounced, never advanced). confidence:0 marks that this wasn't truly
- * verified; a genuine resume (`session_working`) clears it so the next settle
- * re-judges the now-longer transcript.
+ * Outcome of a Strict Verify pass:
+ *  - `'complete'` — verified complete (or nothing to judge); proceed to Feature B.
+ *  - `'bounced'`  — judged incomplete; verdict stored and ticket moved back.
+ *  - `'error'`    — the Reviewer threw or returned no verdict. We do NOT fail open
+ *                   (no fake "complete" verdict, no advance); the ticket rests in
+ *                   Review with the error surfaced + logged for tracing.
  */
-function storeFailOpenVerdict(
+type StrictVerifyOutcome = 'complete' | 'bounced' | 'error'
+
+/**
+ * Surface a Strict Verify failure loudly instead of failing open. The Reviewer
+ * threw or returned no verdict — we do NOT fabricate a "complete" verdict and we
+ * do NOT advance the ticket. It rests in Review with the error shown to the user
+ * (toast, with a one-click re-run) and logged under the traceable `[StrictVerify]`
+ * prefix so the failure can be traced end-to-end.
+ */
+function reportStrictVerifyError(
   get: () => KanbanState,
-  key: TicketKey,
-  sessionId: string,
-  reason: string
+  ticketId: string,
+  projectId: string,
+  ticket: KanbanTicket,
+  detail: unknown
 ): void {
-  get().setCompletionVerdict(key, {
-    complete: true,
-    needsInput: false,
-    confidence: 0,
-    reason,
-    sessionId,
-    checkedAt: Date.now(),
-    movedBack: false
+  const message = detail instanceof Error ? detail.message : String(detail ?? 'unknown error')
+  console.error(
+    `[StrictVerify] completion check FAILED for ticket ${ticketId} ` +
+      `(session ${ticket.current_session_id ?? 'none'}) — left in Review, NOT advanced: ${message}`
+  )
+  const title = ticket.title?.trim() || 'ticket'
+  const label = title.length > 80 ? `${title.slice(0, 79)}…` : title
+  toast.error(`AI completion check failed for "${label}" — left in Review. ${message}`, {
+    retry: () => {
+      void get().recheckTicketCompletion(ticketId, projectId)
+    }
   })
 }
 
@@ -1072,9 +1084,9 @@ async function runStrictVerify(
   projectId: string,
   ticket: KanbanTicket,
   settings: StrictVerifySettings
-): Promise<boolean> {
+): Promise<StrictVerifyOutcome> {
   const sessionId = ticket.current_session_id
-  if (!sessionId) return false // no transcript to judge → don't block
+  if (!sessionId) return 'complete' // no transcript to judge → don't block
 
   const key = ticketKey(projectId, ticketId)
   const prior = get().completionVerdicts.get(key)
@@ -1090,7 +1102,7 @@ async function runStrictVerify(
       await moveTicketBackToInProgress(get, ticketId, projectId)
       maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, prior.needsInput, settings)
     }
-    return prior.movedBack
+    return prior.movedBack ? 'bounced' : 'complete'
   }
 
   const threshold = settings.kanbanStrictVerifyConfidenceThreshold ?? 0.6
@@ -1106,22 +1118,13 @@ async function runStrictVerify(
       systemPrompt: settings.kanbanStrictVerifyPrompt || undefined
     })
   } catch (err) {
-    console.error('Strict verify failed for ticket', ticketId, err)
-    storeFailOpenVerdict(get, key, sessionId, 'Verifier errored — failed open (treated as complete).')
-    return false
+    reportStrictVerifyError(get, ticketId, projectId, ticket, err)
+    return 'error'
   }
 
   if (!result.success || !result.verdict) {
-    if (result.error) console.warn('Strict verify returned no verdict:', result.error)
-    storeFailOpenVerdict(
-      get,
-      key,
-      sessionId,
-      result.error
-        ? `Verifier returned no verdict (${result.error}) — failed open.`
-        : 'Verifier returned no verdict — failed open.'
-    )
-    return false
+    reportStrictVerifyError(get, ticketId, projectId, ticket, result.error)
+    return 'error'
   }
 
   const verdict = result.verdict
@@ -1142,7 +1145,7 @@ async function runStrictVerify(
     await moveTicketBackToInProgress(get, ticketId, projectId)
     maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, verdict.needsInput, settings)
   }
-  return incomplete
+  return incomplete ? 'bounced' : 'complete'
 }
 
 /**
@@ -1300,8 +1303,15 @@ async function onStrictVerifySettled(
   // Skipped when the Reviewer sub-gate is off — a ticket that cleared the
   // snapshot (or had it disabled) is then treated as verified without a model call.
   if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
-    const incomplete = await runStrictVerify(get, ticketId, projectId, current, settings)
-    if (incomplete) return // verdict stored + moved back (the move clears progress)
+    const outcome = await runStrictVerify(get, ticketId, projectId, current, settings)
+    if (outcome === 'bounced') return // verdict stored + moved back (the move clears progress)
+    if (outcome === 'error') {
+      // The Reviewer failed — error already surfaced + logged by runStrictVerify.
+      // Do NOT fail open: leave the ticket in Review (no verdict, no advance) so
+      // the failure can be traced, and clear the in-progress badge.
+      get().setVerifyProgress(key, null)
+      return
+    }
   }
 
   // Verified complete. Queue prompts takes precedence over Done/auto-approve: if
@@ -2961,11 +2971,12 @@ export const useKanbanStore = create<KanbanState>()(
             systemPrompt: settings.kanbanStrictVerifyPrompt || undefined
           })
         } catch (err) {
-          console.error('Manual completion check failed for ticket', ticketId, err)
+          // No fail-open: surface + log, leave the ticket where it is.
+          reportStrictVerifyError(get, ticketId, projectId, ticket, err)
           return null
         }
         if (!result.success || !result.verdict) {
-          if (result.error) console.warn('Manual completion check returned no verdict:', result.error)
+          reportStrictVerifyError(get, ticketId, projectId, ticket, result.error)
           return null
         }
 

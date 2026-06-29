@@ -183,13 +183,33 @@ describe('detectTicketCompletion', () => {
     expect((await detectTicketCompletion({ ...base, transcriptTail: 'x' })).complete).toBe(true)
   })
 
-  it('retries once when the first response is unparseable, then succeeds', async () => {
+  it('retries on an unparseable response, then succeeds', async () => {
     generateText
       .mockResolvedValueOnce('```bash\nhead -c 10 file\n```') // no JSON object → parse fails
       .mockResolvedValueOnce('{"complete":true,"needsInput":false,"confidence":1,"reason":"ok"}')
     const verdict = await detectTicketCompletion({ ...base, transcriptTail: 'x' })
     expect(verdict.complete).toBe(true)
     expect(generateText).toHaveBeenCalledTimes(2)
+  })
+
+  it('tries up to 3 times before throwing when every response is unparseable', async () => {
+    generateText
+      .mockResolvedValueOnce('no json here')
+      .mockResolvedValueOnce('still no json')
+      .mockResolvedValueOnce('nope')
+      .mockResolvedValueOnce('{"complete":true,"needsInput":false,"confidence":1,"reason":"too late"}')
+    await expect(detectTicketCompletion({ ...base, transcriptTail: 'x' })).rejects.toThrow()
+    expect(generateText).toHaveBeenCalledTimes(3)
+  })
+
+  it('succeeds on the 3rd attempt after two unparseable responses', async () => {
+    generateText
+      .mockResolvedValueOnce('garbage')
+      .mockResolvedValueOnce('') // empty → counts as an attempt
+      .mockResolvedValueOnce('{"complete":false,"needsInput":false,"confidence":0.5,"reason":"third time"}')
+    const verdict = await detectTicketCompletion({ ...base, transcriptTail: 'x' })
+    expect(verdict.reason).toBe('third time')
+    expect(generateText).toHaveBeenCalledTimes(3)
   })
 
   it('clamps confidence into [0,1]', async () => {

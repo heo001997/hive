@@ -16,10 +16,12 @@ const MAX_TITLE_LENGTH = 512
 const MAX_DESCRIPTION_LENGTH = 4 * 1024
 /**
  * How many times to ask the provider for a verdict. Models occasionally answer
- * with prose or an unrelated code fence and no parseable JSON; one retry lets a
- * transient bad response self-heal before we surface an error to the engine.
+ * with prose or an unrelated code fence and no parseable JSON; a couple of
+ * retries let a transient bad response self-heal before we surface an error to
+ * the engine (which then leaves the ticket in Review with the error logged —
+ * it does NOT fail open / fake a "complete" verdict).
  */
-const COMPLETION_PARSE_ATTEMPTS = 2
+const COMPLETION_PARSE_ATTEMPTS = 3
 
 /** Built-in Watcher system prompt; the user can override it per the settings. */
 const SYSTEM_PROMPT = DEFAULT_STRICT_VERIFY_PROMPT
