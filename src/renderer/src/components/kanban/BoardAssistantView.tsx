@@ -984,7 +984,23 @@ function BoardChatComposer({
               onCancelEdit()
               return
             }
-            if (event.key === 'Enter' && !event.shiftKey) {
+            // Option/Alt+Enter inserts a newline. Chromium does not insert one by
+            // default for this combo, so do it manually and keep the caret in place.
+            if (event.key === 'Enter' && event.altKey) {
+              event.preventDefault()
+              const target = event.currentTarget
+              const start = target.selectionStart ?? value.length
+              const end = target.selectionEnd ?? value.length
+              const nextValue = `${value.slice(0, start)}\n${value.slice(end)}`
+              const caret = start + 1
+              onChange(nextValue)
+              requestAnimationFrame(() => {
+                target.selectionStart = caret
+                target.selectionEnd = caret
+              })
+              return
+            }
+            if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
               event.preventDefault()
               onSend()
             }
@@ -994,7 +1010,7 @@ function BoardChatComposer({
           <div className="flex items-center gap-2">
             <AttachmentButton onAttach={addComposerAttachment} disabled={disabled} />
             <span className="text-xs text-muted-foreground">
-              Enter to send. Shift+Enter for a new line.
+              Enter to send. Shift+Enter or Option+Enter for a new line.
             </span>
           </div>
           {sending ? (
