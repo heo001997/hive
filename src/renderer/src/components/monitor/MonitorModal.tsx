@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Cpu, MemoryStick, Gauge, Activity, Trash2, Pause, Play, FileText } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -61,6 +61,11 @@ export function MonitorModal(): React.JSX.Element | null {
 
   const [paused, setPaused] = useState(false)
   const [cleaning, setCleaning] = useState(false)
+  // Read inside the subscription callback without re-subscribing on each toggle.
+  const pausedRef = useRef(false)
+  useEffect(() => {
+    pausedRef.current = paused
+  }, [paused])
 
   // On open: hydrate from server history/alerts, then stream live snapshots.
   useEffect(() => {
@@ -78,10 +83,17 @@ export function MonitorModal(): React.JSX.Element | null {
         if (!cancelled) setAlerts(a)
       })
       .catch(() => undefined)
-    const unsubscribe = monitorApi.subscribeSnapshots((s) => applySnapshot(s))
+    // Drop snapshots while paused so the view actually freezes — toggling server
+    // cadence alone doesn't, since background sampling keeps overwriting it.
+    const unsubscribe = monitorApi.subscribeSnapshots((s) => {
+      if (!pausedRef.current) applySnapshot(s)
+    })
     return () => {
       cancelled = true
       unsubscribe()
+      // Always drop the server back out of fast cadence on teardown — covers an
+      // unmount that bypasses the store's close() (e.g. an error-boundary swap).
+      void monitorApi.setActive(false).catch(() => undefined)
     }
   }, [isOpen, setHistory, setAlerts, applySnapshot])
 

@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, appendFileSync, statSync, renameSync } from 'fs'
 import { createLogger } from './logger'
 import { getHiveLogsDir } from './hive-paths'
 import { perfDiagnostics } from './perf-diagnostics'
-import { reapOrphanedMcpServers, MCP_COMMAND_PATTERN } from './orphan-mcp-reaper'
+import { reapOrphans, MCP_COMMAND_PATTERN } from './orphan-mcp-reaper'
 import {
   SYSTEM_MONITOR_SNAPSHOT_CHANNEL,
   SYSTEM_MONITOR_ALERT_CHANNEL,
@@ -23,6 +23,9 @@ const log = createLogger({ component: 'SystemMonitor' })
 const ACTIVE_INTERVAL_MS = 2_000 // panel open: snappy live updates
 const BACKGROUND_INTERVAL_MS = 15_000 // enabled but closed: alerts + history
 const MAX_HISTORY = 1_000 // ring buffer of snapshots (~30 min @ 2s)
+// What getHistory() ships to the renderer on open. The renderer keeps the same
+// number for its sparklines, so serialising the full ring just wastes bandwidth.
+const RENDERER_HISTORY_LIMIT = 200
 const MAX_ALERTS = 200
 const MAX_LOG_SIZE = 10 * 1024 * 1024 // 10MB
 const MAX_ROTATED_FILES = 2
@@ -41,9 +44,19 @@ const ALERT_COOLDOWN_MS = 60_000
 // Ancestors we'll keep climbing through when resolving the app root: Electron
 // itself, the dev electron/node launcher, and the macOS app bundle path.
 const APP_ANCESTOR_PATTERN = /[Ee]lectron|\.app\/Contents\/MacOS\/|(^|\/)node(\s|$)/
+
+// Agent-CLI command matchers. Single source of truth, shared by classifyProcess
+// and the orphan filter so the two can never drift: a CLI we classify as
+// claude/codex/opencode is exactly one we'll recognise (and reap) as an orphan.
+const CLAUDE_PATTERN = /(^|[/\s])claude(-code|_code)?([/\s-]|$)/i
+const CODEX_PATTERN = /(^|[/\s])codex([/\s-]|$)/i
+const OPENCODE_PATTERN = /(^|[/\s])opencode([/\s-]|$)/i
+
 // Orphan (ppid===1) commands worth monitoring: MCP servers plus the agent CLIs.
 const APP_ORPHAN_PATTERN = new RegExp(
-  `${MCP_COMMAND_PATTERN.source}|(^|[/\\s])(claude|codex|opencode)([/\\s-]|$)`,
+  [MCP_COMMAND_PATTERN, CLAUDE_PATTERN, CODEX_PATTERN, OPENCODE_PATTERN]
+    .map((r) => r.source)
+    .join('|'),
   'i'
 )
 
@@ -131,11 +144,9 @@ export function classifyProcess(command: string): {
   if (/server\/bin\.js|\/out\/server\b/.test(c)) return { type: 'server', label: 'Hive Server' }
   // MCP servers (the orphan-prone ones).
   if (MCP_COMMAND_PATTERN.test(c)) return { type: 'mcp-server', label: `MCP: ${shortMcpName(c)}` }
-  if (/(^|[/\s])claude(-code|_code)?([/\s-]|$)/i.test(c)) {
-    return { type: 'claude', label: 'Claude CLI' }
-  }
-  if (/(^|[/\s])codex([/\s-]|$)/i.test(c)) return { type: 'codex', label: 'Codex CLI' }
-  if (/(^|[/\s])opencode([/\s-]|$)/i.test(c)) return { type: 'opencode', label: 'opencode CLI' }
+  if (CLAUDE_PATTERN.test(c)) return { type: 'claude', label: 'Claude CLI' }
+  if (CODEX_PATTERN.test(c)) return { type: 'codex', label: 'Codex CLI' }
+  if (OPENCODE_PATTERN.test(c)) return { type: 'opencode', label: 'opencode CLI' }
   if (/(^|\/)git(\s|$)/.test(c)) return { type: 'git', label: 'git' }
   // Electron main: has the Electron binary but no --type subprocess flag.
   if (/[Ee]lectron|\.app\/Contents\/MacOS\//.test(c)) {
@@ -171,25 +182,33 @@ export function resolveAppRoot(
   return root
 }
 
-/**
- * The monitored set: the app root and all of its descendants, plus any orphans
- * (reparented to PID 1) whose command matches an app pattern (the leak case).
- */
-export function collectMonitoredPids(procs: readonly RawProcess[], root: number): Set<number> {
+/** The owned process tree: the app root and all of its descendants (BFS). */
+export function collectTreePids(procs: readonly RawProcess[], root: number): Set<number> {
   const childIndex = new Map<number, number[]>()
   for (const p of procs) {
     const arr = childIndex.get(p.ppid)
     if (arr) arr.push(p.pid)
     else childIndex.set(p.ppid, [p.pid])
   }
-  const monitored = new Set<number>()
+  const tree = new Set<number>()
   const queue = [root]
   while (queue.length) {
     const pid = queue.shift() as number
-    if (monitored.has(pid)) continue
-    monitored.add(pid)
+    if (tree.has(pid)) continue
+    tree.add(pid)
     for (const child of childIndex.get(pid) ?? []) queue.push(child)
   }
+  return tree
+}
+
+/**
+ * The monitored set: the owned tree plus any orphans (reparented to PID 1) whose
+ * command matches an app pattern (the leak case). Orphans are surfaced for
+ * visibility/cleanup but must NOT be folded into the app's resource totals — a
+ * PID-1 orphan may belong to a *previous* Hive instance, not this one.
+ */
+export function collectMonitoredPids(procs: readonly RawProcess[], root: number): Set<number> {
+  const monitored = collectTreePids(procs, root)
   for (const p of procs) {
     if (p.ppid === 1 && APP_ORPHAN_PATTERN.test(p.command)) monitored.add(p.pid)
   }
@@ -229,11 +248,6 @@ export function computeProcessFlags(
   return flags
 }
 
-/** Filter to the processes flagged as orphaned (ppid===1). */
-export function findOrphans(processes: readonly MonitorProcess[]): MonitorProcess[] {
-  return processes.filter((p) => p.flags.includes('ORPHAN'))
-}
-
 function readHostMetrics(): MonitorSnapshot['host'] {
   return {
     cpuCount: os.cpus().length,
@@ -258,7 +272,10 @@ class SystemMonitorService {
   private prevWallMs = 0
   private rssBaseline = new Map<number, number>()
   private appCpuSustain = 0
+  private appCpuAlerted = false // edge-trigger latch for the app-CPU episode
   private procCpuSustain = new Map<number, number>()
+  private procCpuAlerted = new Set<number>() // pids already alerted this breakout
+  private alertedOrphans = new Set<number>() // pids already alerted while orphaned
   private alertCooldown = new Map<string, number>()
   private alertSeq = 0
 
@@ -278,6 +295,9 @@ class SystemMonitorService {
   setEnabled(enabled: boolean): void {
     if (this.enabled === enabled) return
     this.enabled = enabled
+    // Disabling must fully stop sampling — clear the panel-open fast-cadence flag
+    // too, otherwise `active` keeps the timer alive after the user turns it off.
+    if (!enabled) this.active = false
     log.info('System monitor enabled changed', { enabled })
     this.reschedule()
   }
@@ -299,7 +319,7 @@ class SystemMonitorService {
   }
 
   getHistory(): MonitorSnapshot[] {
-    return [...this.history]
+    return this.history.slice(-RENDERER_HISTORY_LIMIT)
   }
 
   getAlerts(): MonitorAlert[] {
@@ -315,10 +335,23 @@ class SystemMonitorService {
   /**
    * Signal a process (optionally its whole group, like PtyService.destroy):
    * SIGTERM for a clean exit, then an unref'd SIGKILL backstop for stragglers.
+   *
+   * Group kill targets `-pgid`, where pgid is the target's *resolved* process
+   * group id — never a bare `-pid`. A pid is not necessarily its own group
+   * leader, so `process.kill(-pid)` would silently miss (ESRCH) or, worse, signal
+   * an unrelated group. If we can't resolve a safe pgid we fall back to a
+   * single-pid signal.
    */
-  killProcess(pid: number, group = false): void {
-    const useGroup = group && process.platform !== 'win32'
-    const target = useGroup ? -pid : pid
+  async killProcess(pid: number, group = false): Promise<void> {
+    let target = pid
+    let useGroup = false
+    if (group && process.platform !== 'win32') {
+      const pgid = await this.resolvePgid(pid)
+      if (pgid !== null && pgid > 1 && pgid !== process.pid) {
+        target = -pgid
+        useGroup = true
+      }
+    }
     const signal = (sig: NodeJS.Signals): void => {
       try {
         process.kill(target, sig)
@@ -332,8 +365,25 @@ class SystemMonitorService {
     setTimeout(() => signal('SIGKILL'), 2000).unref?.()
   }
 
+  /** Resolve a pid's process-group id via `ps`. Null if it can't be determined. */
+  private resolvePgid(pid: number): Promise<number | null> {
+    return new Promise((resolve) => {
+      exec(`ps -o pgid= -p ${pid}`, (err, stdout) => {
+        if (err) {
+          resolve(null)
+          return
+        }
+        const pgid = Number(stdout.trim())
+        resolve(Number.isFinite(pgid) && pgid > 0 ? pgid : null)
+      })
+    })
+  }
+
   async cleanupOrphans(): Promise<number> {
-    const killed = await reapOrphanedMcpServers()
+    // Reap the *full* set of app orphans the monitor flags (MCP servers + agent
+    // CLIs), not just MCP — otherwise the button reports "nothing found" while
+    // orphaned claude/codex/opencode it just alerted on keep leaking.
+    const killed = await reapOrphans(APP_ORPHAN_PATTERN)
     log.info('Force orphan cleanup from monitor', { killed })
     return killed
   }
@@ -440,7 +490,12 @@ class SystemMonitorService {
           const wallNowMs = Date.now()
           const raw = parsePsOutput(stdout)
           const byPid = new Map(raw.map((r) => [r.pid, r]))
-          const root = resolveAppRoot(byPid, process.ppid)
+          let root = resolveAppRoot(byPid, process.ppid)
+          // If the resolved root isn't a live process (e.g. ps didn't capture our
+          // ppid), fall back to this server process so the panel still shows our
+          // own subtree instead of going blank.
+          if (!byPid.has(root)) root = process.pid
+          const tree = collectTreePids(raw, root)
           const monitored = collectMonitoredPids(raw, root)
           const wallDeltaSec = this.prevWallMs ? (wallNowMs - this.prevWallMs) / 1000 : 0
 
@@ -449,6 +504,7 @@ class SystemMonitorService {
           const processes: MonitorProcess[] = []
           let appCpu = 0
           let appRss = 0
+          let appProcCount = 0
 
           for (const pid of monitored) {
             const r = byPid.get(pid)
@@ -467,8 +523,13 @@ class SystemMonitorService {
               cpuSec: r.cpuSec,
               flags
             })
-            appCpu += cpuPct
-            appRss += r.rss
+            // Only the owned tree counts toward the app's footprint; orphans are
+            // shown (flagged) but may belong to a previous instance.
+            if (tree.has(pid)) {
+              appCpu += cpuPct
+              appRss += r.rss
+              appProcCount++
+            }
             nextPrevCpu.set(pid, r.cpuSec)
             nextBaseline.set(pid, this.rssBaseline.get(pid) ?? r.rss)
           }
@@ -484,7 +545,7 @@ class SystemMonitorService {
             app: {
               cpuPct: Math.round(appCpu * 100) / 100,
               rssTotal: appRss,
-              procCount: processes.length
+              procCount: appProcCount
             },
             processes,
             main: this.safePerfSnapshot(),
@@ -497,23 +558,33 @@ class SystemMonitorService {
   }
 
   private runAlerts(s: MonitorSnapshot): void {
-    // Sustained whole-app CPU.
-    this.appCpuSustain = s.app.cpuPct >= APP_CPU_SUSTAINED_PCT ? this.appCpuSustain + 1 : 0
-    if (this.appCpuSustain >= APP_CPU_SUSTAINED_SAMPLES) {
-      this.emitAlert({
-        severity: 'warning',
-        kind: 'app-cpu-sustained',
-        message: `Hive CPU sustained at ${s.app.cpuPct.toFixed(0)}% across ${this.appCpuSustain} samples`
-      })
+    // Sustained whole-app CPU — edge-triggered: fire once when the episode
+    // starts, re-arm only after CPU drops back below threshold. Avoids a fresh
+    // toast every cooldown for a condition that's simply still true.
+    if (s.app.cpuPct >= APP_CPU_SUSTAINED_PCT) {
+      this.appCpuSustain++
+      if (this.appCpuSustain >= APP_CPU_SUSTAINED_SAMPLES && !this.appCpuAlerted) {
+        this.appCpuAlerted = true
+        this.emitAlert({
+          severity: 'warning',
+          kind: 'app-cpu-sustained',
+          message: `Hive CPU sustained at ${s.app.cpuPct.toFixed(0)}% across ${this.appCpuSustain} samples`
+        })
+      }
+    } else {
+      this.appCpuSustain = 0
+      this.appCpuAlerted = false
     }
 
     const seen = new Set<number>()
+    const orphanPids = new Set<number>()
     for (const p of s.processes) {
       seen.add(p.pid)
       if (p.cpuPct >= PROC_CPU_BREAKOUT_PCT) {
         const count = (this.procCpuSustain.get(p.pid) ?? 0) + 1
         this.procCpuSustain.set(p.pid, count)
-        if (count >= PROC_CPU_SUSTAINED_SAMPLES) {
+        if (count >= PROC_CPU_SUSTAINED_SAMPLES && !this.procCpuAlerted.has(p.pid)) {
+          this.procCpuAlerted.add(p.pid)
           this.emitAlert({
             severity: 'warning',
             kind: 'process-cpu-breakout',
@@ -523,6 +594,7 @@ class SystemMonitorService {
         }
       } else {
         this.procCpuSustain.set(p.pid, 0)
+        this.procCpuAlerted.delete(p.pid) // re-arm for the next breakout
       }
 
       if (p.flags.includes('RSS_GROWTH')) {
@@ -532,18 +604,33 @@ class SystemMonitorService {
           message: `${p.label} (pid ${p.pid}) RSS grew to ${(p.rss / 1048576).toFixed(0)} MB`,
           pid: p.pid
         })
+        // Ratchet the baseline up to the current size so we only alert again on
+        // *further* growth — not every sample forever once a process grew once.
+        this.rssBaseline.set(p.pid, p.rss)
       }
       if (p.flags.includes('ORPHAN')) {
-        this.emitAlert({
-          severity: 'critical',
-          kind: 'orphan-detected',
-          message: `Orphaned ${p.label} (pid ${p.pid}) reparented to PID 1`,
-          pid: p.pid
-        })
+        orphanPids.add(p.pid)
+        if (!this.alertedOrphans.has(p.pid)) {
+          this.alertedOrphans.add(p.pid)
+          this.emitAlert({
+            severity: 'critical',
+            kind: 'orphan-detected',
+            message: `Orphaned ${p.label} (pid ${p.pid}) reparented to PID 1`,
+            pid: p.pid
+          })
+        }
       }
     }
+    // Drop trackers for processes that have gone away so the maps/sets stay
+    // bounded and a recycled pid re-alerts cleanly.
     for (const pid of [...this.procCpuSustain.keys()]) {
-      if (!seen.has(pid)) this.procCpuSustain.delete(pid)
+      if (!seen.has(pid)) {
+        this.procCpuSustain.delete(pid)
+        this.procCpuAlerted.delete(pid)
+      }
+    }
+    for (const pid of [...this.alertedOrphans]) {
+      if (!orphanPids.has(pid)) this.alertedOrphans.delete(pid)
     }
 
     if (s.main && s.main.eventLoopLagMs >= EVENT_LOOP_LAG_MS) {
@@ -556,8 +643,13 @@ class SystemMonitorService {
   }
 
   private emitAlert(candidate: Omit<MonitorAlert, 'id' | 'ts'>): void {
-    const key = `${candidate.kind}:${candidate.pid ?? 'global'}`
     const now = Date.now()
+    // Drop expired cooldown entries every emit so the map can't grow unbounded
+    // (one key per kind:pid that ever alerted) over the server's lifetime.
+    for (const [k, t] of this.alertCooldown) {
+      if (now - t >= ALERT_COOLDOWN_MS) this.alertCooldown.delete(k)
+    }
+    const key = `${candidate.kind}:${candidate.pid ?? 'global'}`
     const last = this.alertCooldown.get(key) ?? 0
     if (now - last < ALERT_COOLDOWN_MS) return // de-dupe: one breakout != a toast storm
     this.alertCooldown.set(key, now)
@@ -630,7 +722,8 @@ export const systemMonitor = {
   getSnapshot: (): MonitorSnapshot => getSystemMonitor().getSnapshot(),
   getHistory: (): MonitorSnapshot[] => getSystemMonitor().getHistory(),
   getAlerts: (): MonitorAlert[] => getSystemMonitor().getAlerts(),
-  killProcess: (pid: number, group = false): void => getSystemMonitor().killProcess(pid, group),
+  killProcess: (pid: number, group = false): Promise<void> =>
+    getSystemMonitor().killProcess(pid, group),
   cleanupOrphans: (): Promise<number> => getSystemMonitor().cleanupOrphans(),
   cleanup: (): void => getSystemMonitor().cleanup()
 }

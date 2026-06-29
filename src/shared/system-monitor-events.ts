@@ -15,7 +15,6 @@ export type MonitorProcessType =
   | 'electron-gpu'
   | 'electron-utility'
   | 'server'
-  | 'pty'
   | 'claude'
   | 'codex'
   | 'opencode'

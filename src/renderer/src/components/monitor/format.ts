@@ -18,7 +18,6 @@ const TYPE_LABELS: Record<MonitorProcessType, string> = {
   'electron-gpu': 'GPU',
   'electron-utility': 'Utility',
   server: 'Server',
-  pty: 'PTY',
   claude: 'Claude',
   codex: 'Codex',
   opencode: 'opencode',
@@ -38,5 +37,5 @@ export function processTypeLabel(type: MonitorProcessType): string {
  * PtyService.destroy(). Plain processes get a single-pid signal.
  */
 export function shouldGroupKill(type: MonitorProcessType): boolean {
-  return type === 'claude' || type === 'codex' || type === 'opencode' || type === 'shell' || type === 'pty'
+  return type === 'claude' || type === 'codex' || type === 'opencode' || type === 'shell'
 }

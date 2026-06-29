@@ -30,7 +30,7 @@ export const makeLiveSystemMonitorOpsRpcService = (): SystemMonitorOpsRpcService
   setEnabled: (enabled) =>
     Effect.try({ try: () => systemMonitor.setEnabled(enabled), catch: (cause) => cause }),
   killProcess: (pid, group) =>
-    Effect.try({ try: () => systemMonitor.killProcess(pid, group), catch: (cause) => cause }),
+    Effect.tryPromise({ try: () => systemMonitor.killProcess(pid, group), catch: (cause) => cause }),
   cleanupOrphans: () =>
     Effect.tryPromise({ try: () => systemMonitor.cleanupOrphans(), catch: (cause) => cause })
 })

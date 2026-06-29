@@ -52,7 +52,9 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     })
   },
 
-  setAlerts: (alerts) => set({ alerts: alerts.slice(-MAX_ALERTS) }),
+  // Server keeps alerts oldest-first; the feed (and pushAlert) shows newest-first,
+  // so reverse on hydration to keep the order consistent with live alerts.
+  setAlerts: (alerts) => set({ alerts: alerts.slice(-MAX_ALERTS).reverse() }),
 
   pushAlert: (alert) =>
     set((state) => {

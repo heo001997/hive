@@ -5,14 +5,13 @@ import {
   parsePsOutput,
   classifyProcess,
   resolveAppRoot,
+  collectTreePids,
   collectMonitoredPids,
   computeCpuPct,
   computeProcessFlags,
-  findOrphans,
   RSS_GROWTH_MIN_BYTES,
   type RawProcess
 } from './system-monitor'
-import type { MonitorProcess } from '../../shared/system-monitor-events'
 
 describe('parseCpuTime', () => {
   it('parses MM:SS and MM:SS.ss (macOS)', () => {
@@ -138,6 +137,21 @@ describe('collectMonitoredPids', () => {
   })
 })
 
+describe('collectTreePids', () => {
+  const procs: RawProcess[] = [
+    { pid: 10, ppid: 1, rss: 0, cpuSec: 0, command: '/Applications/Hive.app/Contents/MacOS/Hive' },
+    { pid: 20, ppid: 10, rss: 0, cpuSec: 0, command: '/path/Hive --type=renderer' },
+    { pid: 30, ppid: 20, rss: 0, cpuSec: 0, command: 'node /x/out/server/bin.js' },
+    { pid: 99, ppid: 1, rss: 0, cpuSec: 0, command: 'node /x/mcp-server-trello/build/index.js' }
+  ]
+
+  it('returns the owned tree only — orphans are excluded from app totals', () => {
+    const tree = collectTreePids(procs, 10)
+    expect([...tree].sort((a, b) => a - b)).toEqual([10, 20, 30])
+    expect(tree.has(99)).toBe(false)
+  })
+})
+
 describe('computeCpuPct', () => {
   it('returns 0 on the first observation (no previous sample)', () => {
     expect(computeCpuPct(10, undefined, 2)).toBe(0)
@@ -180,17 +194,5 @@ describe('computeProcessFlags', () => {
 
   it('combines HIGH and ORPHAN', () => {
     expect(computeProcessFlags({ cpuPct: 95, rss: 1024, ppid: 1 }, 1024)).toEqual(['HIGH', 'ORPHAN'])
-  })
-})
-
-describe('findOrphans', () => {
-  it('filters to processes flagged ORPHAN', () => {
-    const processes = [
-      { pid: 1, flags: ['HIGH'] },
-      { pid: 2, flags: ['ORPHAN'] },
-      { pid: 3, flags: [] },
-      { pid: 4, flags: ['HIGH', 'ORPHAN'] }
-    ] as unknown as MonitorProcess[]
-    expect(findOrphans(processes).map((p) => p.pid)).toEqual([2, 4])
   })
 })
