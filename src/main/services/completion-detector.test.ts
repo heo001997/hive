@@ -154,6 +154,44 @@ describe('detectTicketCompletion', () => {
     expect(verdict.reason).toBe('TODOs remain')
   })
 
+  it('ignores an unrelated code fence and finds the real JSON verdict (regression)', async () => {
+    // Repro of the stuck-in-Review bug: the judge answered with a ```bash block
+    // before the JSON. The old fence regex grabbed "bash\nhead …" and JSON.parse threw.
+    generateText.mockResolvedValue(
+      'Here is how I checked:\n```bash\nhead -c 6000 transcript.txt\n```\n' +
+        '{"complete":true,"needsInput":false,"confidence":0.85,"reason":"tasks.md generated"}'
+    )
+    const verdict = await detectTicketCompletion({ ...base, transcriptTail: 'x' })
+    expect(verdict.complete).toBe(true)
+    expect(verdict.reason).toBe('tasks.md generated')
+  })
+
+  it('prefers a ```json fence over an earlier non-json fence', async () => {
+    generateText.mockResolvedValue(
+      '```bash\necho hi\n```\n```json\n{"complete":false,"needsInput":true,"confidence":0.7,"reason":"asked a question"}\n```'
+    )
+    const verdict = await detectTicketCompletion({ ...base, transcriptTail: 'x' })
+    expect(verdict.complete).toBe(false)
+    expect(verdict.needsInput).toBe(true)
+  })
+
+  it('extracts the verdict object when it trails explanatory prose', async () => {
+    generateText.mockResolvedValue(
+      'The agent finished implementing the feature and ran the tests.\n' +
+        'Verdict: {"complete":true,"needsInput":false,"confidence":0.9,"reason":"done"}'
+    )
+    expect((await detectTicketCompletion({ ...base, transcriptTail: 'x' })).complete).toBe(true)
+  })
+
+  it('retries once when the first response is unparseable, then succeeds', async () => {
+    generateText
+      .mockResolvedValueOnce('```bash\nhead -c 10 file\n```') // no JSON object → parse fails
+      .mockResolvedValueOnce('{"complete":true,"needsInput":false,"confidence":1,"reason":"ok"}')
+    const verdict = await detectTicketCompletion({ ...base, transcriptTail: 'x' })
+    expect(verdict.complete).toBe(true)
+    expect(generateText).toHaveBeenCalledTimes(2)
+  })
+
   it('clamps confidence into [0,1]', async () => {
     generateText.mockResolvedValue('{"complete":true,"confidence":5,"reason":"r"}')
     expect((await detectTicketCompletion({ ...base, transcriptTail: 'x' })).confidence).toBe(1)

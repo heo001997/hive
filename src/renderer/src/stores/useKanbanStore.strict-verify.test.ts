@@ -447,6 +447,46 @@ describe('Strict Verify gates Auto Review Bypass (Feature B)', () => {
 
     expect(columnOf('ticket-1')).toBe('in_progress')
   })
+
+  // Regression — the "stuck in Review" bug. A Reviewer that THROWS (e.g. the
+  // judge returned non-JSON and the detector failed to parse it) used to fail
+  // open WITHOUT storing a verdict, so Feature B found none and aborted: the
+  // ticket was never bounced AND never advanced — frozen in Review forever.
+  it('advances to Done when the Reviewer throws (fail-open verdict, auto-approve on)', async () => {
+    hoisted.detect.mockRejectedValue(new Error('Could not extract JSON from AI response'))
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('done')
+    // The fail-open verdict is recorded as complete but with zero confidence.
+    expect(verdictOf('ticket-1')).toMatchObject({ complete: true, confidence: 0, movedBack: false })
+  })
+
+  it('advances to Done when the Reviewer returns no verdict (fail-open, auto-approve on)', async () => {
+    hoisted.detect.mockResolvedValue({ success: false, error: 'provider down' })
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('done')
+  })
+
+  it('a Reviewer error on a NON-opted-in ticket just rests in Review (no advance)', async () => {
+    hoisted.detect.mockRejectedValue(new Error('boom'))
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: false }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')).toMatchObject({ complete: true, confidence: 0 })
+  })
 })
 
 describe('Legacy path — Strict Verify off, Auto Review Bypass on', () => {

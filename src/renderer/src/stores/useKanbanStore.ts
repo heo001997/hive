@@ -1039,6 +1039,33 @@ interface StrictVerifySettings {
  * transcript. Detection errors fail open (return `false`) so a flaky provider
  * never traps a ticket.
  */
+/**
+ * Record a fail-open verdict when the Reviewer can't produce a real one (it
+ * threw, or returned no verdict). The engine already fails open here — it does
+ * NOT bounce the ticket, leaving it in Review "as if complete". Persisting that
+ * decision as a verdict keeps Feature B consistent: without it, `onAutoBypassSettled`
+ * finds no verdict and aborts, stranding an auto-approve ticket in Review forever
+ * (never bounced, never advanced). confidence:0 marks that this wasn't truly
+ * verified; a genuine resume (`session_working`) clears it so the next settle
+ * re-judges the now-longer transcript.
+ */
+function storeFailOpenVerdict(
+  get: () => KanbanState,
+  key: TicketKey,
+  sessionId: string,
+  reason: string
+): void {
+  get().setCompletionVerdict(key, {
+    complete: true,
+    needsInput: false,
+    confidence: 0,
+    reason,
+    sessionId,
+    checkedAt: Date.now(),
+    movedBack: false
+  })
+}
+
 async function runStrictVerify(
   get: () => KanbanState,
   ticketId: string,
@@ -1080,11 +1107,20 @@ async function runStrictVerify(
     })
   } catch (err) {
     console.error('Strict verify failed for ticket', ticketId, err)
+    storeFailOpenVerdict(get, key, sessionId, 'Verifier errored — failed open (treated as complete).')
     return false
   }
 
   if (!result.success || !result.verdict) {
     if (result.error) console.warn('Strict verify returned no verdict:', result.error)
+    storeFailOpenVerdict(
+      get,
+      key,
+      sessionId,
+      result.error
+        ? `Verifier returned no verdict (${result.error}) — failed open.`
+        : 'Verifier returned no verdict — failed open.'
+    )
     return false
   }
 

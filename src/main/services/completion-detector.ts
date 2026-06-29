@@ -14,6 +14,12 @@ export const DEFAULT_TAIL_CHARS = 6000
 const MAX_REASON_LENGTH = 600
 const MAX_TITLE_LENGTH = 512
 const MAX_DESCRIPTION_LENGTH = 4 * 1024
+/**
+ * How many times to ask the provider for a verdict. Models occasionally answer
+ * with prose or an unrelated code fence and no parseable JSON; one retry lets a
+ * transient bad response self-heal before we surface an error to the engine.
+ */
+const COMPLETION_PARSE_ATTEMPTS = 2
 
 /** Built-in Watcher system prompt; the user can override it per the settings. */
 const SYSTEM_PROMPT = DEFAULT_STRICT_VERIFY_PROMPT
@@ -107,30 +113,43 @@ ${tail}`
 
   log.info('Detecting ticket completion', { provider, tailLength: tail.length, cwd })
 
-  const response = await generateText(prompt, systemPrompt, provider, {
-    cwd,
-    outputSchema: COMPLETION_JSON_SCHEMA,
-    modelOverride
-  })
-  if (!response) {
-    throw new Error('AI provider returned an empty response')
+  let lastError: unknown
+  for (let attempt = 0; attempt < COMPLETION_PARSE_ATTEMPTS; attempt++) {
+    const response = await generateText(prompt, systemPrompt, provider, {
+      cwd,
+      outputSchema: COMPLETION_JSON_SCHEMA,
+      modelOverride
+    })
+    if (!response) {
+      lastError = new Error('AI provider returned an empty response')
+      continue
+    }
+    try {
+      return parseVerdict(response)
+    } catch (err) {
+      lastError = err
+      log.warn('Completion verdict parse failed', {
+        attempt: attempt + 1,
+        attempts: COMPLETION_PARSE_ATTEMPTS,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    }
   }
-
-  return parseVerdict(response)
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Could not parse AI completion verdict')
 }
 
-/** Parse the LLM response (possibly fenced) into a normalized verdict. */
+/** Parse the LLM response (possibly fenced, possibly with extra prose) into a verdict. */
 function parseVerdict(response: string): CompletionVerdict {
-  const json = extractJSON(response)
-  if (!json) {
-    log.warn('Could not extract JSON from completion response', {
+  const parsed = extractVerdictObject(response)
+  if (!parsed) {
+    log.warn('Could not extract a JSON verdict from completion response', {
       responsePrefix: response.slice(0, 200),
       responseLength: response.length
     })
     throw new Error('Could not extract JSON from AI response')
   }
-
-  const parsed = JSON.parse(json) as Record<string, unknown>
 
   if (typeof parsed.complete !== 'boolean') {
     throw new Error('AI response missing required boolean "complete" field')
@@ -150,19 +169,96 @@ function parseVerdict(response: string): CompletionVerdict {
 }
 
 /**
- * Extract a JSON object string from the response — raw, or wrapped in a
- * markdown code fence (```json … ```).
+ * Find the verdict object in a (possibly messy) LLM response. Models sometimes
+ * wrap the JSON in a ```json fence, precede it with prose, or — the failure this
+ * guards against — emit an UNRELATED code fence first (e.g. a ```bash block
+ * quoting a command) before the real JSON. We therefore gather every plausible
+ * JSON candidate and return the first that parses to an object carrying a
+ * boolean `complete`, falling back to the first object that parses at all (so
+ * the "missing complete field" error still fires for a genuinely malformed
+ * verdict rather than a generic "no JSON" error).
  */
-function extractJSON(text: string): string | null {
-  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/)
-  if (fenceMatch) return fenceMatch[1].trim()
-
-  const braceStart = text.indexOf('{')
-  const braceEnd = text.lastIndexOf('}')
-  if (braceStart !== -1 && braceEnd > braceStart) {
-    return text.slice(braceStart, braceEnd + 1)
+function extractVerdictObject(text: string): Record<string, unknown> | null {
+  let firstObject: Record<string, unknown> | null = null
+  for (const candidate of jsonCandidates(text)) {
+    let value: unknown
+    try {
+      value = JSON.parse(candidate)
+    } catch {
+      continue
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const obj = value as Record<string, unknown>
+    if (typeof obj.complete === 'boolean') return obj
+    if (!firstObject) firstObject = obj
   }
-  return null
+  return firstObject
+}
+
+/**
+ * Ordered, de-duplicated JSON-string candidates pulled from a model response,
+ * most-likely first: explicit ```json fences, then other fenced blocks, then
+ * every balanced `{…}` object in the raw text, then the outermost-brace slice.
+ */
+function jsonCandidates(text: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const add = (raw: string | undefined): void => {
+    if (!raw) return
+    const trimmed = raw.trim()
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      out.push(trimmed)
+    }
+  }
+
+  // 1. Explicit ```json fences (the format the prompt asks for).
+  for (const m of text.matchAll(/```json\s*\r?\n?([\s\S]*?)```/gi)) add(m[1])
+  // 2. Any other fenced block (```bash, bare ```, …) — discarded later if not JSON.
+  for (const m of text.matchAll(/```[^\n`]*\r?\n?([\s\S]*?)```/g)) add(m[1])
+  // 3. Every balanced {…} object in the raw text (handles bare JSON amid prose).
+  for (const obj of balancedObjects(text)) add(obj)
+  // 4. Last resort: the outermost { … } slice.
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start !== -1 && end > start) add(text.slice(start, end + 1))
+
+  return out
+}
+
+/**
+ * Yield each top-level balanced `{…}` substring, ignoring braces inside JSON
+ * string literals. Lets us pick the real verdict object out of mixed prose/code
+ * without the outermost-brace slice swallowing unrelated braces.
+ */
+function balancedObjects(text: string): string[] {
+  const objects: string[] = []
+  let depth = 0
+  let start = -1
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') {
+      inString = true
+    } else if (ch === '{') {
+      if (depth === 0) start = i
+      depth++
+    } else if (ch === '}' && depth > 0) {
+      depth--
+      if (depth === 0 && start !== -1) {
+        objects.push(text.slice(start, i + 1))
+        start = -1
+      }
+    }
+  }
+  return objects
 }
 
 /** Collapse the reason to a single line and enforce a max length. */
