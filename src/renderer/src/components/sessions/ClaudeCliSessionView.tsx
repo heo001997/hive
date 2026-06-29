@@ -683,6 +683,11 @@ export function ClaudeCliSessionView({
           terminalId={sessionId}
           cwd="/"
           isVisible={isVisible}
+          // Reparent marker: flips when the live terminal is moved between the
+          // main pane and the ticket modal, so TerminalView can force a repaint
+          // of the WebGL canvas that the move blanks out. See TerminalView's
+          // mountToken effect.
+          mountToken={isMountedInTicketModal ? 'modal' : 'main'}
           showToolbar={false}
           backendTypeOverride="xterm"
           shiftEnterAsNewline

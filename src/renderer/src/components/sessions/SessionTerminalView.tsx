@@ -10,6 +10,8 @@ interface SessionTerminalViewProps {
   sessionId: string
   /** Whether this terminal is currently visible (not hidden by CSS). Controls fit/focus and Ghostty frame sync. */
   isVisible?: boolean
+  /** Reparent marker forwarded to TerminalView; changes when moved in/out of the ticket modal. */
+  mountToken?: string | number
 }
 
 /**
@@ -19,7 +21,8 @@ interface SessionTerminalViewProps {
  */
 export function SessionTerminalView({
   sessionId,
-  isVisible = true
+  isVisible = true,
+  mountToken
 }: SessionTerminalViewProps): React.JSX.Element {
   // Look up the session to find its worktree_id or connection_id
   const session = useSessionStore((state) => {
@@ -103,7 +106,7 @@ export function SessionTerminalView({
 
   return (
     <div className="flex-1 flex flex-col min-h-0" data-testid="session-terminal-view">
-      <TerminalView terminalId={sessionId} cwd={cwd} isVisible={isVisible} />
+      <TerminalView terminalId={sessionId} cwd={cwd} isVisible={isVisible} mountToken={mountToken} />
     </div>
   )
 }
