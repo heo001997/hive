@@ -916,6 +916,12 @@ export function WorktreePickerModal({
             })
           : null
       const createOptions = {
+        // This flow binds `ticket` to the new session itself (updateTicket below).
+        // Skip the kanban auto-attach so the session can't ALSO be grabbed as some
+        // OTHER orphan ticket's current_session_id when siblings share this worktree
+        // (speckit reuses one worktree per spec) — that cross-wires two tickets to
+        // one session and opens the wrong terminal from the ticket detail.
+        skipKanbanAutoAttach: true,
         ...(modelOverride ? { modelOverride } : {}),
         // When gating on setup, do NOT enqueue the raw prompt — the injected
         // prompt is enqueued only after setup resolves (leak-proof).

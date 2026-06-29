@@ -173,6 +173,12 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     const createOptions = {
       autoFocus: false,
       ...(modelOverride ? { modelOverride } : {}),
+      // This flow binds `ticket` to the new session itself (step 5 below). Skip the
+      // kanban auto-attach so the new session can't ALSO be grabbed as some OTHER
+      // orphan ticket's current_session_id — e.g. a sibling sharing this worktree
+      // (speckit reuses one worktree per spec), which cross-wires two tickets to one
+      // session and makes the ticket detail open the wrong terminal.
+      skipKanbanAutoAttach: true,
       // When gating on setup, do NOT enqueue the raw prompt — the injected prompt
       // is enqueued only after setup resolves (leak-proof, single-queue ownership).
       ...(cliPendingPrompt && !willGate ? { pendingMessage: cliPendingPrompt } : {})

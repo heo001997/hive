@@ -95,6 +95,7 @@ import { AutoApprovePlanToggle } from './AutoApprovePlanToggle'
 import { useImagePaste } from '@/hooks/useImagePaste'
 import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoffSelection'
 import { canonicalizeTicketTitle, extractPlanTitle } from '@shared/types/branch-utils'
+import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import { isTerminalBacked } from '@shared/types/agent-sdk'
 import type { KanbanTicket, KanbanTicketUpdate, Session, Worktree } from '../../../../main/db/types'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
@@ -759,6 +760,22 @@ function KanbanTicketModalContent({
     )
   )
 
+  // A ticket's current_session_id can point at a session ANOTHER ticket also owns
+  // when they share a worktree (corrupted data from before the auto-attach fix, or
+  // a manual double-bind). Never auto-mount a borrowed session as THIS ticket's
+  // terminal — that's exactly how the detail opened the wrong ticket's terminal.
+  // Treat it as session-less for the default view; the worktree tab strip below
+  // still lets the user open that session deliberately.
+  const sessionOwnedByOther = useKanbanStore(
+    useCallback(
+      (s) =>
+        !!ticket.current_session_id &&
+        isSessionOwnedByAnotherTicket(s.tickets, ticket.current_session_id, ticket.id),
+      [ticket.current_session_id, ticket.id]
+    )
+  )
+  const ownPrimarySessionId = sessionOwnedByOther ? null : ticket.current_session_id
+
   // ── DB session fallback ──────────────────────────────────────────
   // When zustand selectors return null (session not in sessionsByWorktree
   // or sessionsByConnection), fall back to the DB via findSessionById —
@@ -1141,7 +1158,7 @@ function KanbanTicketModalContent({
   )
   const setTicketActiveView = useSessionStore((s) => s.setTicketActiveView)
   const [activeViewSessionId, setActiveViewSessionId] = useState<string | null>(
-    () => persistedTicketView ?? ticket.current_session_id ?? null
+    () => persistedTicketView ?? ownPrimarySessionId ?? null
   )
   // Re-seed once when the modal is reused for a different ticket. Guarded by a
   // ref so the persisted/primary deps can't clobber a tab the user just picked.
@@ -1149,8 +1166,8 @@ function KanbanTicketModalContent({
   useEffect(() => {
     if (seededTicketRef.current === ticket.id) return
     seededTicketRef.current = ticket.id
-    setActiveViewSessionId(persistedTicketView ?? ticket.current_session_id ?? null)
-  }, [ticket.id, persistedTicketView, ticket.current_session_id])
+    setActiveViewSessionId(persistedTicketView ?? ownPrimarySessionId ?? null)
+  }, [ticket.id, persistedTicketView, ownPrimarySessionId])
 
   const selectTicketView = useCallback(
     (sessionId: string | null) => {
@@ -1193,11 +1210,12 @@ function KanbanTicketModalContent({
   }, [activeViewMissing, selectTicketView, ticket.current_session_id])
 
   const isPrimaryTerminalBacked = isTerminalBacked(effectiveSession?.agent_sdk)
-  const viewingPrimary = !activeViewSessionId || activeViewSessionId === ticket.current_session_id
+  const viewingPrimary = !activeViewSessionId || activeViewSessionId === ownPrimarySessionId
   // Render the primary session's battle-tested native path only when the user is
   // actually viewing the primary; other tabs (and the session-less empty state)
-  // go through TicketSessionPane.
-  const showPrimaryNative = viewingPrimary && !!ticket.current_session_id
+  // go through TicketSessionPane. Uses ownPrimarySessionId (not the raw
+  // current_session_id) so a session another ticket owns is never auto-mounted here.
+  const showPrimaryNative = viewingPrimary && !!ownPrimarySessionId
 
   // Render the mode-specific inner content (without DialogContent wrapper)
   let modeContent: React.ReactNode
