@@ -621,4 +621,37 @@ describe('KanbanTicketModal handoff from Claude CLI plan review', () => {
       expect(useKanbanStore.getState().selectedTicketId).toBeNull()
     })
   })
+
+  it('reveals the ticket-detail pane via the Detail toggle in the in-progress full-width layout', async () => {
+    setupStores()
+    useKanbanStore.setState({
+      tickets: new Map([
+        ['project-1', [{ ...ticket, column: 'in_progress', plan_ready: false, mode: 'build' }]]
+      ])
+    })
+    useWorktreeStatusStore.setState({
+      sessionStatuses: { [sourceSession.id]: { status: 'working', timestamp: 0 } },
+      clearSessionStatus: vi.fn(),
+      setSessionStatus: vi.fn()
+    })
+    const user = userEvent.setup()
+
+    render(
+      <ClaudeCliSessionPortalProvider>
+        <RegisterClaudeCliPortalTarget sessionId={sourceSession.id} />
+        <KanbanTicketModal />
+      </ClaudeCliSessionPortalProvider>
+    )
+
+    // The toggle is always present in the in-progress full-width layout; the
+    // detail pane is hidden until it is clicked (terminal-only by default).
+    const toggle = await screen.findByTestId('toggle-ticket-detail')
+    expect(screen.queryByTestId('ticket-detail-pane')).toBeNull()
+
+    await user.click(toggle)
+    expect(screen.queryByTestId('ticket-detail-pane')).not.toBeNull()
+
+    await user.click(toggle)
+    expect(screen.queryByTestId('ticket-detail-pane')).toBeNull()
+  })
 })

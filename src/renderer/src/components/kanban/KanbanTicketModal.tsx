@@ -24,7 +24,9 @@ import {
   Lock,
   Plus,
   Map as MapIcon,
-  Wand2
+  Wand2,
+  PanelLeftOpen,
+  PanelLeftClose
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -1160,6 +1162,10 @@ function KanbanTicketModalContent({
   const [activeViewSessionId, setActiveViewSessionId] = useState<string | null>(
     () => persistedTicketView ?? ownPrimarySessionId ?? null
   )
+  // Whether the in-progress full-width session layout reveals the ticket-detail
+  // pane next to the terminal. Defaults closed; reset when the modal is reused
+  // for a different ticket (handled in the seed effect below).
+  const [showDetailPane, setShowDetailPane] = useState(false)
   // Re-seed once when the modal is reused for a different ticket. Guarded by a
   // ref so the persisted/primary deps can't clobber a tab the user just picked.
   const seededTicketRef = useRef<string | null>(null)
@@ -1167,6 +1173,7 @@ function KanbanTicketModalContent({
     if (seededTicketRef.current === ticket.id) return
     seededTicketRef.current = ticket.id
     setActiveViewSessionId(persistedTicketView ?? ownPrimarySessionId ?? null)
+    setShowDetailPane(false)
   }, [ticket.id, persistedTicketView, ownPrimarySessionId])
 
   const selectTicketView = useCallback(
@@ -1283,7 +1290,10 @@ function KanbanTicketModalContent({
       break
   }
 
-  // ── Full-width session layout (only in-progress edit mode — left pane has no actionable content) ──
+  // ── Full-width session layout (in-progress edit mode) ──
+  // The terminal/session pane fills the dialog by default; the ticket-detail pane
+  // is opt-in via the "Detail" toggle in the tab strip (showDetailPane) so the
+  // title/description/dependencies/actions stay reachable without leaving the run.
   let dialogBody: React.ReactNode
 
   if (wantsDualPane && modalMode === 'edit' && ticket.column === 'in_progress') {
@@ -1301,8 +1311,38 @@ function KanbanTicketModalContent({
           activeViewSessionId={activeViewSessionId}
           onSelectView={selectTicketView}
           onSpawned={selectTicketView}
+          trailing={
+            <button
+              type="button"
+              onClick={() => setShowDetailPane((v) => !v)}
+              aria-pressed={showDetailPane}
+              data-testid="toggle-ticket-detail"
+              title={showDetailPane ? 'Hide ticket detail' : 'Show ticket detail'}
+              className={cn(
+                'flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-sm border-l border-border transition-colors',
+                showDetailPane
+                  ? 'bg-background text-foreground'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              {showDetailPane ? (
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              ) : (
+                <PanelLeftOpen className="h-3.5 w-3.5" />
+              )}
+              Detail
+            </button>
+          }
         />
         <div className="flex min-h-0 flex-1 overflow-hidden">
+          {showDetailPane && (
+            <div
+              data-testid="ticket-detail-pane"
+              className="w-[480px] shrink-0 h-full flex flex-col overflow-y-auto p-6 gap-4 border-r border-border/60"
+            >
+              {modeContent}
+            </div>
+          )}
           {showPrimaryNative ? (
             isPrimaryTerminalBacked && ticket.current_session_id ? (
               <div className="flex flex-col h-full bg-background flex-1 min-w-0">
