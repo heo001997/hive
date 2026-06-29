@@ -1,7 +1,8 @@
-import { exec } from 'node:child_process'
+import { exec, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import * as os from 'node:os'
 import { join } from 'path'
-import { existsSync, mkdirSync, appendFileSync, statSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, appendFileSync, statSync, renameSync, readFileSync } from 'fs'
 import { createLogger } from './logger'
 import { getHiveLogsDir } from './hive-paths'
 import { perfDiagnostics } from './perf-diagnostics'
@@ -17,6 +18,9 @@ import {
 } from '../../shared/system-monitor-events'
 
 const log = createLogger({ component: 'SystemMonitor' })
+
+const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 // --- Tunables ---------------------------------------------------------------
 
@@ -248,7 +252,74 @@ export function computeProcessFlags(
   return flags
 }
 
-function readHostMetrics(): MonitorSnapshot['host'] {
+export interface HostCpuTimes {
+  idle: number
+  total: number
+}
+
+/** Sum os.cpus() per-core cumulative tick counters into a single {idle,total}. */
+export function sumCpuTimes(cpus: os.CpuInfo[]): HostCpuTimes {
+  let idle = 0
+  let total = 0
+  for (const c of cpus) {
+    for (const k of Object.keys(c.times) as (keyof os.CpuInfo['times'])[]) {
+      const v = c.times[k]
+      total += v
+      if (k === 'idle') idle += v
+    }
+  }
+  return { idle, total }
+}
+
+/**
+ * Whole-machine CPU utilisation % (0–100) from the idle-vs-total tick delta
+ * between two os.cpus() reads — the instantaneous busy-ness Activity Monitor
+ * shows. 0 on the first read or a non-positive window. This deliberately
+ * replaces the 1-minute load average as the headline CPU figure: load is a
+ * lagging run-queue EWMA, not utilisation, so it both over-reads and trails
+ * reality (the "monitor says maxed while Activity Monitor is calm" bug).
+ */
+export function computeHostCpuPct(prev: HostCpuTimes | null, cur: HostCpuTimes): number {
+  if (!prev) return 0
+  const idleDelta = cur.idle - prev.idle
+  const totalDelta = cur.total - prev.total
+  if (totalDelta <= 0) return 0
+  const pct = (1 - idleDelta / totalDelta) * 100
+  return Math.round(Math.min(100, Math.max(0, pct)) * 100) / 100
+}
+
+/**
+ * macOS *available* memory in bytes from `vm_stat`: free + reclaimable
+ * (inactive + speculative + purgeable) pages × page size. Returns null if the
+ * output can't be parsed (caller falls back to os.freemem()).
+ *
+ * Why this exists: os.freemem() counts only the tiny pool of truly-free pages,
+ * treating macOS's large file-cache / inactive / purgeable reserve as "used".
+ * That makes (memTotal - freemem) read ~95–99% on a perfectly healthy machine —
+ * the exact discrepancy users see vs Activity Monitor. The reclaimable buckets
+ * here are freed on demand without swapping, so they ARE available.
+ */
+export function parseVmStatAvailable(stdout: string): number | null {
+  const pageSize = Number(/page size of (\d+) bytes/.exec(stdout)?.[1])
+  if (!Number.isFinite(pageSize) || pageSize <= 0) return null
+  const pages = (label: string): number =>
+    Number(new RegExp(`Pages ${label}:\\s+(\\d+)`).exec(stdout)?.[1] ?? 0)
+  const free = pages('free')
+  const inactive = pages('inactive')
+  // free + inactive are always present on a real vm_stat; if both are 0 the
+  // output didn't parse (e.g. localisation), so signal failure rather than 0 B.
+  if (free + inactive === 0) return null
+  return (free + inactive + pages('speculative') + pages('purgeable')) * pageSize
+}
+
+/** Linux *available* memory in bytes from /proc/meminfo's MemAvailable (kB). */
+export function parseMemAvailableLinux(meminfo: string): number | null {
+  const kb = Number(/MemAvailable:\s+(\d+)\s*kB/.exec(meminfo)?.[1])
+  return Number.isFinite(kb) ? kb * 1024 : null
+}
+
+/** Host metrics that need no cross-sample state or external commands. */
+function readHostBase(): Omit<MonitorSnapshot['host'], 'cpuPct' | 'memAvailable'> {
   return {
     cpuCount: os.cpus().length,
     loadAvg1: os.loadavg()[0] ?? 0,
@@ -270,6 +341,7 @@ class SystemMonitorService {
 
   private prevCpu = new Map<number, number>()
   private prevWallMs = 0
+  private prevCpuTimes: HostCpuTimes | null = null
   private rssBaseline = new Map<number, number>()
   private appCpuSustain = 0
   private appCpuAlerted = false // edge-trigger latch for the app-CPU episode
@@ -423,11 +495,43 @@ class SystemMonitorService {
     }
   }
 
+  /**
+   * Instantaneous host CPU % from the os.cpus() tick delta. STATEFUL — advances
+   * prevCpuTimes, so it must be called exactly once per sample (never from the
+   * non-sampling getSnapshot() fallback, or it would steal the next sample's
+   * delta and read ~0).
+   */
+  private hostCpuPct(): number {
+    const cur = sumCpuTimes(os.cpus())
+    const pct = computeHostCpuPct(this.prevCpuTimes, cur)
+    this.prevCpuTimes = cur
+    return pct
+  }
+
+  /** OS-accurate available memory (bytes); falls back to os.freemem() on error. */
+  private async readMemAvailable(memFree: number): Promise<number> {
+    try {
+      if (process.platform === 'darwin') {
+        const { stdout } = await execFileAsync('vm_stat', [], { timeout: 4_000 })
+        return parseVmStatAvailable(stdout) ?? memFree
+      }
+      if (process.platform === 'linux') {
+        return parseMemAvailableLinux(readFileSync('/proc/meminfo', 'utf8')) ?? memFree
+      }
+    } catch (err) {
+      log.warn('readMemAvailable failed; falling back to freemem', { err: String(err) })
+    }
+    return memFree // Windows / unknown: os.freemem() is the best we have.
+  }
+
   private buildHostOnlySnapshot(): MonitorSnapshot {
     const main = this.safePerfSnapshot()
+    const base = readHostBase()
     return {
       timestamp: new Date().toISOString(),
-      host: readHostMetrics(),
+      // Placeholder snapshot (no sample yet): don't touch the CPU-delta state and
+      // use freemem as a stand-in until the first real sample lands.
+      host: { ...base, cpuPct: 0, memAvailable: base.memFree },
       app: { cpuPct: 0, rssTotal: 0, procCount: 0 },
       processes: [],
       main,
@@ -466,9 +570,12 @@ class SystemMonitorService {
     } catch {
       // keep zeros
     }
+    const base = readHostBase()
     return {
       timestamp: new Date().toISOString(),
-      host: readHostMetrics(),
+      // os.freemem() is reasonably accurate on Windows, so it doubles as
+      // memAvailable there; CPU% still comes from the os.cpus() tick delta.
+      host: { ...base, cpuPct: this.hostCpuPct(), memAvailable: base.memFree },
       app,
       processes: [],
       main,
@@ -477,84 +584,80 @@ class SystemMonitorService {
     }
   }
 
-  private buildTreeSnapshot(): Promise<MonitorSnapshot> {
-    return new Promise((resolve, reject) => {
-      exec(
-        'ps -Ao pid,ppid,rss,time,command',
-        { maxBuffer: 16 * 1024 * 1024 },
-        (err, stdout) => {
-          if (err) {
-            reject(err)
-            return
-          }
-          const wallNowMs = Date.now()
-          const raw = parsePsOutput(stdout)
-          const byPid = new Map(raw.map((r) => [r.pid, r]))
-          let root = resolveAppRoot(byPid, process.ppid)
-          // If the resolved root isn't a live process (e.g. ps didn't capture our
-          // ppid), fall back to this server process so the panel still shows our
-          // own subtree instead of going blank.
-          if (!byPid.has(root)) root = process.pid
-          const tree = collectTreePids(raw, root)
-          const monitored = collectMonitoredPids(raw, root)
-          const wallDeltaSec = this.prevWallMs ? (wallNowMs - this.prevWallMs) / 1000 : 0
+  private async buildTreeSnapshot(): Promise<MonitorSnapshot> {
+    const base = readHostBase()
+    // ps (process tree) and vm_stat (host memory) are independent — run them
+    // concurrently so the extra memory read adds no latency to the 2s cadence.
+    const [{ stdout }, memAvailable] = await Promise.all([
+      execAsync('ps -Ao pid,ppid,rss,time,command', { maxBuffer: 16 * 1024 * 1024 }),
+      this.readMemAvailable(base.memFree)
+    ])
+    const hostCpuPct = this.hostCpuPct()
+    const wallNowMs = Date.now()
+    const raw = parsePsOutput(stdout)
+    const byPid = new Map(raw.map((r) => [r.pid, r]))
+    let root = resolveAppRoot(byPid, process.ppid)
+    // If the resolved root isn't a live process (e.g. ps didn't capture our
+    // ppid), fall back to this server process so the panel still shows our
+    // own subtree instead of going blank.
+    if (!byPid.has(root)) root = process.pid
+    const tree = collectTreePids(raw, root)
+    const monitored = collectMonitoredPids(raw, root)
+    const wallDeltaSec = this.prevWallMs ? (wallNowMs - this.prevWallMs) / 1000 : 0
 
-          const nextPrevCpu = new Map<number, number>()
-          const nextBaseline = new Map<number, number>()
-          const processes: MonitorProcess[] = []
-          let appCpu = 0
-          let appRss = 0
-          let appProcCount = 0
+    const nextPrevCpu = new Map<number, number>()
+    const nextBaseline = new Map<number, number>()
+    const processes: MonitorProcess[] = []
+    let appCpu = 0
+    let appRss = 0
+    let appProcCount = 0
 
-          for (const pid of monitored) {
-            const r = byPid.get(pid)
-            if (!r) continue
-            const cpuPct = computeCpuPct(r.cpuSec, this.prevCpu.get(pid), wallDeltaSec)
-            const { type, label } = classifyProcess(r.command)
-            const baseline = this.rssBaseline.get(pid) ?? r.rss
-            const flags = computeProcessFlags({ cpuPct, rss: r.rss, ppid: r.ppid }, baseline)
-            processes.push({
-              pid,
-              ppid: r.ppid,
-              type,
-              label,
-              cpuPct,
-              rss: r.rss,
-              cpuSec: r.cpuSec,
-              flags
-            })
-            // Only the owned tree counts toward the app's footprint; orphans are
-            // shown (flagged) but may belong to a previous instance.
-            if (tree.has(pid)) {
-              appCpu += cpuPct
-              appRss += r.rss
-              appProcCount++
-            }
-            nextPrevCpu.set(pid, r.cpuSec)
-            nextBaseline.set(pid, this.rssBaseline.get(pid) ?? r.rss)
-          }
+    for (const pid of monitored) {
+      const r = byPid.get(pid)
+      if (!r) continue
+      const cpuPct = computeCpuPct(r.cpuSec, this.prevCpu.get(pid), wallDeltaSec)
+      const { type, label } = classifyProcess(r.command)
+      const baseline = this.rssBaseline.get(pid) ?? r.rss
+      const flags = computeProcessFlags({ cpuPct, rss: r.rss, ppid: r.ppid }, baseline)
+      processes.push({
+        pid,
+        ppid: r.ppid,
+        type,
+        label,
+        cpuPct,
+        rss: r.rss,
+        cpuSec: r.cpuSec,
+        flags
+      })
+      // Only the owned tree counts toward the app's footprint; orphans are
+      // shown (flagged) but may belong to a previous instance.
+      if (tree.has(pid)) {
+        appCpu += cpuPct
+        appRss += r.rss
+        appProcCount++
+      }
+      nextPrevCpu.set(pid, r.cpuSec)
+      nextBaseline.set(pid, this.rssBaseline.get(pid) ?? r.rss)
+    }
 
-          processes.sort((a, b) => b.cpuPct - a.cpuPct || b.rss - a.rss)
-          this.prevCpu = nextPrevCpu
-          this.rssBaseline = nextBaseline
-          this.prevWallMs = wallNowMs
+    processes.sort((a, b) => b.cpuPct - a.cpuPct || b.rss - a.rss)
+    this.prevCpu = nextPrevCpu
+    this.rssBaseline = nextBaseline
+    this.prevWallMs = wallNowMs
 
-          resolve({
-            timestamp: new Date(wallNowMs).toISOString(),
-            host: readHostMetrics(),
-            app: {
-              cpuPct: Math.round(appCpu * 100) / 100,
-              rssTotal: appRss,
-              procCount: appProcCount
-            },
-            processes,
-            main: this.safePerfSnapshot(),
-            platform: process.platform,
-            supported: true
-          })
-        }
-      )
-    })
+    return {
+      timestamp: new Date(wallNowMs).toISOString(),
+      host: { ...base, cpuPct: hostCpuPct, memAvailable },
+      app: {
+        cpuPct: Math.round(appCpu * 100) / 100,
+        rssTotal: appRss,
+        procCount: appProcCount
+      },
+      processes,
+      main: this.safePerfSnapshot(),
+      platform: process.platform,
+      supported: true
+    }
   }
 
   private runAlerts(s: MonitorSnapshot): void {

@@ -140,11 +140,14 @@ export function MonitorModal(): React.JSX.Element | null {
 
   const cpuSeries = history.map((h) => h.app.cpuPct)
   const memSeries = history.map((h) => h.app.rssTotal / (1024 * 1024))
-  const loadSeries = history.map((h) => h.host.loadAvg1)
+  const hostCpuSeries = history.map((h) => h.host.cpuPct)
   const lagSeries = history.map((h) => h.main?.eventLoopLagMs ?? 0)
 
   const host = snapshot?.host
-  const hostMemUsed = host ? host.memTotal - host.memFree : 0
+  // Use OS-accurate available memory, not memFree: on macOS the kernel reports
+  // most cache/inactive RAM as non-free, so memFree-based "used" reads ~95%+ on
+  // a healthy machine (the Activity-Monitor mismatch this panel had).
+  const hostMemUsed = host ? host.memTotal - host.memAvailable : 0
   const hostMemPct = host && host.memTotal > 0 ? (hostMemUsed / host.memTotal) * 100 : 0
   const cpuCount = host?.cpuCount ?? 1
 
@@ -186,11 +189,11 @@ export function MonitorModal(): React.JSX.Element | null {
             />
             <Tile
               icon={Gauge}
-              label="Host Load"
-              value={host ? host.loadAvg1.toFixed(2) : '—'}
-              sub={`${cpuCount} cores`}
-              series={loadSeries}
-              max={cpuCount}
+              label="Host CPU"
+              value={host ? `${host.cpuPct.toFixed(0)}%` : '—'}
+              sub={`load ${host ? host.loadAvg1.toFixed(2) : '—'} · ${cpuCount} cores`}
+              series={hostCpuSeries}
+              max={100}
               strokeClassName="stroke-emerald-500 text-emerald-500"
             />
             <Tile
@@ -199,7 +202,9 @@ export function MonitorModal(): React.JSX.Element | null {
               value={host ? `${hostMemPct.toFixed(0)}%` : '—'}
               sub={host ? `${formatBytes(hostMemUsed)} / ${formatBytes(host.memTotal)}` : undefined}
               series={history.map((h) =>
-                h.host.memTotal > 0 ? ((h.host.memTotal - h.host.memFree) / h.host.memTotal) * 100 : 0
+                h.host.memTotal > 0
+                  ? ((h.host.memTotal - h.host.memAvailable) / h.host.memTotal) * 100
+                  : 0
               )}
               max={100}
               strokeClassName="stroke-amber-500 text-amber-500"
