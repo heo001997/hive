@@ -9,9 +9,14 @@ import {
   collectMonitoredPids,
   computeCpuPct,
   computeProcessFlags,
+  computeHostCpuPct,
+  sumCpuTimes,
+  parseVmStatAvailable,
+  parseMemAvailableLinux,
   RSS_GROWTH_MIN_BYTES,
   type RawProcess
 } from './system-monitor'
+import type { CpuInfo } from 'node:os'
 
 describe('parseCpuTime', () => {
   it('parses MM:SS and MM:SS.ss (macOS)', () => {
@@ -194,5 +199,63 @@ describe('computeProcessFlags', () => {
 
   it('combines HIGH and ORPHAN', () => {
     expect(computeProcessFlags({ cpuPct: 95, rss: 1024, ppid: 1 }, 1024)).toEqual(['HIGH', 'ORPHAN'])
+  })
+})
+
+const cpu = (user: number, sys: number, idle: number): CpuInfo =>
+  ({ times: { user, nice: 0, sys, idle, irq: 0 } }) as CpuInfo
+
+describe('sumCpuTimes', () => {
+  it('sums idle and total ticks across all cores', () => {
+    expect(sumCpuTimes([cpu(10, 5, 85), cpu(20, 10, 70)])).toEqual({ idle: 155, total: 200 })
+  })
+})
+
+describe('computeHostCpuPct', () => {
+  it('returns 0 on the first read (no previous tick counts)', () => {
+    expect(computeHostCpuPct(null, { idle: 100, total: 200 })).toBe(0)
+  })
+
+  it('derives utilisation from the idle-vs-total delta', () => {
+    // 100 total ticks elapsed, 75 of them idle -> 25% busy.
+    expect(computeHostCpuPct({ idle: 100, total: 200 }, { idle: 175, total: 300 })).toBe(25)
+  })
+
+  it('clamps a non-positive window to 0 and stays within 0..100', () => {
+    expect(computeHostCpuPct({ idle: 100, total: 200 }, { idle: 100, total: 200 })).toBe(0)
+    // All elapsed ticks busy -> 100%, never above.
+    expect(computeHostCpuPct({ idle: 100, total: 200 }, { idle: 100, total: 300 })).toBe(100)
+  })
+})
+
+describe('parseVmStatAvailable', () => {
+  const vmStat = [
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+    'Pages free:                               1000.',
+    'Pages active:                            50000.',
+    'Pages inactive:                           2000.',
+    'Pages speculative:                         500.',
+    'Pages wired down:                        10000.',
+    'Pages purgeable:                           300.'
+  ].join('\n')
+
+  it('sums free + reclaimable pages times the page size', () => {
+    // (1000 + 2000 + 500 + 300) * 16384
+    expect(parseVmStatAvailable(vmStat)).toBe((1000 + 2000 + 500 + 300) * 16384)
+  })
+
+  it('returns null when the output is not vm_stat', () => {
+    expect(parseVmStatAvailable('not vm_stat output')).toBeNull()
+  })
+})
+
+describe('parseMemAvailableLinux', () => {
+  it('reads MemAvailable (kB) into bytes', () => {
+    const meminfo = ['MemTotal:       16384000 kB', 'MemAvailable:    8192000 kB'].join('\n')
+    expect(parseMemAvailableLinux(meminfo)).toBe(8192000 * 1024)
+  })
+
+  it('returns null when MemAvailable is absent', () => {
+    expect(parseMemAvailableLinux('MemTotal: 16384000 kB')).toBeNull()
   })
 })

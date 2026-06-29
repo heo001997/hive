@@ -46,10 +46,30 @@ export interface MonitorSnapshot {
   timestamp: string
   host: {
     cpuCount: number
+    /**
+     * Instantaneous whole-machine CPU utilisation %, 0–100 (1 = every core
+     * pinned), from the idle-vs-total tick delta between samples. This is what
+     * Activity Monitor's CPU graph shows — NOT the load average, which is a
+     * lagging 1-minute run-queue EWMA and routinely reads "busy" minutes after a
+     * spike has passed.
+     */
+    cpuPct: number
     /** 1-minute load average (0 on platforms that don't report it, e.g. Windows). */
     loadAvg1: number
     memTotal: number
+    /**
+     * Truly-free pages only (os.freemem()). Kept for reference — do NOT derive
+     * "used %" from it: macOS counts file cache / inactive / purgeable as
+     * non-free, so this reads ~near-full even on a healthy machine.
+     */
     memFree: number
+    /**
+     * OS-accurate *available* memory in bytes: free plus reclaimable (inactive +
+     * speculative + purgeable on macOS via vm_stat; MemAvailable on Linux). Use
+     * `memTotal - memAvailable` for "used" — it tracks Activity Monitor instead
+     * of the wildly-inflated os.freemem() figure.
+     */
+    memAvailable: number
   }
   app: {
     /** Sum of per-process CPU % across the monitored tree. */

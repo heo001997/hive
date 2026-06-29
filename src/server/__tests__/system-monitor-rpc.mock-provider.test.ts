@@ -7,7 +7,7 @@ import { makeRpcRouter } from '../rpc/router'
 
 const snapshot: MonitorSnapshot = {
   timestamp: '2026-06-28T00:00:00.000Z',
-  host: { cpuCount: 8, loadAvg1: 1.2, memTotal: 16e9, memFree: 8e9 },
+  host: { cpuCount: 8, cpuPct: 23.4, loadAvg1: 1.2, memTotal: 16e9, memFree: 8e9, memAvailable: 11e9 },
   app: { cpuPct: 12.5, rssTotal: 4e9, procCount: 3 },
   processes: [],
   main: null,
