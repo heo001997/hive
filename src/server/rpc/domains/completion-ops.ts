@@ -92,6 +92,72 @@ export interface CompletionOpsRpcDependencies {
 
 const sha256 = (input: string): string => createHash('sha256').update(input).digest('hex')
 
+/** Per-tool caps so one giant Write payload / file-read result can't eat the whole tail budget. */
+const MAX_TOOL_INPUT_CHARS = 300
+const MAX_TOOL_OUTPUT_CHARS = 800
+
+/** Shape of a translated Claude JSONL part (see `claude-transcript-reader.translateContentBlock`). */
+interface TranslatedPart {
+  type?: string
+  text?: string
+  toolUse?: {
+    name?: string
+    input?: unknown
+    output?: string
+    error?: string
+    status?: string
+  }
+}
+
+const clip = (s: string, n: number): string => {
+  const t = s.trim()
+  return t.length <= n ? t : `${t.slice(0, n)}…`
+}
+
+/**
+ * Render one translated Claude JSONL entry into review-ready text for the Watcher.
+ *
+ * The reader's bare `content` field is TEXT blocks only — it drops tool calls
+ * (Write/Edit/Bash/…) and their results (test output, "file created", command
+ * errors). A build ticket typically *finishes* with tool-heavy work and little or
+ * no trailing prose, so a text-only tail ends on stale mid-work narration and the
+ * judge wrongly reads it as incomplete — bouncing a done ticket back to In
+ * Progress. Folding the tool activity from `parts` back in restores the real
+ * completion signal. Thinking/reasoning is intentionally omitted (internal
+ * monologue, noisy). Each tool's input/output is clipped so the cap still lands on
+ * the most RECENT activity rather than one giant payload.
+ */
+export function serializeEntryForReview(entry: { content?: unknown; parts?: unknown }): string {
+  const parts = Array.isArray(entry.parts) ? (entry.parts as TranslatedPart[]) : []
+  if (parts.length === 0) {
+    return typeof entry.content === 'string' ? entry.content.trim() : ''
+  }
+
+  const segments: string[] = []
+  for (const part of parts) {
+    if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+      segments.push(part.text.trim())
+    } else if (part.type === 'tool_use' && part.toolUse) {
+      const tu = part.toolUse
+      let inputStr = ''
+      if (tu.input != null) {
+        try {
+          inputStr = clip(JSON.stringify(tu.input), MAX_TOOL_INPUT_CHARS)
+        } catch {
+          inputStr = ''
+        }
+      }
+      segments.push(`⏺ ${tu.name || 'tool'}(${inputStr})`)
+      if (typeof tu.error === 'string' && tu.error.trim()) {
+        segments.push(`  ✗ error: ${clip(tu.error, MAX_TOOL_OUTPUT_CHARS)}`)
+      } else if (typeof tu.output === 'string' && tu.output.trim()) {
+        segments.push(`  → ${clip(tu.output, MAX_TOOL_OUTPUT_CHARS)}`)
+      }
+    }
+  }
+  return segments.join('\n').trim()
+}
+
 /**
  * Resolve a session's transcript as provider-agnostic {@link TranscriptMessage}s
  * for the Watcher (Gate 2) to judge.
@@ -126,7 +192,8 @@ async function resolveTranscriptMessages(
   deps: CompletionOpsRpcDependencies
 ): Promise<TranscriptMessage[]> {
   // 1. Claude JSONL transcript — clean structured conversation, no terminal noise.
-  //    The reader flattens each entry's content to a plain string; keep non-empty text.
+  //    Fold each entry's text AND tool activity (calls + results) into the content
+  //    so the judge sees what the agent actually DID at the end, not just its prose.
   const isClaudeJsonl =
     session?.agent_sdk === 'claude-code' || session?.agent_sdk === 'claude-code-cli'
   if (isClaudeJsonl && session?.claude_session_id && worktree?.path) {
@@ -136,12 +203,12 @@ async function resolveTranscriptMessages(
     try {
       const entries = await readClaudeTranscript(worktree.path, session.claude_session_id)
       const messages = entries
-        .map((e) => e as { role?: unknown; content?: unknown })
-        .filter((e) => typeof e.content === 'string' && e.content.trim().length > 0)
+        .map((e) => e as { role?: unknown; content?: unknown; parts?: unknown })
         .map((e) => ({
           role: typeof e.role === 'string' ? e.role : 'assistant',
-          content: e.content as string
+          content: serializeEntryForReview(e)
         }))
+        .filter((m) => m.content.trim().length > 0)
       if (messages.length > 0) {
         log.info('[StrictVerify] source=claude-jsonl', {
           sessionId: params.sessionId,
