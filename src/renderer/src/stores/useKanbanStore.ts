@@ -16,6 +16,7 @@ import {
   type KanbanSessionEvent
 } from './store-coordination'
 import { isPlanLike } from '../lib/constants'
+import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import type {
   CompletionCheckProvider,
   SessionFingerprint,
@@ -3056,6 +3057,15 @@ registerKanbanSessionSync((sessionId, event) => {
 registerKanbanNewSession((sessionId, worktreeId, projectId, sessionMode) => {
   const store = useKanbanStore.getState()
   const tickets = store.tickets.get(projectId) ?? []
+
+  // Defense-in-depth: never bind a session that another ticket already owns. A
+  // ticket-launch flow (auto-launch / worktree picker) binds its own ticket and
+  // passes skipKanbanAutoAttach, so this callback only runs for sessions started
+  // outside a ticket (sidebar / session view). The guard still matters because
+  // several tickets can share one worktree (speckit reuses one worktree per spec),
+  // and binding a second ticket to one current_session_id cross-wires both — the
+  // ticket detail then opens the wrong terminal and a sibling rides session events.
+  if (isSessionOwnedByAnotherTicket(useKanbanStore.getState().tickets, sessionId, '')) return
 
   // Find the first ticket pre-assigned to this worktree with no active session
   const orphan = tickets.find(
