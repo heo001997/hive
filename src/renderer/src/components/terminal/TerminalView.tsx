@@ -30,6 +30,16 @@ interface TerminalViewProps {
   shiftEnterAsNewline?: boolean
   createTerminal?: Parameters<ITerminalBackend['mount']>[1]['createTerminal']
   onStatusChange?: (status: 'creating' | 'running' | 'exited', exitCode?: number) => void
+  /**
+   * Opaque marker for where the terminal is currently mounted (e.g. 'main' vs
+   * 'modal'). Changes whenever the live terminal is reparented between the main
+   * pane and the ticket-detail modal. A reparent detaches and reattaches xterm's
+   * WebGL canvas (dropping its framebuffer) without necessarily changing
+   * `isVisible` or the container size, so neither the visibility effect nor the
+   * ResizeObserver would otherwise repaint — leaving the terminal blank. We
+   * re-fit (which force-repaints) on every change.
+   */
+  mountToken?: string | number
 }
 
 /** Imperative handle exposed to parent (TerminalManager) */
@@ -60,7 +70,8 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
     backendTypeOverride,
     shiftEnterAsNewline,
     createTerminal,
-    onStatusChange
+    onStatusChange,
+    mountToken
   },
   ref
 ) {
@@ -198,6 +209,33 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
     }, 50)
     return () => clearTimeout(timer)
   }, [effectiveVisible])
+
+  // Force a fit + clean repaint when the live terminal is reparented between the
+  // main pane and the ticket-detail modal. The reparent (MountedSessionPortal
+  // moving the host node) detaches and reattaches xterm's WebGL canvas, dropping
+  // its framebuffer. When the destination width equals the source width the
+  // ResizeObserver never fires; and because a session that was already active in
+  // the main pane stays visible across the move (isVisible: true → true), the
+  // visibility effect above doesn't re-run either. With neither trigger, nothing
+  // dirties the buffer and the terminal renders BLANK until the next resize (e.g.
+  // the followup textarea growing or a new line of PTY output). `mountToken`
+  // changes on each reparent, so re-fit here — fit() runs forceRepaint
+  // internally, flushing the stale/empty canvas back to the buffer contents.
+  // Read visibility from the ref so this fires only on an actual reparent, not on
+  // every visibility toggle (already handled above). fit() is cheap and no-ops
+  // when the backend isn't an xterm or hasn't finished its async mount yet.
+  useEffect(() => {
+    if (mountToken === undefined || !effectiveVisibleRef.current) return
+    const refit = (): void => {
+      const backend = backendRef.current
+      if (backend?.type === 'xterm') (backend as XtermBackend).fit()
+    }
+    refit()
+    // Repeat after the modal open/close animation settles, in case the first
+    // pass ran while the container width was still 0 (syncSizeToPty bails then).
+    const timer = setTimeout(refit, 60)
+    return () => clearTimeout(timer)
+  }, [mountToken])
 
   // Paste fallback: the Cmd+V menu accelerator intercepts the keystroke at the
   // macOS application-menu level before it reaches any view. The menu handler

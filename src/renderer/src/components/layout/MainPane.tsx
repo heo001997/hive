@@ -92,9 +92,13 @@ function MountedSessionPortal({
   }, [])
 
   const isVisible = modalTarget ? true : isActive
+  // Reparent marker: changes when this live terminal is moved into / out of the
+  // ticket modal. TerminalView re-fits (and force-repaints its WebGL canvas) on
+  // a change, recovering from the blank canvas the DOM move leaves behind.
+  const mountToken = modalTarget ? 'modal' : 'main'
   const sessionView =
     agentSdk === 'terminal' ? (
-      <SessionTerminalView sessionId={sessionId} isVisible={isVisible} />
+      <SessionTerminalView sessionId={sessionId} isVisible={isVisible} mountToken={mountToken} />
     ) : (
       <SessionView sessionId={sessionId} isVisible={isVisible} />
     )
