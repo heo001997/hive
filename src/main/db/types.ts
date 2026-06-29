@@ -16,6 +16,8 @@ export interface Project {
   worktree_create_script: string | null
   custom_commands: CustomProjectCommand[] | null
   auto_assign_port: boolean
+  /** Max worktrees allowed to run in parallel per project (in the In Progress column). 0 = unlimited. */
+  max_parallel_worktrees: number
   kanban_storage_mode?: KanbanStorageMode
   kanban_markdown_config?: string | null
   sort_order: number
@@ -76,6 +78,7 @@ export interface ProjectUpdate {
   worktree_create_script?: string | null
   custom_commands?: CustomProjectCommand[] | null
   auto_assign_port?: boolean
+  max_parallel_worktrees?: number
   last_accessed_at?: string
 }
 

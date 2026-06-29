@@ -22,6 +22,7 @@ interface Project {
   worktree_create_script: string | null
   custom_commands: CustomProjectCommand[] | null
   auto_assign_port: boolean
+  max_parallel_worktrees: number
   sort_order: number
   created_at: string
   last_accessed_at: string
@@ -63,6 +64,7 @@ interface ProjectState {
       worktree_create_script?: string | null
       custom_commands?: CustomProjectCommand[] | null
       auto_assign_port?: boolean
+      max_parallel_worktrees?: number
     }
   ) => Promise<boolean>
   selectProject: (id: string | null, options?: ProjectSelectionOptions) => void
@@ -263,6 +265,7 @@ export const useProjectStore = create<ProjectState>()(
           worktree_create_script?: string | null
           custom_commands?: CustomProjectCommand[] | null
           auto_assign_port?: boolean
+          max_parallel_worktrees?: number
         }
       ) => {
         try {

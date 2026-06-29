@@ -948,6 +948,7 @@ export class DatabaseService {
       worktree_create_script: data.worktree_create_script ?? null,
       custom_commands: null,
       auto_assign_port: false,
+      max_parallel_worktrees: 0,
       sort_order: 0,
       created_at: now,
       last_accessed_at: now
@@ -1084,6 +1085,10 @@ export class DatabaseService {
     if (data.auto_assign_port !== undefined) {
       updates.push('auto_assign_port = ?')
       values.push(data.auto_assign_port ? 1 : 0)
+    }
+    if (data.max_parallel_worktrees !== undefined) {
+      updates.push('max_parallel_worktrees = ?')
+      values.push(Math.max(0, Math.floor(data.max_parallel_worktrees)))
     }
     if (data.last_accessed_at !== undefined) {
       updates.push('last_accessed_at = ?')

@@ -86,7 +86,23 @@ function composeAutoLaunchPrompt(
     : fullPrompt
 }
 
+// Tickets whose launch is in progress. Guards against two triggers (dependency
+// resolution + the concurrency dequeue) racing to launch the same ticket from a
+// stale snapshot — both would pass the pending_launch_config check and double-spawn.
+const inFlightLaunches = new Set<string>()
+
 export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> {
+  if (!ticket.pending_launch_config) return
+  if (inFlightLaunches.has(ticket.id)) return
+  inFlightLaunches.add(ticket.id)
+  try {
+    await runAutoLaunch(ticket)
+  } finally {
+    inFlightLaunches.delete(ticket.id)
+  }
+}
+
+async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
   if (!ticket.pending_launch_config) return
 
   let config: PendingLaunchConfig
@@ -109,6 +125,12 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
     console.error('Project not found for auto-launch:', ticket.project_id)
     return
   }
+
+  // Concurrency gate: respect the project's max-parallel-worktrees cap. Over the
+  // limit → leave the pending_launch_config in place; launchNextQueuedTickets will
+  // retry this ticket once a running worktree leaves the In Progress column.
+  const { canLaunchWorktreeNow } = await import('./worktree-concurrency')
+  if (!canLaunchWorktreeNow(ticket.project_id)) return
 
   void autoPinBaseWorktree(ticket.project_id)
 
@@ -217,7 +239,24 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
       await useSessionStore.getState().setSessionModel(sessionId, config.model)
     }
 
-    // 5. Update ticket: clear pending config, set session + worktree
+    // 5. Update ticket: clear pending config, set session + worktree, and move the
+    // ticket into In Progress so it counts against the parallel-worktree cap. A
+    // concurrency-queued ticket waits in its origin column (e.g. Todo) until launch;
+    // a dependency-queued ticket already sits in In Progress, so don't reorder it.
+    const kanbanState = useKanbanStore.getState()
+    const currentColumn = kanbanState.tickets
+      .get(ticket.project_id)
+      ?.find((t) => t.id === ticket.id)?.column
+    const inProgressMove =
+      currentColumn === 'in_progress'
+        ? {}
+        : {
+            column: 'in_progress' as const,
+            sort_order: kanbanState.computeSortOrder(
+              kanbanState.getTicketsByColumn(ticket.project_id, 'in_progress'),
+              0
+            )
+          }
     await useKanbanStore.getState().updateTicket(ticket.id, ticket.project_id, {
       pending_launch_config: null,
       current_session_id: sessionId,
@@ -225,7 +264,8 @@ export async function autoLaunchTicket(ticket: AutoLaunchTicket): Promise<void> 
       mode: config.mode,
       goal_mode: configGoalMode,
       goal_success_criteria: configGoalMode ? configGoalSuccessCriteria : null,
-      auto_approve_plan: configAutoApprovePlan
+      auto_approve_plan: configAutoApprovePlan,
+      ...inProgressMove
     })
 
     // 6. Trigger usage refresh
