@@ -26,12 +26,19 @@ const DEFAULT_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
 // Matches the npm-exec wrapper and the node child for MCP servers, e.g.
 // "npm exec @delorenj/mcp-server-trello" and ".../mcp-server-trello/build/index.js".
-const MCP_COMMAND_PATTERN = /mcp-server|@modelcontextprotocol|modelcontextprotocol/i
+// Exported so the system monitor can reuse the same orphan-matching heuristic.
+export const MCP_COMMAND_PATTERN = /mcp-server|@modelcontextprotocol|modelcontextprotocol/i
 
 let timer: NodeJS.Timeout | undefined
 
-/** Run a single sweep. Resolves with the number of processes signalled. */
-export function reapOrphanedMcpServers(): Promise<number> {
+/**
+ * Run a single sweep for orphans (ppid===1) whose command matches `pattern`.
+ * Resolves with the number of processes signalled. The pattern is parameterised
+ * so the periodic reaper can stay MCP-only (it must not touch a user's
+ * intentionally-detached agent session) while the monitor's manual
+ * "force-cleanup" can sweep the wider set of app orphans it actually flags.
+ */
+export function reapOrphans(pattern: RegExp): Promise<number> {
   return new Promise((resolve) => {
     if (process.platform === 'win32') {
       resolve(0)
@@ -39,7 +46,7 @@ export function reapOrphanedMcpServers(): Promise<number> {
     }
     exec('ps -Ao pid,ppid,command', { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
       if (err) {
-        log.warn('Orphan MCP sweep failed to list processes', { err: String(err) })
+        log.warn('Orphan sweep failed to list processes', { err: String(err) })
         resolve(0)
         return
       }
@@ -52,24 +59,29 @@ export function reapOrphanedMcpServers(): Promise<number> {
         const command = match[3]
         if (ppid !== 1) continue // only reparented orphans
         if (pid === process.pid) continue
-        if (!MCP_COMMAND_PATTERN.test(command)) continue
+        if (!pattern.test(command)) continue
         try {
           process.kill(pid, 'SIGTERM')
           killed++
-          log.info('Reaped orphaned MCP server', { pid, command: command.slice(0, 160) })
+          log.info('Reaped orphaned process', { pid, command: command.slice(0, 160) })
         } catch (killErr) {
           const code = (killErr as NodeJS.ErrnoException)?.code
           if (code !== 'ESRCH') {
-            log.warn('Failed to reap orphaned MCP server', { pid, code })
+            log.warn('Failed to reap orphaned process', { pid, code })
           }
         }
       }
       if (killed > 0) {
-        log.info('Orphan MCP sweep complete', { killed })
+        log.info('Orphan sweep complete', { killed })
       }
       resolve(killed)
     })
   })
+}
+
+/** Run a single sweep for orphaned MCP servers (the periodic-reaper default). */
+export function reapOrphanedMcpServers(): Promise<number> {
+  return reapOrphans(MCP_COMMAND_PATTERN)
 }
 
 /** Start the periodic reaper. Idempotent. */

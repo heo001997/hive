@@ -6,7 +6,8 @@ import {
   History,
   Settings,
   Coffee,
-  MoonStar
+  MoonStar,
+  Activity
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { Button } from '@/components/ui/button'
@@ -34,6 +35,7 @@ import { BoardSearchControl } from '@/components/kanban/BoardSearchControl'
 import { useTipStore } from '@/stores/useTipStore'
 import { Tip } from '@/components/ui/Tip'
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
+import { useMonitorStore } from '@/stores/useMonitorStore'
 import { HeaderTelegramToggle } from './HeaderTelegramToggle'
 import { HeaderDiscordToggle } from './HeaderDiscordToggle'
 import hiveLogo from '@/assets/icon.png'
@@ -102,6 +104,9 @@ export function Header(): React.JSX.Element {
     s.selectedConnectionId ? s.connections.find((c) => c.id === s.selectedConnectionId) : null
   )
   const isConnectionMode = !!selectedConnectionId && !selectedWorktreeId
+
+  const openMonitor = useMonitorStore((s) => s.open)
+  const unseenAlertCount = useMonitorStore((s) => s.unseenAlertCount)
 
   return (
     <header
@@ -234,6 +239,24 @@ export function Header(): React.JSX.Element {
           </Tip>
         )}
         {boardSearchMounted && <BoardSearchControl />}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => openMonitor()}
+          title="System Monitor"
+          data-testid="system-monitor-toggle"
+          className="relative"
+        >
+          <Activity className="h-4 w-4" />
+          {unseenAlertCount > 0 && (
+            <span
+              className="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-[10px] font-medium leading-[16px] text-white text-center"
+              data-testid="monitor-alert-badge"
+            >
+              {unseenAlertCount > 99 ? '99+' : unseenAlertCount}
+            </span>
+          )}
+        </Button>
         <Button
           variant="ghost"
           size="icon"

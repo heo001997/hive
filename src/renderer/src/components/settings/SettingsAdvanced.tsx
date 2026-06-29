@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { codexDebugLoggerApi } from '@/api/codex-debug-logger-api'
 import { perfDiagnosticsApi } from '@/api/perf-diagnostics-api'
+import { monitorApi } from '@/api/monitor-api'
 import { useSettingsStore } from '@/stores/useSettingsStore'
-import { Trash2, Plus } from 'lucide-react'
+import { useMonitorStore } from '@/stores/useMonitorStore'
+import { Trash2, Plus, Activity } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { toast } from '@/lib/toast'
@@ -26,17 +28,26 @@ export function SettingsAdvanced(): React.JSX.Element {
   const {
     environmentVariables: rawEnvVars,
     perfDiagnosticsEnabled,
+    systemMonitorEnabled,
     codexJsonlLoggingEnabled,
     codexJsonlResetPerSession,
     updateSetting
   } = useSettingsStore()
   const envVars = rawEnvVars ?? []
+  const openMonitor = useMonitorStore((s) => s.open)
 
   const handlePerfDiagnosticsToggle = (): void => {
     const newValue = !perfDiagnosticsEnabled
     updateSetting('perfDiagnosticsEnabled', newValue)
     perfDiagnosticsApi.enable(newValue)
     toast.success(newValue ? 'Performance diagnostics enabled' : 'Performance diagnostics disabled')
+  }
+
+  const handleSystemMonitorToggle = (): void => {
+    const newValue = !systemMonitorEnabled
+    updateSetting('systemMonitorEnabled', newValue)
+    monitorApi.setEnabled(newValue).catch(() => undefined)
+    toast.success(newValue ? 'System monitor enabled' : 'System monitor disabled')
   }
 
   const handleCodexJsonlLoggingToggle = (): void => {
@@ -96,6 +107,40 @@ export function SettingsAdvanced(): React.JSX.Element {
       <div>
         <h3 className="text-base font-medium mb-1">Advanced</h3>
         <p className="text-sm text-muted-foreground">Advanced configuration options</p>
+      </div>
+
+      {/* System Monitor toggle + open */}
+      <div className="flex items-center justify-between">
+        <div>
+          <label className="text-sm font-medium">System Monitor</label>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Sample the whole Hive process tree (CPU/RSS per process) plus host totals, with active
+            alerts when something breaks out. Logs to ~/.hive/logs/system-monitor.jsonl and
+            monitor-alerts.jsonl.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button size="sm" variant="outline" onClick={() => openMonitor()}>
+            <Activity className="h-3.5 w-3.5 mr-1" />
+            Open Monitor
+          </Button>
+          <button
+            role="switch"
+            aria-checked={systemMonitorEnabled}
+            onClick={handleSystemMonitorToggle}
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              systemMonitorEnabled ? 'bg-primary' : 'bg-muted'
+            )}
+          >
+            <span
+              className={cn(
+                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                systemMonitorEnabled ? 'translate-x-4' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
       </div>
 
       {/* Performance Diagnostics toggle */}

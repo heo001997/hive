@@ -21,8 +21,8 @@ import {
   Upload,
   Download,
   RefreshCw,
-  ChevronRight,
-  type LucideIcon
+  Activity,
+  ChevronRight
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { cn } from '@/lib/utils'
@@ -48,6 +48,7 @@ const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
   Upload,
   Download,
   RefreshCw,
+  Activity,
   KanbanIcon
 }
 

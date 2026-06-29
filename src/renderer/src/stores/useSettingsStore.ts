@@ -217,6 +217,7 @@ export interface AppSettings {
 
   // Diagnostics
   perfDiagnosticsEnabled: boolean
+  systemMonitorEnabled: boolean
   codexJsonlLoggingEnabled: boolean
   codexJsonlResetPerSession: boolean
 
@@ -343,6 +344,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   environmentVariables: [],
   customProjectCommands: [],
   perfDiagnosticsEnabled: false,
+  systemMonitorEnabled: true,
   codexJsonlLoggingEnabled: false,
   codexJsonlResetPerSession: true,
   autoApprovePlanEnabled: false,
@@ -570,6 +572,7 @@ function extractSettings(state: SettingsState): AppSettings {
     environmentVariables: state.environmentVariables,
     customProjectCommands: state.customProjectCommands,
     perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
+    systemMonitorEnabled: state.systemMonitorEnabled,
     codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
     codexJsonlResetPerSession: state.codexJsonlResetPerSession,
     autoApprovePlanEnabled: state.autoApprovePlanEnabled,
@@ -963,6 +966,7 @@ export const useSettingsStore = create<SettingsState>()(
         environmentVariables: state.environmentVariables,
         customProjectCommands: state.customProjectCommands,
         perfDiagnosticsEnabled: state.perfDiagnosticsEnabled,
+        systemMonitorEnabled: state.systemMonitorEnabled,
         codexJsonlLoggingEnabled: state.codexJsonlLoggingEnabled,
         codexJsonlResetPerSession: state.codexJsonlResetPerSession,
         autoApprovePlanEnabled: state.autoApprovePlanEnabled,
