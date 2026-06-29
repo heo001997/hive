@@ -1,4 +1,8 @@
-import { WINDOW_FOCUSED_CHANNEL } from '@shared/app-events'
+import {
+  WINDOW_FOCUSED_CHANNEL,
+  WINDOW_FULLSCREEN_CHANGED_CHANNEL,
+  type WindowFullscreenChangedPayload
+} from '@shared/app-events'
 import { EDIT_PASTE_CHANNEL } from '@shared/edit-events'
 import type { MenuActionChannel } from '@shared/menu-events'
 import {
@@ -106,6 +110,17 @@ export const systemApi = {
     return getRendererRpcClient().subscribe(WINDOW_FOCUSED_CHANNEL, () => {
       callback()
     })
+  },
+  onWindowFullscreenChanged: (callback: (fullscreen: boolean) => void): (() => void) => {
+    return getRendererRpcClient().subscribe(
+      WINDOW_FULLSCREEN_CHANGED_CHANNEL,
+      (event: ServerEvent) => {
+        const payload = event.payload as WindowFullscreenChangedPayload | undefined
+        if (payload && typeof payload.fullscreen === 'boolean') {
+          callback(payload.fullscreen)
+        }
+      }
+    )
   },
   onNewSessionShortcut: (callback: () => void): (() => void) => {
     return getRendererRpcClient().subscribe(NEW_SESSION_SHORTCUT_CHANNEL, () => {

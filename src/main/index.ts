@@ -37,7 +37,7 @@ import {
 import { buildMenu, shutdownMenu } from './menu'
 import { createLogger } from './services/logger'
 import { wireHeadlessSignalShutdown } from './services/headless-shutdown'
-import { emitWindowFocused } from './services/app-events'
+import { emitWindowFocused, emitWindowFullscreenChanged } from './services/app-events'
 import { notificationService } from './services/notification-service'
 import { updaterService } from './services/updater'
 import { ClaudeCodeImplementer } from './services/claude-code-implementer'
@@ -386,6 +386,11 @@ function createWindow(backendBootstrap?: LocalEnvironmentBootstrap | null): void
     emitWindowFocused()
     syncCustomCommandsFileIfChanged()
   })
+
+  // Notify the renderer when fullscreen changes so the header can drop the
+  // macOS traffic-light spacer (the window buttons are hidden in fullscreen).
+  mainWindow.on('enter-full-screen', () => emitWindowFullscreenChanged(true))
+  mainWindow.on('leave-full-screen', () => emitWindowFullscreenChanged(false))
 
   // Save window bounds on resize and move
   const createdWindow = mainWindow
