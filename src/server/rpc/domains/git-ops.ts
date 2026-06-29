@@ -1229,6 +1229,9 @@ export const makeLiveGitOpsRpcService = (
       Effect.tryPromise({
         try: async (): Promise<GitBranchDiffShortStatResult> => {
           try {
+            if (!existsSync(worktreePath)) {
+              return { success: true, filesChanged: 0, insertions: 0, deletions: 0, commitsAhead: 0 }
+            }
             const git = simpleGit(worktreePath)
             const stat = parseShortStat(
               await git.raw(['diff', '--shortstat', `${baseBranch}...HEAD`])
