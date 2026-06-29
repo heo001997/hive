@@ -1371,8 +1371,27 @@ async function onAutoBypassSettled(
   }
 
   // Countdown elapsed — commit and (if a chain) advance now.
+  await finalizeReviewBypass(get, ticketId, projectId, current, settings.kanbanAutoCommitOnReview)
+}
+
+/**
+ * Feature B's terminal step: commit the worktree (when auto-commit is on) and
+ * advance a chain ticket (one a later ticket depends on) to Done so the next
+ * step can launch; a terminal ticket just stays in Review. Shared by the
+ * automatic settle (`onAutoBypassSettled`, after its guards) AND the manual
+ * "Verify with AI" recheck — so a hand-verified complete ticket commits and
+ * advances exactly like the automatic pass instead of stalling in Review.
+ */
+async function finalizeReviewBypass(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  current: KanbanTicket,
+  autoCommit: boolean
+): Promise<void> {
+  const key = ticketKey(projectId, ticketId)
   get().setVerifyProgress(key, { phase: 'finalizing' })
-  if (settings.kanbanAutoCommitOnReview) {
+  if (autoCommit) {
     await commitTicketWorktree(ticketId, current)
   }
   if (ticketHasDependent(get, projectId, ticketId)) {
@@ -2970,9 +2989,23 @@ export const useKanbanStore = create<KanbanState>()(
             settings
           )
         } else if (!incomplete) {
-          // Verified complete via a manual check — drain the next queued prompt
-          // (Queue prompts feature, claude-code-cli only). No-op otherwise.
-          await maybeDispatchClaudeCliQueue(get, projectId, ticketId)
+          // Verified complete via a manual check. Queue prompts takes precedence:
+          // if a follow-up was queued, entering it moves the ticket back to In
+          // Progress — stop there. Otherwise hand off to Feature B exactly like
+          // the automatic pass: an auto-approve ticket sitting in Review is
+          // committed and (if a chain) advanced to Done. Without this, a manual
+          // "Verify with AI" that passed stored the verdict but never committed
+          // or advanced — the ticket just sat in Review.
+          const dispatched = await maybeDispatchClaudeCliQueue(get, projectId, ticketId)
+          if (!dispatched && ticket.column === 'review' && ticket.auto_approve_review) {
+            await finalizeReviewBypass(
+              get,
+              ticketId,
+              projectId,
+              ticket,
+              settings.kanbanAutoCommitOnReview
+            )
+          }
         }
         return stored
       },

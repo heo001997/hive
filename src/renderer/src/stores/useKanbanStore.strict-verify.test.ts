@@ -569,6 +569,53 @@ describe('completion verdict actions', () => {
     expect(verdict).toBeNull()
     expect(hoisted.detect).not.toHaveBeenCalled()
   })
+
+  // Regression: a manual "Verify with AI" that PASSED used to store the verdict
+  // but never hand off to Feature B, so an auto-approve chain ticket just sat in
+  // Review (no commit, no advance). It must now finalize like the automatic pass.
+  it('recheckTicketCompletion advances an auto-approve chain ticket to Done when verified', async () => {
+    hoisted.settings.kanbanAutoCommitOnReview = true
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'all done' }
+    })
+    seed(makeTicket({ column: 'review', worktree_id: 'wt-1', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(verdict).toMatchObject({ complete: true, movedBack: false })
+    expect(columnOf('ticket-1')).toBe('done')
+  })
+
+  it('recheckTicketCompletion leaves a verified terminal ticket in Review (no dependent)', async () => {
+    hoisted.settings.kanbanAutoCommitOnReview = true
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    seed(makeTicket({ column: 'review', worktree_id: 'wt-1', auto_approve_review: true }))
+
+    await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+  })
+
+  it('recheckTicketCompletion does NOT advance a verified ticket that opted out of auto-approve', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    seed(makeTicket({ column: 'review', auto_approve_review: false }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+  })
 })
 
 describe('In Progress rescue (frozen "Not done" watcher)', () => {
