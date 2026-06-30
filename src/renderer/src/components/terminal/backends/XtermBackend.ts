@@ -36,6 +36,16 @@ const DEFAULT_TERMINAL_THEME: ITheme = {
   brightWhite: '#a6adc8'
 }
 
+/** While a terminal is hidden, coalesce its PTY output and flush on this cadence
+ *  (ms) instead of once per animation frame. Keeps backgrounded agent terminals
+ *  cheap while staying fresh enough for screen scrapes (see readScreen). */
+const HIDDEN_FLUSH_MS = 500
+
+/** Hard cap on buffered-but-unwritten output. A burst this large flushes
+ *  immediately regardless of cadence, so memory can't grow unbounded (e.g. the
+ *  app window is backgrounded — rAF paused — while an agent keeps streaming). */
+const MAX_PENDING_BYTES = 1_000_000
+
 /** ANSI color index to xterm.js theme key mapping (0-15) */
 const PALETTE_KEYS: (keyof ITheme)[] = [
   'black',
@@ -149,6 +159,24 @@ export class XtermBackend implements TerminalBackend {
   private shiftEnterAsNewline = false
   private ghosttyConfig: GhosttyTerminalConfig = {}
 
+  /**
+   * Visibility gate. When hidden, the terminal still parses its PTY stream (so
+   * scrollback + readScreen stay correct) but flushes on a slower cadence and
+   * stops the cursor-blink render timer. With many concurrent agents each
+   * streaming a TUI, parsing+rendering every backgrounded terminal at full rate
+   * is the dominant renderer-CPU cost — this removes it.
+   */
+  private visible = true
+  /**
+   * Coalesced PTY output. node-pty delivers many tiny chunks; writing each one
+   * separately schedules a render per chunk. We batch the chunks that arrive
+   * within a frame (visible) or within HIDDEN_FLUSH_MS (hidden) into one write.
+   */
+  private pendingWrites: string[] = []
+  private pendingBytes = 0
+  private flushRaf: number | null = null
+  private flushTimer: ReturnType<typeof setTimeout> | null = null
+
   /** Callback for the host to wire Cmd+F search toggling */
   onSearchToggle?: () => void
   /** Callback for the host to wire Cmd+K clear */
@@ -157,6 +185,10 @@ export class XtermBackend implements TerminalBackend {
   mount(container: HTMLDivElement, opts: TerminalOpts, callbacks: TerminalBackendCallbacks): void {
     this.terminalId = opts.terminalId
     this.shiftEnterAsNewline = opts.shiftEnterAsNewline ?? false
+    // Seed visibility so a backend recreated while its tab is hidden (cwd/font
+    // change, StrictMode double-mount) starts gated instead of blinking + writing
+    // at full rate behind a hidden panel.
+    this.visible = opts.initialVisible ?? true
     this.container = container
     container.innerHTML = ''
 
@@ -174,7 +206,9 @@ export class XtermBackend implements TerminalBackend {
       fontSize: opts.fontSize || 13,
       lineHeight: 1.2,
       cursorStyle: opts.cursorStyle || 'block',
-      cursorBlink: true,
+      // Blink only while visible — a hidden terminal's blink timer is pure waste
+      // and, across many backgrounded agent terminals, a constant CPU drain.
+      cursorBlink: this.visible,
       scrollback: opts.scrollback ?? 10000,
       allowProposedApi: true,
       theme: buildTheme(this.ghosttyConfig)
@@ -296,14 +330,16 @@ export class XtermBackend implements TerminalBackend {
       terminalApi.write(this.terminalId, data)
     })
 
-    // Wire PTY output -> terminal display
+    // Wire PTY output -> terminal display (coalesced; see enqueueWrite)
     this.removeDataListener = terminalApi.onData(this.terminalId, (data) => {
-      terminal.write(data)
+      this.enqueueWrite(data)
     })
 
     // Wire PTY exit -> status change
     this.removeExitListener = terminalApi.onExit(this.terminalId, (code) => {
-      terminal.write(`\r\n\x1b[90m[Process exited with code ${code}]\x1b[0m\r\n`)
+      // Flush through the queue so the exit notice lands after any pending output.
+      this.enqueueWrite(`\r\n\x1b[90m[Process exited with code ${code}]\x1b[0m\r\n`)
+      this.flush()
       callbacks.onStatusChange('exited', code)
     })
 
@@ -413,7 +449,57 @@ export class XtermBackend implements TerminalBackend {
     this.shiftEnterAsNewline = enabled
   }
 
+  /** Buffer one PTY output chunk and ensure a flush is scheduled. */
+  private enqueueWrite(data: string): void {
+    if (!this.terminal) return
+    this.pendingWrites.push(data)
+    this.pendingBytes += data.length
+    // Burst guard: never let the buffer grow without bound (e.g. rAF paused while
+    // the window is backgrounded but an agent keeps streaming).
+    if (this.pendingBytes >= MAX_PENDING_BYTES) {
+      this.flush()
+      return
+    }
+    this.scheduleFlush()
+  }
+
+  /** Schedule a flush on the cadence appropriate to the current visibility. */
+  private scheduleFlush(): void {
+    if (this.visible) {
+      if (this.flushRaf !== null) return
+      this.flushRaf = requestAnimationFrame(() => {
+        this.flushRaf = null
+        this.flush()
+      })
+    } else {
+      if (this.flushTimer !== null) return
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null
+        this.flush()
+      }, HIDDEN_FLUSH_MS)
+    }
+  }
+
+  /** Write all buffered PTY output to xterm in a single call. */
+  private flush(): void {
+    if (this.flushRaf !== null) {
+      cancelAnimationFrame(this.flushRaf)
+      this.flushRaf = null
+    }
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    if (this.pendingWrites.length === 0) return
+    const data = this.pendingWrites.join('')
+    this.pendingWrites = []
+    this.pendingBytes = 0
+    this.terminal?.write(data)
+  }
+
   write(data: string): void {
+    // Flush first so injected text keeps its order relative to PTY output.
+    this.flush()
     this.terminal?.write(data)
   }
 
@@ -424,6 +510,9 @@ export class XtermBackend implements TerminalBackend {
    * an empty array when the terminal isn't mounted.
    */
   readScreen(): string[] {
+    // Drain buffered-while-hidden output first so callers (e.g. plan-mode menu
+    // detection) read the live screen even when this terminal is hidden.
+    this.flush()
     const buffer = this.terminal?.buffer.active
     if (!this.terminal || !buffer) return []
     const lines: string[] = []
@@ -458,6 +547,26 @@ export class XtermBackend implements TerminalBackend {
     this.syncSizeToPty()
   }
 
+  /**
+   * Visibility gate. Hidden terminals keep parsing their PTY stream (scrollback
+   * + readScreen stay correct) but flush on a slower cadence and stop blinking
+   * the cursor, so backgrounded agent terminals don't burn renderer CPU. On
+   * becoming visible we flush immediately so current output shows at once
+   * (TerminalView also re-fits/repaints right after).
+   */
+  setVisible(visible: boolean): void {
+    if (visible === this.visible) return
+    this.visible = visible
+    if (this.terminal) this.terminal.options.cursorBlink = visible
+    if (visible) this.flush()
+    else if (this.flushRaf !== null) {
+      // Hand any frame-scheduled flush over to the slower hidden cadence.
+      cancelAnimationFrame(this.flushRaf)
+      this.flushRaf = null
+      this.scheduleFlush()
+    }
+  }
+
   searchOpen(): void {
     // Search is handled at UI level; addon is accessed here
   }
@@ -479,6 +588,16 @@ export class XtermBackend implements TerminalBackend {
   }
 
   dispose(): void {
+    if (this.flushRaf !== null) {
+      cancelAnimationFrame(this.flushRaf)
+      this.flushRaf = null
+    }
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    this.pendingWrites = []
+    this.pendingBytes = 0
     if (this.resizeDebounceTimer) {
       clearTimeout(this.resizeDebounceTimer)
       this.resizeDebounceTimer = null
