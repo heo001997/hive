@@ -51,6 +51,11 @@ interface PendingLaunchConfig {
   injectContext?: boolean
   /** claude-code-cli: editable token template used when injectContext is on. */
   contextTemplate?: string
+  /**
+   * New-worktree only: when false, skip running the project setup script after
+   * the worktree is created. Absent/true = run it (the default).
+   */
+  runSetup?: boolean
 }
 
 function wrapGoalPrompt(prompt: string, criteria: string): string {
@@ -146,7 +151,8 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
           project.path,
           project.name,
           config.worktree.sourceBranch,
-          nameHint || undefined
+          nameHint || undefined,
+          { runSetup: config.runSetup !== false }
         )
       if (!result.success || !result.worktree?.id) {
         toast.error(`Auto-launch failed: ${result.error || 'Could not create worktree'}`)

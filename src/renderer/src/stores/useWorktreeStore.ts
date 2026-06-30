@@ -155,7 +155,8 @@ interface WorktreeState {
     projectPath: string,
     projectName: string,
     branchName: string,
-    nameHint?: string
+    nameHint?: string,
+    opts?: { runSetup?: boolean }
   ) => Promise<{ success: boolean; worktree?: Worktree; error?: string }>
   duplicateWorktree: (
     projectId: string,
@@ -411,7 +412,8 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
     projectPath: string,
     projectName: string,
     branchName: string,
-    nameHint?: string
+    nameHint?: string,
+    opts?: { runSetup?: boolean }
   ) => {
     set({ creatingForProjectId: projectId })
     try {
@@ -443,8 +445,10 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
       // Clear file tabs from the previous worktree
       useFileViewerStore.getState().closeAllFiles()
 
-      // Fire-and-forget: run setup script if configured
-      fireSetupScript(projectId, result.worktree!.id, result.worktree!.path)
+      // Fire-and-forget: run setup script if configured (unless the caller opted out)
+      if (opts?.runSetup !== false) {
+        fireSetupScript(projectId, result.worktree!.id, result.worktree!.path)
+      }
 
       return { success: true, worktree: result.worktree }
     } catch (error) {
