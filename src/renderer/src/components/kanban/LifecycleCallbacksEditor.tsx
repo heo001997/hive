@@ -62,7 +62,7 @@ const ACTION_TYPES: LifecycleActionType[] = [
 ]
 const VERDICTS: LifecycleVerdict[] = ['pass', 'fail', 'needsInput']
 const GOTOS: (LifecycleState | 'end')[] = ['todo', 'in_progress', 'review', 'done', 'end']
-const NOTIFY_EVENTS = ['started', 'question', 'stuck_review', 'done'] as const
+const NOTIFY_EVENTS = ['started', 'question', 'review', 'stuck_review', 'done'] as const
 const ENTRY_CONTEXTS: LifecycleEntryContext[] = ['initial', 'retry']
 
 const EMPTY_CONFIG: TicketLifecycleConfig = { enabled: false, states: {} }

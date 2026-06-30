@@ -35,6 +35,7 @@ const allOn = {
   kanbanTelegramNotifyEnabled: true,
   kanbanTelegramNotifyOnStart: true,
   kanbanTelegramNotifyOnQuestion: true,
+  kanbanTelegramNotifyOnReview: true,
   kanbanTelegramNotifyOnStuckReview: true,
   kanbanTelegramNotifyOnDone: true
 }
@@ -118,6 +119,44 @@ describe('ticket-telegram-notify', () => {
     await flush()
     expect(sendNotification).toHaveBeenCalledTimes(1)
     expect(sendNotification.mock.calls[0][0]).toContain('In Progress')
+  })
+
+  it('fires "review" on a genuine transition into Review', async () => {
+    notifyTicketColumnChange({ ticketId: 't-r1', title: 'Ship it', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    expect(sendNotification).toHaveBeenCalledTimes(1)
+    expect(sendNotification.mock.calls[0][0]).toContain('Review')
+    expect(sendNotification.mock.calls[0][0]).toContain('Ship it')
+  })
+
+  it('does not fire "review" when the prior column is unknown (already in Review on load)', async () => {
+    notifyTicketColumnChange({ ticketId: 't-r2', title: 'X', prevColumn: undefined, column: 'review' })
+    await flush()
+    expect(sendNotification).not.toHaveBeenCalled()
+  })
+
+  it('fires "review" only once across review↔fix iterate-loop bounces', async () => {
+    // Reaches Review → notifies.
+    notifyTicketColumnChange({ ticketId: 't-loop', title: 'Loop', prevColumn: 'in_progress', column: 'review' })
+    // Reviewer bounces it back to In Progress, agent re-enters Review — must NOT re-notify.
+    notifyTicketColumnChange({ ticketId: 't-loop', title: 'Loop', prevColumn: 'review', column: 'in_progress' })
+    notifyTicketColumnChange({ ticketId: 't-loop', title: 'Loop', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    expect(sendNotification).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-notifies "review" after a ticket finishes and is reopened', async () => {
+    notifyTicketColumnChange({ ticketId: 't-r3', title: 'Again', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    expect(sendNotification).toHaveBeenCalledTimes(1)
+    // Lands in Done — frees the Review dedupe slot.
+    notifyTicketColumnChange({ ticketId: 't-r3', title: 'Again', prevColumn: 'review', column: 'done' })
+    // Reopened and re-reviewed.
+    notifyTicketColumnChange({ ticketId: 't-r3', title: 'Again', prevColumn: 'done', column: 'in_progress' })
+    notifyTicketColumnChange({ ticketId: 't-r3', title: 'Again', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    // +1 done, +1 review = 3 total sends.
+    expect(sendNotification).toHaveBeenCalledTimes(3)
   })
 
   it('does not fire "done" when the prior column is unknown', async () => {

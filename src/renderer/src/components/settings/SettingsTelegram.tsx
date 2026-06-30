@@ -44,6 +44,7 @@ export function SettingsTelegram(): React.JSX.Element {
   const notifyEnabled = useSettingsStore((s) => s.kanbanTelegramNotifyEnabled)
   const notifyOnStart = useSettingsStore((s) => s.kanbanTelegramNotifyOnStart)
   const notifyOnQuestion = useSettingsStore((s) => s.kanbanTelegramNotifyOnQuestion)
+  const notifyOnReview = useSettingsStore((s) => s.kanbanTelegramNotifyOnReview)
   const notifyOnStuckReview = useSettingsStore((s) => s.kanbanTelegramNotifyOnStuckReview)
   const notifyOnDone = useSettingsStore((s) => s.kanbanTelegramNotifyOnDone)
   const autoForwardOnUserAction = useSettingsStore((s) => s.kanbanTelegramAutoForwardOnUserAction)
@@ -277,6 +278,13 @@ export function SettingsTelegram(): React.JSX.Element {
           checked={notifyOnQuestion}
           disabled={!notifyEnabled}
           onChange={(next) => updateSetting('kanbanTelegramNotifyOnQuestion', next)}
+        />
+        <ToggleRow
+          label="Reached Review"
+          description="A ticket reaches Review and is ready for your review. Fires once per review cycle — the review↔fix iterate loop's bounces back to In Progress don't re-notify."
+          checked={notifyOnReview}
+          disabled={!notifyEnabled}
+          onChange={(next) => updateSetting('kanbanTelegramNotifyOnReview', next)}
         />
         <ToggleRow
           label="Stuck — needs you"

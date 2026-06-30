@@ -7,17 +7,19 @@ import { useTelegramStore } from '@/stores/useTelegramStore'
  * per-event toggle in Settings → Telegram (gated by the master toggle), and is
  * delivered to the same preconfigured bot + chat used by Telegram forwarding.
  */
-export type TicketNotifyEvent = 'started' | 'question' | 'stuck_review' | 'done'
+export type TicketNotifyEvent = 'started' | 'question' | 'review' | 'stuck_review' | 'done'
 
 type TicketNotifySettingKey =
   | 'kanbanTelegramNotifyOnStart'
   | 'kanbanTelegramNotifyOnQuestion'
+  | 'kanbanTelegramNotifyOnReview'
   | 'kanbanTelegramNotifyOnStuckReview'
   | 'kanbanTelegramNotifyOnDone'
 
 const SETTING_BY_EVENT: Record<TicketNotifyEvent, TicketNotifySettingKey> = {
   started: 'kanbanTelegramNotifyOnStart',
   question: 'kanbanTelegramNotifyOnQuestion',
+  review: 'kanbanTelegramNotifyOnReview',
   stuck_review: 'kanbanTelegramNotifyOnStuckReview',
   done: 'kanbanTelegramNotifyOnDone'
 }
@@ -27,6 +29,7 @@ interface NotifySettings {
   kanbanTelegramNotifyEnabled?: boolean
   kanbanTelegramNotifyOnStart?: boolean
   kanbanTelegramNotifyOnQuestion?: boolean
+  kanbanTelegramNotifyOnReview?: boolean
   kanbanTelegramNotifyOnStuckReview?: boolean
   kanbanTelegramNotifyOnDone?: boolean
   kanbanTelegramAutoForwardOnUserAction?: boolean
@@ -45,6 +48,8 @@ const buildText = (event: TicketNotifyEvent, title: string): string => {
       return `🚀 Started: "${name}" moved to In Progress`
     case 'question':
       return `❓ Question: "${name}" is waiting for your input`
+    case 'review':
+      return `🔍 Review: "${name}" reached Review — ready for your review`
     case 'stuck_review':
       return `⚠️ Needs you: "${name}" — Strict Verify exhausted its retries and couldn't finish. Needs your action.`
     case 'done':
@@ -235,9 +240,10 @@ export async function autoForwardTicketForUserAction(
  * Column-transition entry point used by the kanban store — by `moveTicket` (drags,
  * rescue re-promotes) AND by the in-place `updateTicket` writes that auto-launch and
  * auto-attach use to move a ticket Todo → In Progress. Fires "started" on the first
- * Todo → In Progress and "done" on a genuine transition into Done, and clears the
- * stale dedupe key when a ticket LEAVES those states so a reopen → re-complete can
- * legitimately notify again. No-op when `column` is unset or unchanged.
+ * Todo → In Progress, "review" on a genuine transition into Review (ready for your
+ * review), and "done" on a genuine transition into Done, and clears the stale dedupe
+ * key when a ticket LEAVES those states so a reopen → re-complete can legitimately
+ * notify again. No-op when `column` is unset or unchanged.
  */
 export function notifyTicketColumnChange(args: {
   ticketId: string
@@ -251,9 +257,21 @@ export function notifyTicketColumnChange(args: {
   // Leaving a previously-notified state re-opens its dedupe slot.
   if (prevColumn === 'in_progress' && column !== 'in_progress') clearDelivered(`started:${ticketId}`)
   if (prevColumn === 'done' && column !== 'done') clearDelivered(`done:${ticketId}`)
+  // The Review dedupe slot is NOT freed when leaving Review — the review↔fix iterate
+  // loop bounces a ticket Review → In Progress → Review repeatedly, and we want exactly
+  // ONE "review" ping per review cycle, not one per bounce. The slot is reset only when
+  // the ticket lands back at a genuine cycle boundary (Todo) or finishes (Done), so a
+  // later re-review notifies again.
+  if (column === 'todo' || column === 'done') clearDelivered(`review:${ticketId}`)
 
   if (prevColumn === 'todo' && column === 'in_progress') {
     void notifyTicketEvent('started', { ticketId, title }).catch(() => {})
+  }
+  // Genuine transition INTO Review only: require a known prior column so a move whose
+  // pre-move snapshot is missing (undefined prevColumn) can't fire a false "Review" on
+  // app load for a ticket already sitting in Review.
+  if (column === 'review' && prevColumn !== undefined && prevColumn !== 'review') {
+    void notifyTicketEvent('review', { ticketId, title }).catch(() => {})
   }
   // Genuine transition INTO Done only: require a known prior column so a move whose
   // pre-move snapshot is missing (undefined prevColumn) can't fire a false "Done".
