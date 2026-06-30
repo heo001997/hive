@@ -72,6 +72,12 @@ export class Git extends Context.Tag('GitIsland/Git')<
         prNumber?: number,
         options?: { autoPull?: boolean; nameHint?: string; worktreeCreateScript?: string | null }
       ) => Eff<CreateWorktreeResult>
+      readonly createFromExistingBranch: (
+        repoPath: string,
+        projectName: string,
+        branchName: string,
+        options?: { autoPull?: boolean; worktreeCreateScript?: string | null }
+      ) => Eff<CreateWorktreeResult>
     }
     readonly branch: {
       readonly exists: (repoPath: string, branchName: string) => Eff<boolean>
