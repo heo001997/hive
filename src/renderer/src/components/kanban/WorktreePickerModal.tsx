@@ -210,6 +210,10 @@ export function WorktreePickerModal({
   // chosen base (default branch by default) so this ticket's commits don't pile
   // onto whatever the worktree was last left on.
   const [createNewBranch, setCreateNewBranch] = useState(true)
+  // When creating a NEW worktree, whether to run the project's setup script after
+  // creation. Default on (current behavior); unchecking creates the worktree
+  // without running setup (it can still be run later from the Setup tab).
+  const [runSetup, setRunSetup] = useState(true)
   // Worktree context injection (claude-code-cli). Per-ticket toggle + editable
   // token template, both seeded from the global settings default on open.
   const [injectContext, setInjectContext] = useState(false)
@@ -258,6 +262,10 @@ export function WorktreePickerModal({
   const worktreeNamePreview = useMemo(() => {
     return canonicalizeTicketTitle(ticket.title)
   }, [ticket.title])
+
+  // Only meaningful (and only shown) when the project actually has a setup script
+  // and we're creating a new worktree — reused worktrees never run setup here.
+  const hasSetupScript = useMemo(() => !!project?.setup_script?.trim(), [project?.setup_script])
 
   // ── SDK / Model resolution ──────────────────────────────────────
   const availableAgentSdks = useSettingsStore((s) => s.availableAgentSdks)
@@ -374,6 +382,7 @@ export function WorktreePickerModal({
       setAutoApproveReview(ticket.auto_approve_review)
       setMoveChain(false)
       setCreateNewBranch(true)
+      setRunSetup(true)
       // Seed the per-ticket auto-approve toggle from the global default.
       setAutoApprovePlan(useSettingsStore.getState().autoApprovePlanEnabled)
       // Seed the per-ticket worktree-context injection from the global default.
@@ -790,6 +799,8 @@ export function WorktreePickerModal({
           goalMode,
           goalSuccessCriteria: goalMode ? goalCriteria.trim() : null,
           autoApprovePlan,
+          // New-worktree only: skip the setup script after create when unchecked.
+          runSetup,
           injectContext,
           contextTemplate,
           // Reused-worktree only: branch off this base at launch time. Omitted
@@ -841,7 +852,8 @@ export function WorktreePickerModal({
             project.name,
             targetBranch,
             nameHint,
-            assignExistingBranch
+            assignExistingBranch,
+            { runSetup }
           )
           if (!result.success || !result.worktree?.id) {
             toast.error(result.error || 'Failed to create worktree')
@@ -919,7 +931,9 @@ export function WorktreePickerModal({
           codexFastMode,
           goalMode,
           goalSuccessCriteria: goalMode ? goalCriteria.trim() : null,
-          autoApprovePlan
+          autoApprovePlan,
+          // New-worktree only: skip the setup script after create when unchecked.
+          runSetup
         }
 
         await updateTicket(ticket.id, projectId, {
@@ -959,7 +973,8 @@ export function WorktreePickerModal({
           project.name,
           targetBranch,
           nameHint,
-          assignExistingBranch
+          assignExistingBranch,
+          { runSetup }
         )
         if (!result.success || !result.worktree?.id) {
           toast.error(result.error || 'Failed to create worktree')
@@ -1269,6 +1284,7 @@ export function WorktreePickerModal({
     chainTodoTickets,
     dependencyMap,
     createNewBranch,
+    runSetup,
     branchWorktreeFromBase,
     assignExistingBranch
   ])
@@ -1539,6 +1555,33 @@ export function WorktreePickerModal({
                   )
                 })}
               </div>
+            </div>
+          )}
+
+          {/* ── Run setup script after creating a new worktree ── */}
+          {!isConnectionMode && isNewWorktree && hasSetupScript && (
+            <div
+              className="flex items-start gap-2.5 rounded-md border border-border/50 bg-muted/20 px-3 py-2.5"
+              data-testid="run-setup-row"
+            >
+              <Checkbox
+                checked={runSetup}
+                onCheckedChange={(v) => setRunSetup(v === true)}
+                data-testid="run-setup-checkbox"
+                className="mt-0.5"
+                aria-label="Run the project setup script after creating the worktree"
+              />
+              <span
+                className="text-sm text-foreground cursor-pointer select-none"
+                onClick={() => setRunSetup((v) => !v)}
+              >
+                Run setup command
+                <span className="block text-xs text-muted-foreground">
+                  Runs the project&apos;s Setup Script after the worktree is created. Uncheck to
+                  create the worktree without running it — you can still run it later from the Setup
+                  tab.
+                </span>
+              </span>
             </div>
           )}
 
