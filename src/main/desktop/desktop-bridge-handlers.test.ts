@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { decodeLocalEnvironmentBootstrapArg } from '@shared/desktop-bridge'
-import { ipcMain, shell } from 'electron'
+import { app, ipcMain, shell } from 'electron'
 import {
   getDesktopPreloadBootstrapArguments,
   registerDesktopBridgeHandlers
@@ -47,6 +47,29 @@ describe('desktop bridge preload bootstrap arguments', () => {
     const argv = getDesktopPreloadBootstrapArguments()
 
     expect(decodeLocalEnvironmentBootstrapArg(argv)).toBeNull()
+  })
+})
+
+describe('app relaunch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('registers an app:relaunch handler that relaunches then quits', async () => {
+    registerDesktopBridgeHandlers()
+    const handler = vi
+      .mocked(ipcMain.handle)
+      .mock.calls.find(([channel]) => channel === 'app:relaunch')?.[1]
+    expect(handler).toBeDefined()
+
+    await handler!({} as Electron.IpcMainInvokeEvent, undefined)
+
+    expect(app.relaunch).toHaveBeenCalledTimes(1)
+    expect(app.quit).toHaveBeenCalledTimes(1)
+    // relaunch must be scheduled before the quit that triggers it
+    expect(vi.mocked(app.relaunch).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(app.quit).mock.invocationCallOrder[0]
+    )
   })
 })
 

@@ -2,9 +2,29 @@ import { useEffect, useState } from 'react'
 import { useThemeStore } from '@/stores/useThemeStore'
 import { DEFAULT_THEME_ID } from '@/lib/themes'
 import { useSettingsStore } from '@/stores/useSettingsStore'
-import { RotateCcw, Trash2, Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react'
+import {
+  RotateCcw,
+  RotateCw,
+  Trash2,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger
+} from '@/components/ui/alert-dialog'
+import { getDesktopBridge } from '@/api/desktop-bridge'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT } from '@/lib/autoResolveConflictPrompt'
@@ -218,6 +238,24 @@ export function SettingsGeneral(): React.JSX.Element {
     resetShortcuts()
     setTheme(DEFAULT_THEME_ID)
     toast.success('All settings reset to defaults')
+  }
+
+  // Restart Hive — only meaningful in the desktop app, where the preload bridge
+  // can quit + relaunch the process. Absent in browser/server mode.
+  const canRelaunch = !!getDesktopBridge()?.relaunchApp
+  const [restarting, setRestarting] = useState(false)
+
+  const handleRestart = async (): Promise<void> => {
+    const relaunchApp = getDesktopBridge()?.relaunchApp
+    if (!relaunchApp) return
+    setRestarting(true)
+    try {
+      // Resolves as the app is quitting, so the spinner persists until exit.
+      await relaunchApp()
+    } catch (err) {
+      setRestarting(false)
+      toast.error(err instanceof Error ? err.message : 'Failed to restart Hive')
+    }
   }
 
   const toggleProvider = (provider: UsageProvider): void => {
@@ -1574,6 +1612,38 @@ export function SettingsGeneral(): React.JSX.Element {
           </button>
         </div>
       </div>
+
+      {/* Restart Hive */}
+      {canRelaunch && (
+        <div className="pt-4 border-t">
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" disabled={restarting} data-testid="restart-app">
+                <RotateCw className={cn('h-3.5 w-3.5 mr-1.5', restarting && 'animate-spin')} />
+                {restarting ? 'Restarting…' : 'Restart Hive'}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent size="sm">
+              <AlertDialogHeader>
+                <AlertDialogTitle>Restart Hive?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Hive will quit and reopen. Any running agent sessions in this window will be
+                  interrupted.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel data-testid="restart-app-cancel">Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={handleRestart} data-testid="restart-app-confirm">
+                  Restart
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+          <p className="text-xs text-muted-foreground mt-1">
+            Quit and reopen Hive. Useful after changing settings that need a fresh start.
+          </p>
+        </div>
+      )}
 
       {/* Reset to defaults */}
       <div className="pt-4 border-t">

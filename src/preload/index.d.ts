@@ -51,6 +51,7 @@ declare global {
       getLocalEnvironmentBootstrap: () => Promise<LocalEnvironmentBootstrap | null>
       getPathForFile: (file: File) => string
       startHiveEnterpriseLogin: (serverUrl: string) => Promise<{ token: string }>
+      relaunchApp: () => Promise<void>
     }
   }
 
