@@ -46,6 +46,22 @@ const HIDDEN_FLUSH_MS = 500
  *  app window is backgrounded — rAF paused — while an agent keeps streaming). */
 const MAX_PENDING_BYTES = 1_000_000
 
+/** Scrollback (lines) retained while a terminal is HIDDEN. Every tab across
+ *  every worktree is kept mounted to preserve PTY state (see TerminalManager),
+ *  so N live terminals each holding the full scrollback multiply: an xterm
+ *  buffer is (rows + scrollback) lines × cols cells × ~12 bytes/cell, i.e. a
+ *  10k-line × 200-col buffer is ~24 MB — times a dozen backgrounded agents that
+ *  is hundreds of MB of renderer RSS. Trimming hidden terminals to a small
+ *  buffer (xterm frees the dropped lines when `options.scrollback` shrinks) caps
+ *  that multiplication: only the one visible terminal keeps full history, the
+ *  rest cost ~HIDDEN_SCROLLBACK lines each. Restored on becoming visible — the
+ *  lines trimmed while hidden are gone, but recent output and all new output are
+ *  kept, which is what a backgrounded agent terminal actually needs. */
+export const HIDDEN_SCROLLBACK = 1000
+
+/** Full scrollback used when no Ghostty `scrollback-limit` is configured. */
+export const DEFAULT_SCROLLBACK = 10000
+
 /** ANSI color index to xterm.js theme key mapping (0-15) */
 const PALETTE_KEYS: (keyof ITheme)[] = [
   'black',
@@ -158,6 +174,9 @@ export class XtermBackend implements TerminalBackend {
   private terminalId: string = ''
   private shiftEnterAsNewline = false
   private ghosttyConfig: GhosttyTerminalConfig = {}
+  /** Full scrollback for the visible terminal; hidden terminals are trimmed to
+   *  HIDDEN_SCROLLBACK (capped at this so we never *grow* scrollback on hide). */
+  private fullScrollback = DEFAULT_SCROLLBACK
 
   /**
    * Visibility gate. When hidden, the terminal still parses its PTY stream (so
@@ -191,6 +210,7 @@ export class XtermBackend implements TerminalBackend {
     this.visible = opts.initialVisible ?? true
     this.container = container
     container.innerHTML = ''
+    this.fullScrollback = opts.scrollback ?? DEFAULT_SCROLLBACK
 
     // Store config for theme rebuilding
     this.ghosttyConfig = {
@@ -209,7 +229,10 @@ export class XtermBackend implements TerminalBackend {
       // Blink only while visible — a hidden terminal's blink timer is pure waste
       // and, across many backgrounded agent terminals, a constant CPU drain.
       cursorBlink: this.visible,
-      scrollback: opts.scrollback ?? 10000,
+      // Seed scrollback for the current visibility so a terminal mounted hidden
+      // (TerminalManager keeps every tab mounted) never allocates the full
+      // buffer; setVisible() trims/restores it as visibility changes.
+      scrollback: this.scrollbackForVisibility(this.visible),
       allowProposedApi: true,
       theme: buildTheme(this.ghosttyConfig)
     })
@@ -449,6 +472,15 @@ export class XtermBackend implements TerminalBackend {
     this.shiftEnterAsNewline = enabled
   }
 
+  /**
+   * Scrollback to use for a given visibility: full history while visible, a
+   * small buffer while hidden. Clamped so we never raise scrollback above the
+   * configured full value (e.g. a user who set scrollback-limit < 1000).
+   */
+  private scrollbackForVisibility(visible: boolean): number {
+    return visible ? this.fullScrollback : Math.min(this.fullScrollback, HIDDEN_SCROLLBACK)
+  }
+
   /** Buffer one PTY output chunk and ensure a flush is scheduled. */
   private enqueueWrite(data: string): void {
     if (!this.terminal) return
@@ -557,7 +589,14 @@ export class XtermBackend implements TerminalBackend {
   setVisible(visible: boolean): void {
     if (visible === this.visible) return
     this.visible = visible
-    if (this.terminal) this.terminal.options.cursorBlink = visible
+    if (this.terminal) {
+      this.terminal.options.cursorBlink = visible
+      // Trim scrollback when hidden / restore it when shown. Lowering
+      // options.scrollback makes xterm rebuild its line buffer at the smaller
+      // size, freeing the dropped BufferLines — this is the lever that keeps N
+      // backgrounded terminals from each pinning a full ~10k-line buffer.
+      this.terminal.options.scrollback = this.scrollbackForVisibility(visible)
+    }
     if (visible) this.flush()
     else if (this.flushRaf !== null) {
       // Hand any frame-scheduled flush over to the slower hidden cadence.
