@@ -514,10 +514,11 @@ export function SettingsGeneral(): React.JSX.Element {
                 <div>
                   <label className="text-sm font-medium">1 · Snapshot (frozen check)</label>
                   <p className="text-xs text-muted-foreground">
-                    Deterministic, no model call. Fingerprints the session when the timer arms and
-                    again when it fires; if the session is <em>still emitting output</em> the agent
+                    Deterministic, no model call. The frozen check <strong>always</strong> runs
+                    before the Reviewer: if the session is <em>still emitting output</em> the agent
                     hasn&apos;t really stopped, so the ticket goes back to <strong>In Progress</strong>{' '}
-                    and the Reviewer never runs. Turn off to skip straight to the Reviewer.
+                    and the Reviewer never runs. On: fingerprint at arm vs. at fire (spans the whole
+                    wait). Off: a quick fresh re-sample at fire time.
                   </p>
                 </div>
                 <button

@@ -228,6 +228,22 @@ describe('Strict Verify — Gate 1 (frozen check)', () => {
     expect(hoisted.detect).toHaveBeenCalledTimes(1)
     expect(columnOf('ticket-1')).toBe('review')
   })
+
+  it('leaves the ticket in Review (no Watcher) when the frozen check is inconclusive', async () => {
+    // S0 captured at arm, but the settle-time S1 round-trip fails → frozen state
+    // unknown → the Watcher must NOT run and the ticket stays in Review (no fail-open).
+    hoisted.fingerprint
+      .mockResolvedValueOnce({ length: 10, hash: 'a' }) // S0 at arm
+      .mockRejectedValueOnce(new Error('pty gone')) // S1 at settle
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')).toBeUndefined()
+  })
 })
 
 describe('Strict Verify — Gate 2 (the Watcher)', () => {
@@ -388,9 +404,10 @@ describe('Strict Verify — Gate 2 (the Watcher)', () => {
 })
 
 describe('Strict Verify — independent sub-gate toggles', () => {
-  it('snapshot off: skips Gate 1 (no fingerprint) and goes straight to the Watcher', async () => {
+  it('snapshot off: still runs the frozen check via a fresh re-sample (streaming → bounce)', async () => {
     hoisted.settings.kanbanStrictVerifySnapshotEnabled = false
-    // Output changed — would bounce under Gate 1 — but the frozen check is off.
+    // No S0 is armed, so the frozen check samples a fresh pair at fire time; the
+    // output changed between them → still emitting → bounce, the Watcher never runs.
     hoisted.fingerprint
       .mockResolvedValueOnce({ length: 10, hash: 'a' })
       .mockResolvedValueOnce({ length: 20, hash: 'b' })
@@ -403,7 +420,24 @@ describe('Strict Verify — independent sub-gate toggles', () => {
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
 
-    expect(hoisted.fingerprint).not.toHaveBeenCalled()
+    expect(hoisted.fingerprint).toHaveBeenCalledTimes(2)
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('in_progress')
+  })
+
+  it('snapshot off: a stable fresh re-sample is frozen → the Watcher runs', async () => {
+    hoisted.settings.kanbanStrictVerifySnapshotEnabled = false
+    // Default fingerprint is STABLE_FP for every call → the fresh pair matches → frozen.
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.fingerprint).toHaveBeenCalledTimes(2)
     expect(hoisted.detect).toHaveBeenCalledTimes(1)
     expect(columnOf('ticket-1')).toBe('review')
   })
@@ -434,15 +468,16 @@ describe('Strict Verify — independent sub-gate toggles', () => {
     expect(columnOf('ticket-1')).toBe('in_progress')
   })
 
-  it('both sub-gates off: verifies immediately with neither fingerprint nor model call', async () => {
+  it('both sub-gates off: the frozen check still runs, then verifies with no model call', async () => {
     hoisted.settings.kanbanStrictVerifySnapshotEnabled = false
     hoisted.settings.kanbanStrictVerifyReviewerEnabled = false
+    // STABLE_FP default → the fresh re-sample pair matches → frozen; Reviewer off → verified.
     seed(makeTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
 
-    expect(hoisted.fingerprint).not.toHaveBeenCalled()
+    expect(hoisted.fingerprint).toHaveBeenCalledTimes(2)
     expect(hoisted.detect).not.toHaveBeenCalled()
     expect(columnOf('ticket-1')).toBe('review')
   })
@@ -583,8 +618,21 @@ describe('completion verdict actions', () => {
     expect(verdict?.movedBack).toBe(true)
     expect(columnOf('ticket-1')).toBe('in_progress')
     expect(verdictOf('ticket-1')?.reason).toBe('todos remain')
-    // Manual recheck skips Gate 1 entirely — no fingerprint call.
+    // Manual recheck confirms frozen via session status (no fingerprint round-trip).
     expect(hoisted.fingerprint).not.toHaveBeenCalled()
+  })
+
+  it('recheckTicketCompletion bounces a still-working ticket to In Progress without judging', async () => {
+    // Strict Review rule: a session still actively working is not frozen → it's In
+    // Progress, so the manual recheck must bounce it there WITHOUT calling the Watcher.
+    hoisted.sessionStatuses = { [SESSION_ID]: { status: 'working', timestamp: 0 } }
+    seed(makeTicket({ column: 'review' }))
+
+    const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+
+    expect(verdict).toBeNull()
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('in_progress')
   })
 
   it('recheckTicketCompletion treats needsInput as moved-back', async () => {

@@ -102,7 +102,7 @@ export interface AppSettings {
   kanbanAutoApproveDelaySeconds: number
   /** Kanban: Strict Verify (Feature A) — master switch. When on, every build ticket that settles in Review runs the two sub-gates below (Snapshot + Ticket Reviewer); an "incomplete"/"asking-user" verdict moves it back to In Progress. */
   kanbanStrictVerifyEnabled: boolean
-  /** Kanban: Sub-gate 1 — the deterministic Snapshot (frozen check). When on, re-fingerprint the session after the delay and bounce if it's still emitting output (no model call). */
+  /** Kanban: Sub-gate 1 — the deterministic Snapshot baseline for the frozen check. The frozen check ALWAYS runs before the Reviewer (a still-emitting session goes back to In Progress, no model call); this toggle only picks how output-stability is measured — on: fingerprint at arm vs. at fire (spans the whole settle delay, one extra round-trip); off: a fresh re-sample taken at fire time. */
   kanbanStrictVerifySnapshotEnabled: boolean
   /** Kanban: Sub-gate 2 — the Ticket Reviewer LLM (the AI Watcher). When on, an AI judges complete / asking-user / incomplete. When off, a ticket that passes the snapshot is treated as verified. */
   kanbanStrictVerifyReviewerEnabled: boolean
