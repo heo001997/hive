@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 39
+export const CURRENT_SCHEMA_VERSION = 40
 
 export const SCHEMA_SQL = `
 -- Projects table
@@ -662,5 +662,15 @@ DROP TABLE IF EXISTS diff_comments;`
     down: `
       -- SQLite cannot drop columns safely; no-op.
     `
+  },
+  {
+    version: 40,
+    name: 'add_ticket_lifecycle_callbacks',
+    up: `
+      ALTER TABLE kanban_tickets ADD COLUMN lifecycle_callbacks TEXT DEFAULT NULL;
+      ALTER TABLE kanban_tickets ADD COLUMN lifecycle_state TEXT DEFAULT NULL;
+      ALTER TABLE kanban_tickets ADD COLUMN lifecycle_iteration INTEGER NOT NULL DEFAULT 0;
+    `,
+    down: `-- no-op`
   }
 ]

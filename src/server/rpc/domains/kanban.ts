@@ -212,6 +212,32 @@ const ticketColumnSchema = z.enum(['todo', 'in_progress', 'review', 'done'])
 const sessionModeSchema = z.enum(['build', 'plan', 'super-plan'])
 const ticketMarkSchema = z.enum(['common', 'rare', 'epic', 'legendary'])
 
+// Per-ticket lifecycle-callback config (mirrors src/shared/types/ticket-lifecycle.ts).
+const lifecycleActionSchema = z.object({
+  id: z.string(),
+  type: z.enum(['prompt', 'agent', 'check', 'review', 'notify', 'goto', 'wait']),
+  // z.record requires 2 args (keySchema, valueSchema).
+  config: z.record(z.string(), z.unknown()),
+  runOn: z.array(z.enum(['initial', 'retry'])).optional()
+})
+const lifecycleBranchSchema = z.object({
+  when: z.enum(['pass', 'fail', 'needsInput']),
+  goto: z.union([ticketColumnSchema, z.literal('end')])
+})
+const lifecycleStateConfigSchema = z.object({
+  before: z.array(lifecycleActionSchema).optional(),
+  retry: z.array(lifecycleActionSchema).optional(),
+  during: z.array(lifecycleActionSchema).optional(),
+  after: z.array(lifecycleActionSchema).optional(),
+  branches: z.array(lifecycleBranchSchema).optional(),
+  retryMax: z.number().optional()
+})
+const ticketLifecycleConfigSchema = z.object({
+  enabled: z.boolean(),
+  // z.record requires 2 args (keySchema, valueSchema).
+  states: z.record(ticketColumnSchema, lifecycleStateConfigSchema)
+})
+
 const kanbanTicketCreateSchema = z
   .object({
     id: z.string().optional(),
@@ -232,7 +258,10 @@ const kanbanTicketCreateSchema = z
     github_pr_url: z.string().nullable().optional(),
     mark: ticketMarkSchema.nullable().optional(),
     created_from_session: z.boolean().optional(),
-    auto_approve_review: z.boolean().optional()
+    auto_approve_review: z.boolean().optional(),
+    lifecycle_callbacks: ticketLifecycleConfigSchema.nullable().optional(),
+    lifecycle_state: ticketColumnSchema.nullable().optional(),
+    lifecycle_iteration: z.number().optional()
   })
   .strict() satisfies z.ZodType<KanbanTicketCreate>
 
@@ -277,7 +306,10 @@ const kanbanTicketUpdateSchema = z
     note: z.string().nullable().optional(),
     archived_at: z.string().nullable().optional(),
     auto_approve_review: z.boolean().optional(),
-    review_seen_at: z.string().nullable().optional()
+    review_seen_at: z.string().nullable().optional(),
+    lifecycle_callbacks: ticketLifecycleConfigSchema.nullable().optional(),
+    lifecycle_state: ticketColumnSchema.nullable().optional(),
+    lifecycle_iteration: z.number().optional()
   })
   .strict() satisfies z.ZodType<KanbanTicketUpdate>
 const ticketIdProjectParamsSchema = z

@@ -29,6 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT } from '@/lib/autoResolveConflictPrompt'
 import { DEFAULT_CONTEXT_TEMPLATE } from '@/lib/worktree-context-constants'
+import { DEFAULT_FIX_PROMPT_TEMPLATE } from '@/lib/ticket-lifecycle'
 import { useShortcutStore } from '@/stores/useShortcutStore'
 import { useAccountStore, useUsageStore } from '@/stores'
 import { toast } from '@/lib/toast'
@@ -166,6 +167,9 @@ export function SettingsGeneral(): React.JSX.Element {
     kanbanStrictVerifyConfidenceThreshold,
     kanbanInProgressRescueEnabled,
     kanbanQueuePromptsEnabled,
+    kanbanIterateLoopEnabled,
+    kanbanIterateLoopMaxIterations,
+    kanbanIterateLoopFixPromptTemplate,
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
@@ -868,6 +872,105 @@ export function SettingsGeneral(): React.JSX.Element {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Kanban — Iterate Loop (per-ticket review↔fix lifecycle callbacks) */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <label className="text-sm font-medium">Iterate Loop by default</label>
+            <p className="text-xs text-muted-foreground">
+              Make the review↔fix loop actually iterate. When <strong>Strict Verify</strong> bounces
+              a Review ticket back to In Progress, re-prompt the agent with <em>why</em> it failed
+              (the reviewer&apos;s reason) so it fixes the work and tries again — up to a max number
+              of rounds. At the cap the ticket is left <strong>stuck in Review</strong> (never
+              auto-advanced) and the <code>stuck_review</code> notification fires. This is the
+              default seeded onto new tickets; each ticket owns its own loop config in its detail
+              view.
+            </p>
+          </div>
+          <button
+            role="switch"
+            aria-checked={kanbanIterateLoopEnabled}
+            onClick={() => updateSetting('kanbanIterateLoopEnabled', !kanbanIterateLoopEnabled)}
+            className={cn(
+              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+              kanbanIterateLoopEnabled ? 'bg-primary' : 'bg-muted'
+            )}
+            data-testid="iterate-loop-toggle"
+          >
+            <span
+              className={cn(
+                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
+                kanbanIterateLoopEnabled ? 'translate-x-4' : 'translate-x-0'
+              )}
+            />
+          </button>
+        </div>
+
+        {kanbanIterateLoopEnabled && (
+          <div className="ml-2 space-y-5 border-l-2 border-border pl-4">
+            {/* Max iterations — the loop-breaker. */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Max iterations</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={kanbanIterateLoopMaxIterations}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10)
+                    if (!isNaN(val) && val >= 1 && val <= 20) {
+                      updateSetting('kanbanIterateLoopMaxIterations', val)
+                    }
+                  }}
+                  className="w-20 font-mono text-sm"
+                  data-testid="iterate-loop-max"
+                />
+                <span className="text-xs text-muted-foreground">rounds (1-20)</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                How many times a ticket may bounce Review → In Progress before it&apos;s left stuck
+                in Review for you. Counts per session.
+              </p>
+            </div>
+
+            {/* Fix prompt template — editable, with reset-to-default. */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-sm font-medium">Fix prompt</label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    updateSetting('kanbanIterateLoopFixPromptTemplate', DEFAULT_FIX_PROMPT_TEMPLATE)
+                  }
+                  disabled={kanbanIterateLoopFixPromptTemplate === DEFAULT_FIX_PROMPT_TEMPLATE}
+                  data-testid="iterate-loop-prompt-reset"
+                >
+                  <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                  Reset to default
+                </Button>
+              </div>
+              <Textarea
+                value={kanbanIterateLoopFixPromptTemplate}
+                onChange={(e) =>
+                  updateSetting('kanbanIterateLoopFixPromptTemplate', e.target.value)
+                }
+                rows={5}
+                spellCheck={false}
+                className="w-full font-mono text-xs leading-relaxed"
+                data-testid="iterate-loop-prompt"
+              />
+              <p className="text-xs text-muted-foreground">
+                Sent to the agent on each bounce. Use <code>{'{{reason}}'}</code> where the
+                reviewer&apos;s reason should go — if you omit it the reason is appended.
+              </p>
             </div>
           </div>
         )}

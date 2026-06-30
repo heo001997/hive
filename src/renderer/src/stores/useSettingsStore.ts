@@ -12,6 +12,7 @@ import {
   type CompletionCheckProvider
 } from '@shared/types/completion'
 import { DEFAULT_CONTEXT_TEMPLATE } from '@/lib/worktree-context-constants'
+import { DEFAULT_FIX_PROMPT_TEMPLATE } from '@/lib/ticket-lifecycle'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { systemApi } from '@/api/system-api'
 import { dbApi } from '@/api/db-api'
@@ -122,6 +123,12 @@ export interface AppSettings {
   kanbanInProgressRescueEnabled: boolean
   /** Kanban: Queue prompts (claude-code-cli only) — when on, follow-ups typed while a claude-cli ticket is busy are queued; the next queued prompt is entered automatically once the ticket reaches Review AND is verified complete by Strict Verify. Gated by (and auto-disabled without) Strict Verify. */
   kanbanQueuePromptsEnabled: boolean
+  /** Kanban: Iterate Loop — DEFAULT for the per-ticket review↔fix loop. When on, new build tickets are seeded with a lifecycle config that, on an "incomplete" Reviewer verdict, bounces the ticket back to In Progress AND re-prompts the agent with the fix prompt, looping up to the max below. The engine reads each ticket's own `lifecycle_callbacks`, not this. */
+  kanbanIterateLoopEnabled: boolean
+  /** Kanban: Iterate Loop — how many review↔fix iterations a ticket gets before it's left stuck in Review (the loop-breaker). Seeds new tickets' `review.retryMax`. */
+  kanbanIterateLoopMaxIterations: number
+  /** Kanban: Iterate Loop — the fix prompt fed back to the agent on a bounce. Supports `{{reason}}` (the Reviewer's reason). Seeds new tickets' `in_progress.before` prompt. */
+  kanbanIterateLoopFixPromptTemplate: string
   /** Kanban: Telegram ticket notifications — master switch. Off by default (opt-in) so users who already configured a Telegram bot for forwarding aren't surprised by ticket messages. When on, a message is sent to the configured Telegram bot + chat on the ticket lifecycle events toggled below. No-op until a Telegram bot is configured. */
   kanbanTelegramNotifyEnabled: boolean
   /** Kanban: notify when a ticket first moves Todo → In Progress (work started). */
@@ -287,6 +294,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanStrictVerifyConfidenceThreshold: 0.6,
   kanbanInProgressRescueEnabled: true,
   kanbanQueuePromptsEnabled: false,
+  kanbanIterateLoopEnabled: false,
+  kanbanIterateLoopMaxIterations: 3,
+  kanbanIterateLoopFixPromptTemplate: DEFAULT_FIX_PROMPT_TEMPLATE,
   kanbanTelegramNotifyEnabled: false,
   kanbanTelegramNotifyOnStart: true,
   kanbanTelegramNotifyOnQuestion: true,
@@ -546,6 +556,9 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
     kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
     kanbanQueuePromptsEnabled: state.kanbanQueuePromptsEnabled,
+    kanbanIterateLoopEnabled: state.kanbanIterateLoopEnabled,
+    kanbanIterateLoopMaxIterations: state.kanbanIterateLoopMaxIterations,
+    kanbanIterateLoopFixPromptTemplate: state.kanbanIterateLoopFixPromptTemplate,
     kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
     kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
     kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
@@ -947,6 +960,9 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
         kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
         kanbanQueuePromptsEnabled: state.kanbanQueuePromptsEnabled,
+        kanbanIterateLoopEnabled: state.kanbanIterateLoopEnabled,
+        kanbanIterateLoopMaxIterations: state.kanbanIterateLoopMaxIterations,
+        kanbanIterateLoopFixPromptTemplate: state.kanbanIterateLoopFixPromptTemplate,
         kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
         kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
         kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,

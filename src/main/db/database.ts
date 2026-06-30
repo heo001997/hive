@@ -340,6 +340,16 @@ export class DatabaseService {
       attachments = []
     }
 
+    let lifecycleCallbacks: KanbanTicket['lifecycle_callbacks'] = null
+    try {
+      const raw = row.lifecycle_callbacks as string
+      if (raw) {
+        lifecycleCallbacks = JSON.parse(raw)
+      }
+    } catch {
+      lifecycleCallbacks = null
+    }
+
     return {
       id: row.id as string,
       project_id: row.project_id as string,
@@ -369,7 +379,10 @@ export class DatabaseService {
       note: (row.note as string) ?? null,
       created_from_session: row.created_from_session === 1,
       auto_approve_review: row.auto_approve_review === 1,
-      review_seen_at: (row.review_seen_at as string) ?? null
+      review_seen_at: (row.review_seen_at as string) ?? null,
+      lifecycle_callbacks: lifecycleCallbacks,
+      lifecycle_state: (row.lifecycle_state as KanbanTicket['lifecycle_state']) ?? null,
+      lifecycle_iteration: (row.lifecycle_iteration as number) ?? 0
     }
   }
 
@@ -672,6 +685,9 @@ export class DatabaseService {
     this.safeAddColumn('kanban_tickets', 'auto_approve_plan', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('kanban_tickets', 'created_from_session', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('kanban_tickets', 'review_seen_at', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'lifecycle_callbacks', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'lifecycle_state', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'lifecycle_iteration', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('sessions', 'session_type', "TEXT NOT NULL DEFAULT 'default'")
     this.safeAddColumn(
       'discord_resources',
@@ -2527,10 +2543,15 @@ export class DatabaseService {
     const mark = data.mark ?? null
     const createdFromSession = data.created_from_session ? 1 : 0
     const autoApproveReview = data.auto_approve_review ? 1 : 0
+    const lifecycleCallbacks = data.lifecycle_callbacks
+      ? JSON.stringify(data.lifecycle_callbacks)
+      : null
+    const lifecycleState = data.lifecycle_state ?? null
+    const lifecycleIteration = data.lifecycle_iteration ?? 0
 
     db.prepare(
-      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_from_session, auto_approve_review, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_from_session, auto_approve_review, lifecycle_callbacks, lifecycle_state, lifecycle_iteration, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.project_id,
@@ -2551,6 +2572,9 @@ export class DatabaseService {
       mark,
       createdFromSession,
       autoApproveReview,
+      lifecycleCallbacks,
+      lifecycleState,
+      lifecycleIteration,
       now,
       now
     )
@@ -2575,6 +2599,9 @@ export class DatabaseService {
       mark,
       created_from_session: createdFromSession,
       auto_approve_review: autoApproveReview,
+      lifecycle_callbacks: lifecycleCallbacks,
+      lifecycle_state: lifecycleState,
+      lifecycle_iteration: lifecycleIteration,
       total_tokens: 0,
       created_at: now,
       updated_at: now
@@ -2785,6 +2812,18 @@ export class DatabaseService {
     if (data.auto_approve_review !== undefined) {
       updates.push('auto_approve_review = ?')
       values.push(data.auto_approve_review ? 1 : 0)
+    }
+    if (data.lifecycle_callbacks !== undefined) {
+      updates.push('lifecycle_callbacks = ?')
+      values.push(data.lifecycle_callbacks ? JSON.stringify(data.lifecycle_callbacks) : null)
+    }
+    if (data.lifecycle_state !== undefined) {
+      updates.push('lifecycle_state = ?')
+      values.push(data.lifecycle_state)
+    }
+    if (data.lifecycle_iteration !== undefined) {
+      updates.push('lifecycle_iteration = ?')
+      values.push(data.lifecycle_iteration)
     }
     if (data.review_seen_at !== undefined) {
       updates.push('review_seen_at = ?')

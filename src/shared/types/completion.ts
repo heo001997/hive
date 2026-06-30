@@ -114,4 +114,11 @@ export interface StoredCompletionVerdict extends CompletionVerdict {
    * label instead of looping forever.
    */
   rescueExhausted?: boolean
+  /**
+   * True once the per-ticket Iterate Loop has exhausted its `review.retryMax`
+   * bounces: the Reviewer kept failing the work, so the ticket is left STUCK in
+   * Review (not advanced — no fail-open) with the `stuck_review` notification
+   * fired. Distinct from `rescueExhausted` (the In Progress frozen-rescue path).
+   */
+  lifecycleStuck?: boolean
 }
