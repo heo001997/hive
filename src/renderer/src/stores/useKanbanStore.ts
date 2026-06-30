@@ -1281,7 +1281,11 @@ async function runLifecycleAction(
     case 'notify': {
       const ev = cfg.event
       const event =
-        ev === 'started' || ev === 'question' || ev === 'stuck_review' || ev === 'done'
+        ev === 'started' ||
+        ev === 'question' ||
+        ev === 'review' ||
+        ev === 'stuck_review' ||
+        ev === 'done'
           ? ev
           : 'started'
       const { notifyTicketEvent } = await import('../lib/ticket-telegram-notify')

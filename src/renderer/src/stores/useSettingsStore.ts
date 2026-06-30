@@ -135,6 +135,8 @@ export interface AppSettings {
   kanbanTelegramNotifyOnStart: boolean
   /** Kanban: notify when a ticket's agent asks the user a question (waiting on input). */
   kanbanTelegramNotifyOnQuestion: boolean
+  /** Kanban: notify when a ticket reaches Review (ready for your review). Fires once per review cycle — the review↔fix iterate loop's bounces back to In Progress don't re-notify. */
+  kanbanTelegramNotifyOnReview: boolean
   /** Kanban: notify when Strict Verify has exhausted all its rescue retries and the ticket still isn't done — genuinely stuck and needs user action. (Transient Reviewer errors do NOT notify.) */
   kanbanTelegramNotifyOnStuckReview: boolean
   /** Kanban: notify when a ticket moves to Done. */
@@ -300,6 +302,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanTelegramNotifyEnabled: false,
   kanbanTelegramNotifyOnStart: true,
   kanbanTelegramNotifyOnQuestion: true,
+  kanbanTelegramNotifyOnReview: true,
   kanbanTelegramNotifyOnStuckReview: true,
   kanbanTelegramNotifyOnDone: true,
   kanbanTelegramAutoForwardOnUserAction: false,
@@ -562,6 +565,7 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
     kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
     kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
+    kanbanTelegramNotifyOnReview: state.kanbanTelegramNotifyOnReview,
     kanbanTelegramNotifyOnStuckReview: state.kanbanTelegramNotifyOnStuckReview,
     kanbanTelegramNotifyOnDone: state.kanbanTelegramNotifyOnDone,
     kanbanTelegramAutoForwardOnUserAction: state.kanbanTelegramAutoForwardOnUserAction,
@@ -966,6 +970,7 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
         kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
         kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
+        kanbanTelegramNotifyOnReview: state.kanbanTelegramNotifyOnReview,
         kanbanTelegramNotifyOnStuckReview: state.kanbanTelegramNotifyOnStuckReview,
         kanbanTelegramNotifyOnDone: state.kanbanTelegramNotifyOnDone,
         kanbanTelegramAutoForwardOnUserAction: state.kanbanTelegramAutoForwardOnUserAction,
