@@ -162,6 +162,9 @@ export class XtermBackend implements TerminalBackend {
   private terminal: Terminal | null = null
   private fitAddon: FitAddon | null = null
   private searchAddon: SearchAddon | null = null
+  /** WebGL renderer addon. Loaded only while visible (see loadWebgl/setVisible);
+   *  null while hidden or when WebGL is unavailable / the DOM fallback is active. */
+  private webglAddon: WebglAddon | null = null
   private resizeObserver: ResizeObserver | null = null
   private removeDataListener: (() => void) | null = null
   private removeExitListener: (() => void) | null = null
@@ -314,30 +317,16 @@ export class XtermBackend implements TerminalBackend {
 
     terminal.open(container)
 
-    // Try WebGL renderer, fall back to xterm's DOM renderer
-    try {
-      const webglAddon = new WebglAddon()
-      webglAddon.onContextLoss(() => {
-        webglAddon.dispose()
-        this.rendererKind = 'dom'
-        console.warn('[terminal-font] WebGL context lost, falling back to DOM renderer')
-        terminalApi.logClientDiagnostics('xterm-renderer-fallback', {
-          terminalId: this.terminalId,
-          reason: 'context-loss'
-        })
-      })
-      terminal.loadAddon(webglAddon)
-      this.rendererKind = 'webgl'
-    } catch (err) {
-      // WebGL not available (GPU blocklist, VM, remote session) — xterm falls
-      // back to its DOM renderer, which renders fonts noticeably differently.
-      console.warn('[terminal-font] WebGL addon failed, falling back to DOM renderer', err)
-      terminalApi.logClientDiagnostics('xterm-renderer-fallback', {
-        terminalId: this.terminalId,
-        reason: 'load-failed',
-        error: err instanceof Error ? err.message : String(err)
-      })
-    }
+    // The WebGL renderer (a WebGL2 context + a rasterized glyph texture atlas) is
+    // the dominant *fixed* per-terminal memory cost — ~6-15 MB regardless of
+    // scrollback, so the #106 buffer trim doesn't touch it. Every tab across every
+    // worktree is kept mounted to preserve PTY state, so N live terminals each
+    // pinning a GL context both multiplies that cost and blows past the browser's
+    // ~16 live-context cap (the 17th eviction thrashes terminals between renderers).
+    // Only the *visible* terminal needs WebGL: load it here only when visible and
+    // load/drop it on visibility change (see setVisible). A hidden-mounted terminal
+    // renders on xterm's cheaper DOM renderer until first shown.
+    if (this.visible) this.loadWebgl(terminal)
 
     try {
       fitAddon.fit()
@@ -481,6 +470,52 @@ export class XtermBackend implements TerminalBackend {
     return visible ? this.fullScrollback : Math.min(this.fullScrollback, HIDDEN_SCROLLBACK)
   }
 
+  /**
+   * Attach the WebGL renderer (idempotent). On failure — GPU blocklist, VM,
+   * remote session, or no free WebGL context — xterm stays on its DOM renderer,
+   * which renders fonts noticeably differently but works everywhere.
+   */
+  private loadWebgl(terminal: Terminal): void {
+    if (this.webglAddon) return
+    try {
+      const webglAddon = new WebglAddon()
+      webglAddon.onContextLoss(() => {
+        // The browser revoked our GL context (e.g. another terminal became
+        // visible and took the last slot). Drop to the DOM renderer; a later
+        // setVisible can reload.
+        webglAddon.dispose()
+        this.webglAddon = null
+        this.rendererKind = 'dom'
+        console.warn('[terminal-font] WebGL context lost, falling back to DOM renderer')
+        terminalApi.logClientDiagnostics('xterm-renderer-fallback', {
+          terminalId: this.terminalId,
+          reason: 'context-loss'
+        })
+      })
+      terminal.loadAddon(webglAddon)
+      this.webglAddon = webglAddon
+      this.rendererKind = 'webgl'
+    } catch (err) {
+      this.webglAddon = null
+      this.rendererKind = 'dom'
+      console.warn('[terminal-font] WebGL addon failed, falling back to DOM renderer', err)
+      terminalApi.logClientDiagnostics('xterm-renderer-fallback', {
+        terminalId: this.terminalId,
+        reason: 'load-failed',
+        error: err instanceof Error ? err.message : String(err)
+      })
+    }
+  }
+
+  /** Tear down the WebGL renderer, freeing its GL context + glyph atlas. xterm
+   *  reverts to its DOM renderer for this terminal. No-op if already unloaded. */
+  private unloadWebgl(): void {
+    if (!this.webglAddon) return
+    this.webglAddon.dispose()
+    this.webglAddon = null
+    this.rendererKind = 'dom'
+  }
+
   /** Buffer one PTY output chunk and ensure a flush is scheduled. */
   private enqueueWrite(data: string): void {
     if (!this.terminal) return
@@ -580,10 +615,12 @@ export class XtermBackend implements TerminalBackend {
   }
 
   /**
-   * Visibility gate. Hidden terminals keep parsing their PTY stream (scrollback
-   * + readScreen stay correct) but flush on a slower cadence and stop blinking
-   * the cursor, so backgrounded agent terminals don't burn renderer CPU. On
-   * becoming visible we flush immediately so current output shows at once
+   * Visibility gate. Hidden terminals keep parsing their PTY stream (readScreen
+   * stays correct) but flush on a slower cadence, stop blinking the cursor, trim
+   * their scrollback, and drop the WebGL renderer — so backgrounded agent
+   * terminals burn neither renderer CPU nor the per-terminal GL context + glyph
+   * atlas (the dominant fixed memory cost). On becoming visible we restore WebGL
+   * + full scrollback and flush immediately so current output shows at once
    * (TerminalView also re-fits/repaints right after).
    */
   setVisible(visible: boolean): void {
@@ -596,6 +633,12 @@ export class XtermBackend implements TerminalBackend {
       // size, freeing the dropped BufferLines — this is the lever that keeps N
       // backgrounded terminals from each pinning a full ~10k-line buffer.
       this.terminal.options.scrollback = this.scrollbackForVisibility(visible)
+      // Free / restore the GL context + glyph atlas with visibility — the fixed
+      // per-terminal cost the scrollback trim leaves behind. Hidden terminals
+      // fall back to xterm's DOM renderer (cheap for an off-screen viewport) and
+      // we stay well under the browser's live-WebGL-context cap.
+      if (visible) this.loadWebgl(this.terminal)
+      else this.unloadWebgl()
     }
     if (visible) this.flush()
     else if (this.flushRaf !== null) {
@@ -646,6 +689,7 @@ export class XtermBackend implements TerminalBackend {
     this.removeDataListener?.()
     this.removeExitListener?.()
     this.searchAddon = null
+    this.unloadWebgl()
     this.terminal?.dispose()
     this.terminal = null
     this.fitAddon = null

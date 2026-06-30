@@ -5,6 +5,7 @@ import { useScriptStore, killRunScript } from './useScriptStore'
 import { useSessionStore } from './useSessionStore'
 import { useWorktreeStatusStore } from './useWorktreeStatusStore'
 import { useGitStore } from './useGitStore'
+import { useFileTreeStore } from './useFileTreeStore'
 import { useFileViewerStore } from './useFileViewerStore'
 import type { SelectedModel } from './useSettingsStore'
 import { toast } from '@/lib/toast'
@@ -22,6 +23,15 @@ const inflightLoad = new Map<string, Promise<void>>()
 const lastLoad = new Map<string, number>()
 const SYNC_TTL_MS = 10_000
 const LOAD_TTL_MS = 10_000
+
+/** Free per-worktree renderer caches when a worktree is archived/unbranched.
+ *  The file tree + flat file index (one entry per file in the repo) and the git
+ *  status/branch/PR maps are keyed by worktree and otherwise retained for the
+ *  whole app session, accumulating with every worktree the user ever opens. */
+function pruneWorktreeCaches(worktreeId: string, worktreePath: string): void {
+  useFileTreeStore.getState().removeWorktree(worktreePath)
+  useGitStore.getState().removeWorktree(worktreeId, worktreePath)
+}
 
 /** Fire-and-forget: run setup script for a worktree, subscribing to output events
  *  so output is captured even when SetupTab is not mounted. */
@@ -531,6 +541,7 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
       }
 
       deleteBuffer(worktreeId)
+      pruneWorktreeCaches(worktreeId, worktreePath)
 
       // Remove from pinned list if pinned
       const { usePinnedStore } = await import('./usePinnedStore')
@@ -634,6 +645,7 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
       }
 
       deleteBuffer(worktreeId)
+      pruneWorktreeCaches(worktreeId, worktreePath)
 
       // Remove from pinned list if pinned
       const { usePinnedStore } = await import('./usePinnedStore')

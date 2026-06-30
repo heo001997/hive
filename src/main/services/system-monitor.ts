@@ -43,6 +43,14 @@ export const APP_CPU_SUSTAINED_SAMPLES = 3
 export const EVENT_LOOP_LAG_MS = 250
 export const RSS_GROWTH_MIN_BYTES = 400 * 1024 * 1024
 export const RSS_GROWTH_FACTOR = 1.5
+// A process's first sample is its cold start, not its steady state: the renderer
+// in particular climbs to a multi-hundred-MB working set as the user opens
+// sessions, terminals and editors. Anchoring the growth baseline to that cold
+// first sample turns the normal cold->warm settle into a phantom "RSS grew to
+// N MB" alert (the false positive this monitor kept firing). So for a warm-up
+// window we let the baseline rise with the process — only growth *beyond* the
+// warmed working set, once this window has elapsed, counts as a real leak.
+export const RSS_BASELINE_WARMUP_MS = 90_000
 const ALERT_COOLDOWN_MS = 60_000
 
 // Ancestors we'll keep climbing through when resolving the app root: Electron
@@ -283,6 +291,23 @@ export function computeProcessFlags(
   return flags
 }
 
+/**
+ * Resolve a process's RSS-growth baseline for the current sample. During the
+ * warm-up window the baseline tracks the high-water mark, so the normal
+ * cold->warm settle never reads as growth; once warmed it freezes at that mark
+ * so only a genuine later climb trips the alert. `prevBaseline` is undefined
+ * the first time a pid is seen, in which case the baseline is the current RSS.
+ */
+export function resolveRssBaseline(
+  prevBaseline: number | undefined,
+  currentRss: number,
+  ageMs: number
+): number {
+  if (prevBaseline === undefined) return currentRss
+  if (ageMs < RSS_BASELINE_WARMUP_MS) return Math.max(prevBaseline, currentRss)
+  return prevBaseline
+}
+
 export interface HostCpuTimes {
   idle: number
   total: number
@@ -374,6 +399,7 @@ class SystemMonitorService {
   private prevWallMs = 0
   private prevCpuTimes: HostCpuTimes | null = null
   private rssBaseline = new Map<number, number>()
+  private rssFirstSeenMs = new Map<number, number>() // pid -> wall time first sampled
   private appCpuSustain = 0
   private appCpuAlerted = false // edge-trigger latch for the app-CPU episode
   private procCpuSustain = new Map<number, number>()
@@ -661,6 +687,7 @@ class SystemMonitorService {
 
     const nextPrevCpu = new Map<number, number>()
     const nextBaseline = new Map<number, number>()
+    const nextFirstSeen = new Map<number, number>()
     const processes: MonitorProcess[] = []
     let appCpu = 0
     let appRss = 0
@@ -671,7 +698,8 @@ class SystemMonitorService {
       if (!r) continue
       const cpuPct = computeCpuPct(r.cpuSec, this.prevCpu.get(pid), wallDeltaSec)
       const { type, label } = classifyProcess(r.command)
-      const baseline = this.rssBaseline.get(pid) ?? r.rss
+      const firstSeen = this.rssFirstSeenMs.get(pid) ?? wallNowMs
+      const baseline = resolveRssBaseline(this.rssBaseline.get(pid), r.rss, wallNowMs - firstSeen)
       const flags = computeProcessFlags({ cpuPct, rss: r.rss, ppid: r.ppid }, baseline)
       processes.push({
         pid,
@@ -691,12 +719,14 @@ class SystemMonitorService {
         appProcCount++
       }
       nextPrevCpu.set(pid, r.cpuSec)
-      nextBaseline.set(pid, this.rssBaseline.get(pid) ?? r.rss)
+      nextBaseline.set(pid, baseline)
+      nextFirstSeen.set(pid, firstSeen)
     }
 
     processes.sort((a, b) => b.cpuPct - a.cpuPct || b.rss - a.rss)
     this.prevCpu = nextPrevCpu
     this.rssBaseline = nextBaseline
+    this.rssFirstSeenMs = nextFirstSeen
     this.prevWallMs = wallNowMs
 
     return {

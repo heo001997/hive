@@ -107,6 +107,10 @@ interface GitStoreState {
   addToGitignore: (worktreePath: string, pattern: string) => Promise<boolean>
   refreshStatuses: (worktreePath: string) => Promise<void>
   clearStatuses: (worktreePath: string) => void
+  // Drop every per-worktree cache (status, branch, remote, PR, merge selections)
+  // when a worktree is archived/removed, so they don't accumulate for the app's
+  // lifetime. Needs both keys: some maps are keyed by path, others by id.
+  removeWorktree: (worktreeId: string, worktreePath: string) => void
   loadStatusesForPaths: (paths: string[]) => Promise<void>
 
   // Remote info actions
@@ -457,6 +461,46 @@ export const useGitStore = create<GitStoreState>()((set, get) => ({
       const newBranchMap = new Map(state.branchInfoByWorktree)
       newBranchMap.delete(worktreePath)
       return { fileStatusesByWorktree: newFileMap, branchInfoByWorktree: newBranchMap }
+    })
+  },
+
+  // Drop all per-worktree state for an archived/removed worktree.
+  removeWorktree: (worktreeId: string, worktreePath: string) => {
+    // Module-level throttle caches keyed by path.
+    lastFileStatusLoad.delete(worktreePath)
+    lastBranchInfoLoad.delete(worktreePath)
+    set((state) => {
+      const fileStatusesByWorktree = new Map(state.fileStatusesByWorktree)
+      const branchInfoByWorktree = new Map(state.branchInfoByWorktree)
+      const selectedMergeBranch = new Map(state.selectedMergeBranch)
+      const selectedDiffBranch = new Map(state.selectedDiffBranch)
+      const remoteInfo = new Map(state.remoteInfo)
+      const prTargetBranch = new Map(state.prTargetBranch)
+      const attachedPR = new Map(state.attachedPR)
+      const creatingPRByWorktreeId = new Map(state.creatingPRByWorktreeId)
+      // Path-keyed maps.
+      fileStatusesByWorktree.delete(worktreePath)
+      branchInfoByWorktree.delete(worktreePath)
+      selectedMergeBranch.delete(worktreePath)
+      selectedDiffBranch.delete(worktreePath)
+      // Id-keyed maps.
+      remoteInfo.delete(worktreeId)
+      prTargetBranch.delete(worktreeId)
+      attachedPR.delete(worktreeId)
+      creatingPRByWorktreeId.delete(worktreeId)
+      const conflictsByWorktree = { ...state.conflictsByWorktree }
+      delete conflictsByWorktree[worktreePath]
+      return {
+        fileStatusesByWorktree,
+        branchInfoByWorktree,
+        selectedMergeBranch,
+        selectedDiffBranch,
+        remoteInfo,
+        prTargetBranch,
+        attachedPR,
+        creatingPRByWorktreeId,
+        conflictsByWorktree
+      }
     })
   },
 

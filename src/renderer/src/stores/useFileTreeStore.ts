@@ -45,6 +45,10 @@ interface FileTreeState {
   startWatching: (worktreePath: string) => Promise<void>
   stopWatching: (worktreePath: string) => Promise<void>
   handleFileChange: (worktreePath: string, events: FileTreeChangeEventItem[]) => Promise<void>
+  // Drop all cached state for a worktree once it's archived/removed. Without
+  // this the full file tree + flat file index (the largest per-worktree caches —
+  // one entry per file in the repo) would be retained for the whole session.
+  removeWorktree: (worktreePath: string) => void
 }
 
 // Helper to convert Set to Array for persistence
@@ -234,6 +238,31 @@ export const useFileTreeStore = create<FileTreeState>()(
           const newMap = new Map(state.expandedPathsByWorktree)
           newMap.set(worktreePath, new Set())
           return { expandedPathsByWorktree: newMap }
+        })
+      },
+
+      // Drop every per-worktree cache for a removed worktree.
+      removeWorktree: (worktreePath: string) => {
+        // Stop the directory watcher (refcounted; no-op if others still watch).
+        void get().stopWatching(worktreePath)
+        set((state) => {
+          const fileTreeByWorktree = new Map(state.fileTreeByWorktree)
+          const fileIndexByWorktree = new Map(state.fileIndexByWorktree)
+          const fileIndexLoadingByWorktree = new Map(state.fileIndexLoadingByWorktree)
+          const expandedPathsByWorktree = new Map(state.expandedPathsByWorktree)
+          const filterByWorktree = new Map(state.filterByWorktree)
+          fileTreeByWorktree.delete(worktreePath)
+          fileIndexByWorktree.delete(worktreePath)
+          fileIndexLoadingByWorktree.delete(worktreePath)
+          expandedPathsByWorktree.delete(worktreePath)
+          filterByWorktree.delete(worktreePath)
+          return {
+            fileTreeByWorktree,
+            fileIndexByWorktree,
+            fileIndexLoadingByWorktree,
+            expandedPathsByWorktree,
+            filterByWorktree
+          }
         })
       },
 
