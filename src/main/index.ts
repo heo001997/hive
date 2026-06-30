@@ -35,7 +35,7 @@ import {
   cleanupOpenCode
 } from './services/opencode-session-commands'
 import { buildMenu, shutdownMenu } from './menu'
-import { createLogger } from './services/logger'
+import { createLogger, LoggerService } from './services/logger'
 import { wireHeadlessSignalShutdown } from './services/headless-shutdown'
 import { emitWindowFocused, emitWindowFullscreenChanged } from './services/app-events'
 import { notificationService } from './services/notification-service'
@@ -223,9 +223,38 @@ function syncCustomCommandsFileIfChanged(): void {
   }
 }
 
+// Our log sinks (stdout/stderr) can break with EPIPE/EIO when the dev parent pipe
+// or controlling terminal goes away. A failed console write surfaces as an async
+// 'error' on the socket → uncaughtException. If that is then logged through a
+// console-backed logger, the write re-fails and we spin forever (observed: a
+// ~1GB/day log, the main process pegged, PTY/IPC starved → terminal lag). Swallow
+// these sink errors and disable the console so the loop can never form.
+const handleSinkError = (err: NodeJS.ErrnoException): void => {
+  if (err && (err.code === 'EPIPE' || err.code === 'EIO')) {
+    LoggerService.getInstance().disableConsole()
+  }
+  // Any error on a logging sink is swallowed — it must never crash the process.
+}
+process.stdout.on('error', handleSinkError)
+process.stderr.on('error', handleSinkError)
+
 // Global error handlers — prevent uncaught errors from crashing the Electron process
-process.on('uncaughtException', (error) => {
-  log.error('Uncaught exception', error, { fatal: false })
+let handlingUncaught = false
+process.on('uncaughtException', (error: NodeJS.ErrnoException) => {
+  // A dead output sink (EPIPE/EIO) is not an application fault. Logging it through
+  // a console-backed logger is exactly what creates the feedback loop, so drop it.
+  if (error && (error.code === 'EPIPE' || error.code === 'EIO')) {
+    LoggerService.getInstance().disableConsole()
+    return
+  }
+  // Reentrancy guard: if logging itself throws, don't recurse into this handler.
+  if (handlingUncaught) return
+  handlingUncaught = true
+  try {
+    log.error('Uncaught exception', error, { fatal: false })
+  } finally {
+    handlingUncaught = false
+  }
 })
 
 process.on('unhandledRejection', (reason) => {
