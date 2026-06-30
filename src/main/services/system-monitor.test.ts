@@ -13,6 +13,8 @@ import {
   sumCpuTimes,
   parseVmStatAvailable,
   parseMemAvailableLinux,
+  isBreakoutAlertable,
+  isAutoReapableOrphan,
   RSS_GROWTH_MIN_BYTES,
   type RawProcess
 } from './system-monitor'
@@ -170,6 +172,38 @@ describe('computeCpuPct', () => {
   it('clamps non-positive deltas and non-positive wall time to 0', () => {
     expect(computeCpuPct(10, 12, 2)).toBe(0)
     expect(computeCpuPct(12, 10, 0)).toBe(0)
+  })
+})
+
+describe('isBreakoutAlertable', () => {
+  it('exempts transient CPU-bound helpers (a grep/git pegging one core is normal work)', () => {
+    // grep & friends classify as 'other'; git/shell are their own types.
+    expect(isBreakoutAlertable('other')).toBe(false)
+    expect(isBreakoutAlertable('git')).toBe(false)
+    expect(isBreakoutAlertable('shell')).toBe(false)
+  })
+
+  it('still alerts for resident process types where a pegged core is a real symptom', () => {
+    expect(isBreakoutAlertable('claude')).toBe(true)
+    expect(isBreakoutAlertable('codex')).toBe(true)
+    expect(isBreakoutAlertable('opencode')).toBe(true)
+    expect(isBreakoutAlertable('mcp-server')).toBe(true)
+    expect(isBreakoutAlertable('server')).toBe(true)
+    expect(isBreakoutAlertable('electron-renderer')).toBe(true)
+    expect(isBreakoutAlertable('electron-main')).toBe(true)
+  })
+})
+
+describe('isAutoReapableOrphan', () => {
+  it('auto-reaps only MCP servers (never an intentional detach)', () => {
+    expect(isAutoReapableOrphan('mcp-server')).toBe(true)
+  })
+
+  it('never auto-reaps agent CLIs — they may be a deliberately detached session', () => {
+    expect(isAutoReapableOrphan('claude')).toBe(false)
+    expect(isAutoReapableOrphan('codex')).toBe(false)
+    expect(isAutoReapableOrphan('opencode')).toBe(false)
+    expect(isAutoReapableOrphan('other')).toBe(false)
   })
 })
 

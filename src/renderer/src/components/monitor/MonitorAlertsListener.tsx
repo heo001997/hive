@@ -15,8 +15,11 @@ export function MonitorAlertsListener(): null {
     const unsubscribe = monitorApi.subscribeAlerts((alert) => {
       pushAlert(alert)
       if (useMonitorStore.getState().isOpen) return
+      // 'info' alerts (e.g. an auto-remediated MCP-orphan reap) are recorded in
+      // the feed + header badge but don't interrupt with a toast — nothing for
+      // the user to act on.
       if (alert.severity === 'critical') toast.error(alert.message)
-      else toast.warning(alert.message)
+      else if (alert.severity === 'warning') toast.warning(alert.message)
     })
     return unsubscribe
   }, [pushAlert])

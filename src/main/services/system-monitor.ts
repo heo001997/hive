@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, appendFileSync, statSync, renameSync, readFileSy
 import { createLogger } from './logger'
 import { getHiveLogsDir } from './hive-paths'
 import { perfDiagnostics } from './perf-diagnostics'
-import { reapOrphans, MCP_COMMAND_PATTERN } from './orphan-mcp-reaper'
+import { reapOrphans, reapOrphanedMcpServers, MCP_COMMAND_PATTERN } from './orphan-mcp-reaper'
 import {
   SYSTEM_MONITOR_SNAPSHOT_CHANNEL,
   SYSTEM_MONITOR_ALERT_CHANNEL,
@@ -63,6 +63,37 @@ const APP_ORPHAN_PATTERN = new RegExp(
     .join('|'),
   'i'
 )
+
+// Per-process types that are CPU-bound *by design* and self-terminate, so a
+// brief full-core spike is normal work — not a runaway worth a toast. `cpuPct`
+// is per-core (100% === one core fully used), so any active `grep` / `git` /
+// build step legitimately reads ~100% for the seconds it runs. These types are
+// exempt from the per-process CPU-breakout alert. Real trouble is still caught:
+// the whole-tree `app-cpu-sustained` alert fires if they collectively pin
+// multiple cores, and the orphan / RSS-growth alerts catch leaks. Resident types
+// (agent CLIs, MCP servers, the server, Electron procs) are NOT exempt — a core
+// pegged there and sustained is a genuine symptom.
+export const BREAKOUT_EXEMPT_TYPES: ReadonlySet<MonitorProcessType> = new Set([
+  'git',
+  'shell',
+  'other'
+])
+
+/** Whether a per-process CPU breakout for this process type is worth alerting on. */
+export function isBreakoutAlertable(type: MonitorProcessType): boolean {
+  return !BREAKOUT_EXEMPT_TYPES.has(type)
+}
+
+/**
+ * Orphans (ppid===1) we may auto-reap the instant we detect them. Only MCP
+ * servers qualify: they are never an intentionally-detached session, so killing
+ * a leaked one (e.g. trello's un-`unref()`'d `setInterval`) is always safe.
+ * Agent-CLI orphans MAY be a user's deliberately detached session, so those stay
+ * manual — the `orphan-detected` critical alert plus the panel's force-cleanup.
+ */
+export function isAutoReapableOrphan(type: MonitorProcessType): boolean {
+  return type === 'mcp-server'
+}
 
 // --- Pure helpers (exported for unit tests) ---------------------------------
 
@@ -451,6 +482,29 @@ class SystemMonitorService {
     })
   }
 
+  /**
+   * Reap orphaned MCP servers (ppid===1) the instant the sampler spots one,
+   * instead of waiting for the 10-min periodic reaper. `reapOrphanedMcpServers`
+   * re-scans `ps` and only signals processes that are *still* PID-1 orphans
+   * matching the MCP pattern, so acting on a stale sample can't hit a recycled
+   * pid. Reported as a single non-intrusive info alert (no critical toast).
+   */
+  private async autoReapMcpOrphans(detected: number): Promise<void> {
+    try {
+      const killed = await reapOrphanedMcpServers()
+      log.info('Auto-reaped orphaned MCP servers on detection', { detected, killed })
+      if (killed > 0) {
+        this.emitAlert({
+          severity: 'info',
+          kind: 'orphan-detected',
+          message: `Auto-reaped ${killed} orphaned MCP server${killed === 1 ? '' : 's'} reparented to PID 1`
+        })
+      }
+    } catch (err) {
+      log.warn('Auto-reap of orphaned MCP servers failed', { err: String(err) })
+    }
+  }
+
   async cleanupOrphans(): Promise<number> {
     // Reap the *full* set of app orphans the monitor flags (MCP servers + agent
     // CLIs), not just MCP — otherwise the button reports "nothing found" while
@@ -681,23 +735,29 @@ class SystemMonitorService {
 
     const seen = new Set<number>()
     const orphanPids = new Set<number>()
+    let newMcpOrphans = 0
     for (const p of s.processes) {
       seen.add(p.pid)
-      if (p.cpuPct >= PROC_CPU_BREAKOUT_PCT) {
-        const count = (this.procCpuSustain.get(p.pid) ?? 0) + 1
-        this.procCpuSustain.set(p.pid, count)
-        if (count >= PROC_CPU_SUSTAINED_SAMPLES && !this.procCpuAlerted.has(p.pid)) {
-          this.procCpuAlerted.add(p.pid)
-          this.emitAlert({
-            severity: 'warning',
-            kind: 'process-cpu-breakout',
-            message: `${p.label} (pid ${p.pid}) at ${p.cpuPct.toFixed(0)}% CPU`,
-            pid: p.pid
-          })
+      // Skip transient CPU-bound tools (grep, git, build steps, shells): a full
+      // core for a few seconds is them doing their job, not a runaway. Only
+      // resident process types can trip the per-process breakout.
+      if (isBreakoutAlertable(p.type)) {
+        if (p.cpuPct >= PROC_CPU_BREAKOUT_PCT) {
+          const count = (this.procCpuSustain.get(p.pid) ?? 0) + 1
+          this.procCpuSustain.set(p.pid, count)
+          if (count >= PROC_CPU_SUSTAINED_SAMPLES && !this.procCpuAlerted.has(p.pid)) {
+            this.procCpuAlerted.add(p.pid)
+            this.emitAlert({
+              severity: 'warning',
+              kind: 'process-cpu-breakout',
+              message: `${p.label} (pid ${p.pid}) at ${p.cpuPct.toFixed(0)}% CPU`,
+              pid: p.pid
+            })
+          }
+        } else {
+          this.procCpuSustain.set(p.pid, 0)
+          this.procCpuAlerted.delete(p.pid) // re-arm for the next breakout
         }
-      } else {
-        this.procCpuSustain.set(p.pid, 0)
-        this.procCpuAlerted.delete(p.pid) // re-arm for the next breakout
       }
 
       if (p.flags.includes('RSS_GROWTH')) {
@@ -715,12 +775,21 @@ class SystemMonitorService {
         orphanPids.add(p.pid)
         if (!this.alertedOrphans.has(p.pid)) {
           this.alertedOrphans.add(p.pid)
-          this.emitAlert({
-            severity: 'critical',
-            kind: 'orphan-detected',
-            message: `Orphaned ${p.label} (pid ${p.pid}) reparented to PID 1`,
-            pid: p.pid
-          })
+          if (isAutoReapableOrphan(p.type)) {
+            // Leaked MCP server (never an intentional detach) — reap now instead
+            // of waiting up to 10 min for the periodic sweep. The actual reap +
+            // a single non-intrusive info alert happen once, after the loop.
+            newMcpOrphans++
+          } else {
+            // Agent-CLI orphan: may be a deliberately detached session, so never
+            // auto-kill it — surface it for manual cleanup instead.
+            this.emitAlert({
+              severity: 'critical',
+              kind: 'orphan-detected',
+              message: `Orphaned ${p.label} (pid ${p.pid}) reparented to PID 1`,
+              pid: p.pid
+            })
+          }
         }
       }
     }
@@ -735,6 +804,10 @@ class SystemMonitorService {
     for (const pid of [...this.alertedOrphans]) {
       if (!orphanPids.has(pid)) this.alertedOrphans.delete(pid)
     }
+
+    // Self-heal leaked MCP servers the moment we see them, rather than leaving
+    // them to pile up until the 10-min periodic reaper runs.
+    if (newMcpOrphans > 0) void this.autoReapMcpOrphans(newMcpOrphans)
 
     if (s.main && s.main.eventLoopLagMs >= EVENT_LOOP_LAG_MS) {
       this.emitAlert({
