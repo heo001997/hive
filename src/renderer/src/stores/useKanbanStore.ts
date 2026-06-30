@@ -597,6 +597,60 @@ const frozenSnapshots = new Map<
 >()
 
 /**
+ * Window (ms) used to confirm a session is frozen when there is no pre-armed S0
+ * baseline to compare against: two fingerprints taken this far apart must match.
+ */
+const FROZEN_STABILITY_MS = 1200
+
+/**
+ * Strict Review rule: the AI Watcher must NEVER judge a ticket until its session
+ * is confirmed frozen — a session still emitting output (or actively working) is
+ * still In Progress, not finished. Every path that would judge with AI calls this
+ * first and bounces a non-frozen ticket back to In Progress without a model call.
+ *
+ * "Frozen" requires BOTH:
+ *   (a) liveness  — the session's status is not actively `working`; and
+ *   (b) stability — its output fingerprint isn't changing.
+ *
+ * Stability comes either from the pre-armed S0 baseline captured when the settle
+ * timer armed (`opts.baseline`, spanning the whole settle window — the cheapest,
+ * most accurate signal), or, lacking one, by sampling a fresh pair of fingerprints
+ * `FROZEN_STABILITY_MS` apart when `opts.sample` is set. With neither (the manual
+ * recheck — no settle window exists) the liveness check alone decides.
+ *
+ * Returns:
+ *   'frozen'  — idle + stable → safe to hand to the Watcher.
+ *   'active'  — still working / still emitting → belongs in In Progress.
+ *   'unknown' — the fingerprint round-trip failed → caller must NOT fail open into
+ *               the Watcher; leave the ticket put and surface/log instead.
+ */
+async function confirmSessionFrozen(
+  sessionId: string,
+  opts: { baseline?: Promise<SessionFingerprint | null>; sample?: boolean } = {}
+): Promise<'frozen' | 'active' | 'unknown'> {
+  // (a) Liveness — a session still actively working is, by definition, not frozen.
+  const statusEntry = useWorktreeStatusStore.getState().sessionStatuses[sessionId]
+  if (statusEntry?.status === 'working') return 'active'
+
+  // (b) Stability — compare the armed S0 baseline (if any) against a fresh
+  // fingerprint, or sample a fresh pair a short window apart. With neither signal
+  // the liveness verdict above stands (status already says idle → treat as frozen).
+  const s0 = opts.baseline ? await opts.baseline.catch(() => null) : null
+  if (!s0 && !opts.sample) return 'frozen'
+
+  try {
+    const { completionApi } = await import('@/api/completion-api')
+    const a = s0 ?? (await completionApi.getSessionFingerprint(sessionId))
+    if (!s0) await new Promise<void>((resolve) => setTimeout(resolve, FROZEN_STABILITY_MS))
+    const b = await completionApi.getSessionFingerprint(sessionId)
+    return a.length === b.length && a.hash === b.hash ? 'frozen' : 'active'
+  } catch (err) {
+    console.warn('[StrictVerify] frozen check: fingerprint round-trip failed', err)
+    return 'unknown'
+  }
+}
+
+/**
  * Maximum number of times the In Progress rescue may re-promote a single ticket
  * (per session) back to Review. After this it gives up, labels the card
  * "Re-checked", and leaves the ticket alone — the loop-breaker the user asked for.
@@ -1250,10 +1304,11 @@ async function maybeDispatchClaudeCliQueue(
 /**
  * Feature A settle handler (D1). Runs the two-gate Strict Verify pipeline:
  *
- *   Gate 1 (frozen check) — re-capture the session fingerprint (S1) and compare
- *     to the snapshot taken at arm time (S0). If they differ the session is still
- *     emitting output → bounce back to In Progress WITHOUT a model call. A missing
- *     S0 (capture failed / no session) fails open to Gate 2.
+ *   Gate 1 (frozen check, ALWAYS runs) — confirm the session is frozen before any
+ *     model call: compare the S0 snapshot taken at arm time against a fresh S1 (or,
+ *     when no S0 was armed, sample a fresh pair a short window apart). A session
+ *     still emitting output → bounce back to In Progress WITHOUT a model call; a
+ *     fingerprint round-trip failure leaves the ticket in Review (never fails open).
  *   Gate 2 (AI Watcher) — judge complete / asking-user / incomplete. Anything but
  *     "genuinely complete" stores the verdict and bounces back.
  *
@@ -1289,28 +1344,34 @@ async function onStrictVerifySettled(
   get().setVerifyProgress(key, { phase: 'checking' })
   const sessionId = current.current_session_id
 
-  // ── Gate 1: frozen check ──────────────────────────────────────────
-  const snap = frozenSnapshots.get(key)
-  if (sessionId && snap && snap.sessionId === sessionId) {
-    const s0 = await snap.fp.catch(() => null)
-    if (s0) {
-      let s1: SessionFingerprint | null = null
-      try {
-        const { completionApi } = await import('@/api/completion-api')
-        s1 = await completionApi.getSessionFingerprint(sessionId)
-      } catch (err) {
-        console.warn('Strict verify: failed to capture S1 fingerprint', err)
-      }
-      if (s1 && (s1.length !== s0.length || s1.hash !== s0.hash)) {
-        // Output changed since arm time → still emitting, not frozen. Bounce back
-        // without spending a model call.
-        frozenSnapshots.delete(key)
-        await moveTicketBackToInProgress(get, ticketId, projectId)
-        return
-      }
+  // ── Gate 1: frozen check (ALWAYS precedes the AI Watcher) ─────────────
+  // Strict Review rule: never judge with AI until the session is confirmed frozen.
+  // Prefer the S0 baseline captured at arm time (spans the whole settle window);
+  // when none was armed (Snapshot sub-gate off, or capture failed) sample a fresh
+  // pair instead. A still-emitting session is not done → back to In Progress.
+  if (sessionId) {
+    const snap = frozenSnapshots.get(key)
+    const baseline = snap && snap.sessionId === sessionId ? snap.fp : undefined
+    frozenSnapshots.delete(key)
+    const frozen = await confirmSessionFrozen(sessionId, { baseline, sample: true })
+    if (frozen === 'active') {
+      // Still emitting / working → not frozen → it's In Progress, not done.
+      await moveTicketBackToInProgress(get, ticketId, projectId)
+      return
     }
+    if (frozen === 'unknown') {
+      // Could not confirm frozen → do NOT fail open into the Watcher. Leave the
+      // ticket in Review (no verdict, no advance) so the miss is traceable.
+      console.error(
+        `[StrictVerify] frozen check INCONCLUSIVE for ticket ${ticketId} ` +
+          `(session ${sessionId}) — left in Review, Watcher NOT run`
+      )
+      get().setVerifyProgress(key, null)
+      return
+    }
+  } else {
+    frozenSnapshots.delete(key)
   }
-  frozenSnapshots.delete(key)
 
   // ── Gate 2: Ticket Reviewer (the AI Watcher) ──────────────────────
   // Skipped when the Reviewer sub-gate is off — a ticket that cleared the
@@ -2985,9 +3046,11 @@ export const useKanbanStore = create<KanbanState>()(
       },
 
       // Manual "Verify completion" — runs the Watcher (Gate 2) on demand, ignoring
-      // the per-session idempotency cache (forces a fresh model call) and skipping
-      // the deterministic frozen gate (Gate 1) entirely. Stores the verdict and
-      // bounces the ticket back to In Progress when incomplete or asking the user.
+      // the per-session idempotency cache (forces a fresh model call). Like the
+      // automatic pipeline it confirms the session is frozen FIRST (Strict Review
+      // rule): a session still working is still In Progress, so it is bounced there
+      // without a model call. Stores the verdict and bounces the ticket back to In
+      // Progress when the Watcher then judges it incomplete or asking the user.
       recheckTicketCompletion: async (ticketId: string, projectId: string) => {
         const ticket = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
         if (!ticket) return null
@@ -2998,6 +3061,17 @@ export const useKanbanStore = create<KanbanState>()(
         // pending timers so the auto pass can't fire a redundant judge after this
         // one. The rescue budget (rescueAttempts) is intentionally preserved.
         cancelAll(ticketKey(projectId, ticketId))
+
+        // Strict Review rule: confirm the session is frozen BEFORE judging with AI.
+        // No settle window exists here, so liveness (session status) is the signal:
+        // a session still actively working is still In Progress — bounce it there
+        // (when in Review) without spending a model call.
+        if ((await confirmSessionFrozen(sessionId)) === 'active') {
+          if (ticket.column === 'review') {
+            await moveTicketBackToInProgress(get, ticketId, projectId)
+          }
+          return null
+        }
 
         const { useSettingsStore } = await import('./useSettingsStore')
         const settings = useSettingsStore.getState()
