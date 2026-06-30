@@ -48,6 +48,7 @@ const electronMock = vi.hoisted(() => {
       getVersion: vi.fn(() => '1.1.10'),
       isPackaged: false,
       quit: vi.fn(),
+      relaunch: vi.fn(),
       on: vi.fn(),
       once: vi.fn(),
       whenReady: vi.fn(() => Promise.resolve()),

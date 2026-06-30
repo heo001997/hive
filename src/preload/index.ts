@@ -5,7 +5,8 @@ const desktopBridge = {
   getLocalEnvironmentBootstrap: async () => decodeLocalEnvironmentBootstrapArg(process.argv),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   startHiveEnterpriseLogin: (serverUrl: string): Promise<{ token: string }> =>
-    ipcRenderer.invoke('hive-enterprise:start-login', { serverUrl })
+    ipcRenderer.invoke('hive-enterprise:start-login', { serverUrl }),
+  relaunchApp: (): Promise<void> => ipcRenderer.invoke('app:relaunch')
 }
 
 // Force 100% zoom — Ghostty's native NSView overlay requires 1:1 CSS-to-AppKit

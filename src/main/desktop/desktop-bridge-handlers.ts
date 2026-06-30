@@ -3,7 +3,7 @@ import {
   type LocalEnvironmentBootstrap
 } from '@shared/desktop-bridge'
 import { getDesktopBackendBootstrap } from './backend-manager'
-import { ipcMain, shell } from 'electron'
+import { app, ipcMain, shell } from 'electron'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 
@@ -35,6 +35,14 @@ const normalizeHiveEnterpriseDesktopAuthServerUrl = (value: string): string => {
 }
 
 export function registerDesktopBridgeHandlers(): void {
+  // Quit and relaunch the app. relaunch() schedules a fresh instance to start
+  // once this process exits; quit() runs the normal will-quit cleanup chain and
+  // then app.exit(0), which honors the scheduled relaunch.
+  ipcMain.handle('app:relaunch', () => {
+    app.relaunch()
+    app.quit()
+  })
+
   ipcMain.handle('hive-enterprise:start-login', async (_event, args: HiveEnterpriseLoginArgs) => {
     const serverUrl =
       typeof args?.serverUrl === 'string'
