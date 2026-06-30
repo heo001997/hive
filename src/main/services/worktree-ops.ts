@@ -78,6 +78,12 @@ export interface CreateFromBranchParams {
   branchName: string
   prNumber?: number
   nameHint?: string
+  /**
+   * Check out `branchName` directly into the new worktree instead of forking a
+   * fresh ticket-named branch off it. The worktree is named after the branch and
+   * its commits land on that existing branch.
+   */
+  useExistingBranch?: boolean
 }
 
 export interface WorktreeResult {
@@ -620,17 +626,23 @@ export const createWorktreeFromBranchOpEffect = (
 
       const gitService = createGitService(params.projectPath)
       const result = yield* Effect.tryPromise(() =>
-        gitService.createWorktreeFromBranch(
-          params.projectName,
-          params.branchName,
-          breedType,
-          params.prNumber,
-          {
-            autoPull: autoPullEnabled,
-            nameHint: params.nameHint,
-            worktreeCreateScript: project?.worktree_create_script ?? null
-          }
-        )
+        params.useExistingBranch
+          ? // The worktree-create script forks a *new* branch, so it is N/A when
+            // assigning an existing one — intentionally not passed here.
+            gitService.createWorktreeFromExistingBranch(params.projectName, params.branchName, {
+              autoPull: autoPullEnabled
+            })
+          : gitService.createWorktreeFromBranch(
+              params.projectName,
+              params.branchName,
+              breedType,
+              params.prNumber,
+              {
+                autoPull: autoPullEnabled,
+                nameHint: params.nameHint,
+                worktreeCreateScript: project?.worktree_create_script ?? null
+              }
+            )
       )
       if (!result.success || !result.path) {
         return {
@@ -647,7 +659,9 @@ export const createWorktreeFromBranchOpEffect = (
         base_branch: result.baseBranch
       })
 
-      if (params.nameHint) {
+      // A deliberate branch name (ticket-named via nameHint, or an assigned
+      // existing branch) shouldn't be auto-renamed from the first session's title.
+      if (params.nameHint || params.useExistingBranch) {
         yield* worktreeRepo.update(worktree.id, { branch_renamed: 1 })
       }
 

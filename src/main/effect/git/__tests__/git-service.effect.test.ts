@@ -14,11 +14,19 @@ const runGit = <A, E>(program: Effect.Effect<A, E, Git>) =>
 describe('GitLive', () => {
   let repoPath: string
   let homePath: string
+  let worktreesPath: string
 
   beforeEach(async () => {
     repoPath = mkdtempSync(join(tmpdir(), 'hive-git-effect-'))
     homePath = mkdtempSync(join(tmpdir(), 'hive-home-'))
+    worktreesPath = mkdtempSync(join(tmpdir(), 'hive-worktrees-'))
     vi.stubEnv('HOME', homePath)
+    // getHiveWorktreesDir() resolves via os.homedir() (which ignores the HOME
+    // stub on macOS) or HIVE_WORKTREES_DIR. Pin the latter to a temp dir so each
+    // test gets an isolated worktrees root — otherwise worktree-create ops leak
+    // into the real ~/.hive-worktrees and the breed/name-collision suffix climbs
+    // across runs, making these tests non-deterministic.
+    vi.stubEnv('HIVE_WORKTREES_DIR', worktreesPath)
     const git = simpleGit(repoPath)
     await git.init()
     await git.addConfig('user.email', 'test@test.com')
@@ -31,6 +39,7 @@ describe('GitLive', () => {
   afterEach(() => {
     rmSync(repoPath, { recursive: true, force: true })
     rmSync(homePath, { recursive: true, force: true })
+    rmSync(worktreesPath, { recursive: true, force: true })
     vi.unstubAllEnvs()
   })
 
@@ -141,6 +150,59 @@ describe('GitLive', () => {
       expect(result.right.branchName).toBe('ticket-session')
       expect(result.right.path).toBeDefined()
       expect(existsSync(result.right.path!)).toBe(true)
+    }
+  })
+
+  it('assigns an existing local branch directly instead of forking a new one', async () => {
+    const git = simpleGit(repoPath)
+    // The repo's default branch is the diff/PR base; capture it before creating
+    // the feature branch (which is NOT checked out, so the repo stays on it).
+    const defaultBranch = (await git.branch()).current
+    // Create a branch without checking it out in the main repo so it is free to
+    // be assigned to a new worktree.
+    await git.branch(['feature-assign'])
+
+    const result = await runGit(
+      Effect.gen(function* () {
+        const g = yield* Git
+        return yield* g.worktree
+          .createFromExistingBranch(repoPath, 'project', 'feature-assign', { autoPull: false })
+          .pipe(Effect.timeout('2 seconds'))
+      })
+    )
+
+    expect(Either.isRight(result)).toBe(true)
+    if (Either.isRight(result)) {
+      expect(result.right.success).toBe(true)
+      // Checked out as-is — NOT forked into a ticket-named breed branch.
+      expect(result.right.branchName).toBe('feature-assign')
+      // Base is the repo default (PR target), distinct from the assigned branch —
+      // otherwise `git diff <base>...HEAD` would be empty and the PR self-targeted.
+      expect(result.right.baseBranch).toBe(defaultBranch)
+      expect(result.right.baseBranch).not.toBe('feature-assign')
+      expect(result.right.path).toBeDefined()
+      expect(existsSync(result.right.path!)).toBe(true)
+      // The new worktree's HEAD sits on the assigned branch.
+      const wtBranch = (await simpleGit(result.right.path!).branch()).current
+      expect(wtBranch).toBe('feature-assign')
+    }
+  })
+
+  it('refuses to assign a branch already checked out elsewhere', async () => {
+    const currentBranch = (await simpleGit(repoPath).branch()).current
+
+    const result = await runGit(
+      Effect.flatMap(Git, (g) =>
+        g.worktree.createFromExistingBranch(repoPath, 'project', currentBranch, {
+          autoPull: false
+        })
+      )
+    )
+
+    expect(Either.isRight(result)).toBe(true)
+    if (Either.isRight(result)) {
+      expect(result.right.success).toBe(false)
+      expect(result.right.error).toMatch(/already checked out/i)
     }
   })
 })

@@ -33,7 +33,9 @@ interface AutoLaunchTicket {
 }
 
 interface PendingLaunchConfig {
-  worktree: { type: 'new'; sourceBranch: string } | { type: 'existing'; worktreeId: string }
+  worktree:
+    | { type: 'new'; sourceBranch: string; useExistingBranch?: boolean }
+    | { type: 'existing'; worktreeId: string }
   prompt: string
   mode: AutoLaunchMode
   model: { providerID: string; modelID: string; variant?: string } | null
@@ -138,7 +140,10 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
     // 1. Resolve worktree
     let worktreeId: string
     if (config.worktree.type === 'new') {
-      const nameHint = canonicalizeTicketTitle(ticket.title)
+      const useExistingBranch = config.worktree.useExistingBranch === true
+      // Assigning an existing branch keeps the branch's own name; only a forked
+      // branch is named after the ticket.
+      const nameHint = useExistingBranch ? undefined : canonicalizeTicketTitle(ticket.title) || undefined
       const result = await useWorktreeStore
         .getState()
         .createWorktreeFromBranch(
@@ -146,7 +151,8 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
           project.path,
           project.name,
           config.worktree.sourceBranch,
-          nameHint || undefined
+          nameHint,
+          useExistingBranch
         )
       if (!result.success || !result.worktree?.id) {
         toast.error(`Auto-launch failed: ${result.error || 'Could not create worktree'}`)

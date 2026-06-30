@@ -306,6 +306,15 @@ class GitFacade {
     return runResult(Effect.flatMap(Git, (git) => git.worktree.createFromBranch(repoPath, projectName, branchName, breedType, prNumber, options)))
   }
 
+  createWorktreeFromExistingBranch(
+    repoPath: string,
+    projectName: string,
+    branchName: string,
+    options?: { autoPull?: boolean; worktreeCreateScript?: string | null }
+  ): Promise<CreateWorktreeResult> {
+    return runResult(Effect.flatMap(Git, (git) => git.worktree.createFromExistingBranch(repoPath, projectName, branchName, options)))
+  }
+
   getRemoteUrl(repoPath: string, remote?: string): Promise<GitRemoteUrlResult> {
     return runResult(Effect.flatMap(Git, (git) => git.repo.getRemoteUrl(repoPath, remote)))
   }

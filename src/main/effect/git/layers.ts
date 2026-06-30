@@ -917,6 +917,103 @@ const make = Effect.gen(function* () {
             }
             return { success: false as const, error: 'Failed to create worktree from branch after 3 attempts due to name collisions' }
           })
+        }),
+      createFromExistingBranch: (repoPath, projectName, branchName, options) =>
+        writeOp(repoPath, 'git worktree add (existing branch)', async (git) => {
+          const projectWorktreesDir = ensureWorktreesDir(projectName)
+          const MAX_ATTEMPTS = 3
+
+          // Resolve the requested branch to a local branch we can attach. A local
+          // branch is checked out directly; a remote-only ref (e.g. `origin/foo`)
+          // gets a local tracking branch created off it. This is the difference
+          // from createFromBranch, which always forks a *new* branch off the ref.
+          const branchSummary = await git.branch()
+          const localBranches = branchSummary.all
+          // The diff/PR base is the repo's default branch (what a PR for the
+          // assigned branch targets) — NOT the assigned branch itself, or the
+          // ticket diff (`git diff <base>...HEAD`) would compare a branch to
+          // itself (empty) and `gh pr create --base` would target the branch
+          // itself. The guard below refuses a branch already checked out (incl.
+          // this default), so base and assigned branch are always distinct.
+          const defaultBranch = branchSummary.current
+          let localName = branchName
+          let track = false
+          if (!localBranches.includes(branchName)) {
+            const slash = branchName.indexOf('/')
+            const short = slash > 0 ? branchName.slice(slash + 1) : branchName
+            localName = short
+            // Only track the remote if no local branch with the short name exists.
+            track = !localBranches.includes(short)
+          }
+
+          // git allows only one worktree per branch — refuse a branch already
+          // checked out elsewhere (incl. the main repo). The picker filters these
+          // out; this is the backend guard.
+          const worktreeOutput = await git.raw(['worktree', 'list', '--porcelain'])
+          const checkedOutBranches = worktreeOutput
+            .split('\n')
+            .filter((line) => line.startsWith('branch '))
+            .map((line) => line.replace('branch refs/heads/', '').replace('branch ', ''))
+          if (checkedOutBranches.includes(localName)) {
+            return {
+              success: false as const,
+              error: `Branch "${localName}" is already checked out in another worktree`
+            }
+          }
+
+          // Honor auto-pull for an existing *local* branch: fast-forward its ref
+          // from origin before checkout so the worktree starts at the latest tip.
+          // Skipped for the tracking case (the new branch is created at the remote
+          // tip already) and tolerated on failure (non-fast-forward, no upstream,
+          // no origin) so local-only commits are never clobbered.
+          const autoPull = options?.autoPull !== false
+          let pulled = false
+          if (autoPull && !track) {
+            try {
+              const remotes = await git.getRemotes()
+              if (remotes.find((r) => r.name === 'origin')) {
+                await git.fetch(['origin', `${localName}:${localName}`])
+                pulled = true
+              }
+            } catch {
+              // Non-fast-forward or missing upstream: keep the local branch as-is.
+            }
+          }
+
+          // Branch names can contain slashes; sanitize for the directory only and
+          // keep the real branch name for git + the DB record.
+          const safeName = localName.replace(/[/\\:]/g, '-') || 'branch'
+          for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            const dirName = attempt === 1 ? safeName : `${safeName}-${attempt}`
+            const worktreePath = join(projectWorktreesDir, `${projectName}--${dirName}`)
+            if (existsSync(worktreePath)) continue
+            try {
+              // NOTE: a custom worktree-create script is intentionally skipped here —
+              // its contract is to fork a *new* branch, which conflicts with checking
+              // out an existing one. The post-create setup script still runs.
+              if (track) {
+                await git.raw(['worktree', 'add', '--track', '-b', localName, worktreePath, branchName])
+              } else {
+                await git.raw(['worktree', 'add', worktreePath, localName])
+              }
+              return {
+                success: true as const,
+                name: localName,
+                branchName: localName,
+                path: worktreePath,
+                baseBranch: defaultBranch,
+                pullInfo: { pulled, updated: false }
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Unknown error'
+              if (message.toLowerCase().includes('already exists') && attempt < MAX_ATTEMPTS) continue
+              throw error
+            }
+          }
+          return {
+            success: false as const,
+            error: 'Failed to create worktree from existing branch after 3 attempts due to name collisions'
+          }
         })
     },
     branch: {
