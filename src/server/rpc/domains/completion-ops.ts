@@ -53,6 +53,21 @@ export interface GetSessionFingerprintParams {
   sessionId: string
 }
 
+export interface GetTicketTranscriptParams {
+  sessionId: string
+  ticketId: string
+  /** Char budget for the returned transcript tail. */
+  maxChars?: number
+}
+
+/** Result envelope for {@link getTicketTranscript}. */
+export interface GetTicketTranscriptResult {
+  success: boolean
+  /** The transcript tail (present on success; may be empty when no source had text). */
+  text?: string
+  error?: string
+}
+
 export interface TestStrictVerifyProviderParams {
   provider?: CompletionCheckProvider
   /** Optional model id forwarded to the provider as an override. */
@@ -77,6 +92,9 @@ export interface CompletionOpsRpcService {
   readonly testStrictVerifyProvider: (
     params: TestStrictVerifyProviderParams
   ) => Effect.Effect<CompletionCheckResult, unknown, never>
+  readonly getTicketTranscript: (
+    params: GetTicketTranscriptParams
+  ) => Effect.Effect<GetTicketTranscriptResult, unknown, never>
 }
 
 /** Injectable dependencies — default to the real DB + detector via dynamic import. */
@@ -294,6 +312,14 @@ const testProviderParamsSchema = z
   })
   .strict()
 
+const getTicketTranscriptParamsSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    ticketId: z.string().min(1),
+    maxChars: z.number().int().positive().optional()
+  })
+  .strict()
+
 /** A trivial, obviously-complete transcript used only to prove the provider answers. */
 const TEST_PROVIDER_TRANSCRIPT =
   'Assistant: I have finished the task. All requirements are implemented and verified. Done.'
@@ -434,6 +460,59 @@ export const makeLiveCompletionOpsRpcService = (
         }
       },
       catch: (cause) => cause
+    }),
+
+  // Return the same provider-agnostic transcript tail the Watcher judges, but
+  // WITHOUT calling a model — the renderer's Speckit review-gate reads this tail
+  // to look for a `board-ticket-drafts` block the review agent emitted. Mirrors
+  // `detectTicketCompletion`'s resolution (db → session/worktree →
+  // resolveTranscriptMessages → buildTranscriptTail) so the gate sees exactly
+  // what the Watcher would. Resolves to a `{ success, … }` envelope; never throws.
+  getTicketTranscript: (params) =>
+    Effect.tryPromise({
+      try: async (): Promise<GetTicketTranscriptResult> => {
+        try {
+          const loadDatabase =
+            deps.loadDatabase ?? (async () => (await import('../../../main/db')).getDatabase())
+          const buildTail =
+            deps.buildTail ??
+            (await import('../../../main/services/completion-detector')).buildTranscriptTail
+
+          const db = await loadDatabase()
+
+          const ticket = db.getKanbanTicket(params.ticketId)
+          if (!ticket) {
+            return { success: false, error: `Ticket not found: ${params.ticketId}` }
+          }
+
+          const session = db.getSession(params.sessionId)
+          const worktree = session?.worktree_id ? db.getWorktree(session.worktree_id) : null
+
+          const messages = await resolveTranscriptMessages(
+            db,
+            session,
+            worktree,
+            { sessionId: params.sessionId, ticketId: params.ticketId, maxChars: params.maxChars },
+            deps
+          )
+          const text = buildTail(messages, params.maxChars)
+          log.info('[StrictVerify] getTicketTranscript', {
+            ticketId: params.ticketId,
+            sessionId: params.sessionId,
+            tailChars: text.length,
+            tailEnd: text.length > 500 ? `…${preview(text.slice(-500), 500)}` : preview(text, 500)
+          })
+          return { success: true, text }
+        } catch (err) {
+          log.error(
+            '[StrictVerify] getTicketTranscript failed',
+            err instanceof Error ? err : new Error(String(err)),
+            { ticketId: params.ticketId }
+          )
+          return { success: false, error: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      catch: (cause) => cause
     })
 })
 
@@ -472,6 +551,17 @@ export const makeCompletionOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.testStrictVerifyProvider(parsed)
+        })
+    ],
+    [
+      'completionOps.getTicketTranscript',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => getTicketTranscriptParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.getTicketTranscript(parsed)
         })
     ]
   ])
