@@ -10,7 +10,11 @@ vi.mock('@/api/worktree-api', () => ({
   }
 }))
 
-import { useWorktreeContextCacheStore } from './useWorktreeContextCacheStore'
+import {
+  evictOldestSummaries,
+  MAX_CACHED_SUMMARIES,
+  useWorktreeContextCacheStore
+} from './useWorktreeContextCacheStore'
 
 const reset = (): void => {
   useWorktreeContextCacheStore.setState({ summaries: {} })
@@ -114,5 +118,41 @@ describe('useWorktreeContextCacheStore.getOrGenerate', () => {
       .getOrGenerate({ worktreeId: 'wt-1', worktreePath: '/repo/wt-1', branch: 'feature' })
 
     expect(harness.generateContextSummary).toHaveBeenCalledTimes(2)
+  })
+
+  it('caps the persisted cache, evicting the oldest worktree summaries', async () => {
+    harness.generateContextSummary.mockResolvedValue({ success: true, summary: 'x' })
+
+    // Seed the map already at the cap with old timestamps, then generate one more.
+    const seeded: Record<string, { summary: string; branch: string; generatedAt: number }> = {}
+    for (let i = 0; i < MAX_CACHED_SUMMARIES; i++) {
+      seeded[`old-${i}`] = { summary: 'x', branch: 'feature', generatedAt: i }
+    }
+    useWorktreeContextCacheStore.setState({ summaries: seeded })
+
+    await useWorktreeContextCacheStore
+      .getState()
+      .getOrGenerate({ worktreeId: 'fresh', worktreePath: '/repo/fresh', branch: 'feature' })
+
+    const after = useWorktreeContextCacheStore.getState().summaries
+    expect(Object.keys(after)).toHaveLength(MAX_CACHED_SUMMARIES)
+    expect(after.fresh).toBeDefined() // newest kept
+    expect(after['old-0']).toBeUndefined() // oldest evicted
+  })
+})
+
+describe('evictOldestSummaries', () => {
+  const summary = (generatedAt: number) => ({ summary: 's', branch: 'main', generatedAt })
+
+  it('returns the same reference unchanged when within the cap', () => {
+    const within = { a: summary(1), b: summary(2) }
+    expect(evictOldestSummaries(within, 5)).toBe(within)
+  })
+
+  it('drops the oldest entries by generatedAt when over the cap', () => {
+    const over = { oldest: summary(10), middle: summary(20), newest: summary(30) }
+    const result = evictOldestSummaries(over, 2)
+    expect(Object.keys(result).sort()).toEqual(['middle', 'newest'])
+    expect(result.oldest).toBeUndefined()
   })
 })

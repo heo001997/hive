@@ -41,7 +41,12 @@ export const PROC_CPU_SUSTAINED_SAMPLES = 3
 export const APP_CPU_SUSTAINED_PCT = 200 // ~2 cores fully pinned by the tree
 export const APP_CPU_SUSTAINED_SAMPLES = 3
 export const EVENT_LOOP_LAG_MS = 250
-export const RSS_GROWTH_MIN_BYTES = 400 * 1024 * 1024
+// Absolute floor below which RSS growth is never alerted. A feature-rich
+// Electron renderer (xterm buffers, Monaco, many session stores) legitimately
+// settles into a multi-hundred-MB working set, so 400MB cried wolf — a renderer
+// that opened a few terminals would trip it during normal use. 800MB only fires
+// once the renderer is genuinely large.
+export const RSS_GROWTH_MIN_BYTES = 800 * 1024 * 1024
 export const RSS_GROWTH_FACTOR = 1.5
 // A process's first sample is its cold start, not its steady state: the renderer
 // in particular climbs to a multi-hundred-MB working set as the user opens
@@ -49,8 +54,15 @@ export const RSS_GROWTH_FACTOR = 1.5
 // first sample turns the normal cold->warm settle into a phantom "RSS grew to
 // N MB" alert (the false positive this monitor kept firing). So for a warm-up
 // window we let the baseline rise with the process — only growth *beyond* the
-// warmed working set, once this window has elapsed, counts as a real leak.
-export const RSS_BASELINE_WARMUP_MS = 90_000
+// warmed working set, once this window has elapsed, counts as a real leak. The
+// window is generous (5 min) because users keep opening sessions/editors well
+// past the first 90s, and each is a legitimate step up in the working set.
+export const RSS_BASELINE_WARMUP_MS = 5 * 60_000
+// RSS must stay above the growth threshold for this many consecutive samples
+// before alerting. A single sample over the line is often a transient spike
+// (GC not yet run, a burst of PTY output); a real leak stays elevated. Mirrors
+// the sustained-samples gate the per-process CPU breakout already uses.
+export const RSS_GROWTH_SUSTAINED_SAMPLES = 3
 const ALERT_COOLDOWN_MS = 60_000
 
 // Ancestors we'll keep climbing through when resolving the app root: Electron
@@ -404,6 +416,8 @@ class SystemMonitorService {
   private appCpuAlerted = false // edge-trigger latch for the app-CPU episode
   private procCpuSustain = new Map<number, number>()
   private procCpuAlerted = new Set<number>() // pids already alerted this breakout
+  private rssGrowthSustain = new Map<number, number>() // consecutive over-threshold samples
+  private rssGrowthAlerted = new Set<number>() // pids already alerted this growth step
   private alertedOrphans = new Set<number>() // pids already alerted while orphaned
   private alertCooldown = new Map<string, number>()
   private alertSeq = 0
@@ -791,15 +805,27 @@ class SystemMonitorService {
       }
 
       if (p.flags.includes('RSS_GROWTH')) {
-        this.emitAlert({
-          severity: 'warning',
-          kind: 'rss-growth',
-          message: `${p.label} (pid ${p.pid}) RSS grew to ${(p.rss / 1048576).toFixed(0)} MB`,
-          pid: p.pid
-        })
-        // Ratchet the baseline up to the current size so we only alert again on
-        // *further* growth — not every sample forever once a process grew once.
-        this.rssBaseline.set(p.pid, p.rss)
+        // Require the growth to persist across samples before alerting, so a
+        // momentary spike that the next GC reclaims never cries wolf.
+        const count = (this.rssGrowthSustain.get(p.pid) ?? 0) + 1
+        this.rssGrowthSustain.set(p.pid, count)
+        if (count >= RSS_GROWTH_SUSTAINED_SAMPLES && !this.rssGrowthAlerted.has(p.pid)) {
+          this.rssGrowthAlerted.add(p.pid)
+          this.emitAlert({
+            severity: 'warning',
+            kind: 'rss-growth',
+            message: `${p.label} (pid ${p.pid}) RSS grew to ${(p.rss / 1048576).toFixed(0)} MB`,
+            pid: p.pid
+          })
+          // Ratchet the baseline up to the current size so we only alert again on
+          // *further* growth — not every sample forever once a process grew once.
+          // The flag clears next sample (rss is no longer > new baseline x factor),
+          // which re-arms the gate below for the next genuine step up.
+          this.rssBaseline.set(p.pid, p.rss)
+        }
+      } else {
+        this.rssGrowthSustain.set(p.pid, 0)
+        this.rssGrowthAlerted.delete(p.pid)
       }
       if (p.flags.includes('ORPHAN')) {
         orphanPids.add(p.pid)
@@ -829,6 +855,12 @@ class SystemMonitorService {
       if (!seen.has(pid)) {
         this.procCpuSustain.delete(pid)
         this.procCpuAlerted.delete(pid)
+      }
+    }
+    for (const pid of [...this.rssGrowthSustain.keys()]) {
+      if (!seen.has(pid)) {
+        this.rssGrowthSustain.delete(pid)
+        this.rssGrowthAlerted.delete(pid)
       }
     }
     for (const pid of [...this.alertedOrphans]) {

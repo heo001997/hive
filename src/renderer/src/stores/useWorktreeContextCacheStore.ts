@@ -27,9 +27,35 @@ interface WorktreeContextCacheState {
   clearSummary: (worktreeId: string) => void
 }
 
+// Cap on retained summaries. Each is a CLI-gathered repo digest (can be tens of
+// KB) and the map is persisted to localStorage, so without a bound it grows once
+// per worktree forever — leaking renderer RAM and eventually blowing the
+// localStorage quota. A worktree's summary regenerates on demand, so evicting a
+// stale one is cheap.
+export const MAX_CACHED_SUMMARIES = 40
+
 // Single-flight lock. Lives outside the store (not state, never persisted) so
 // concurrent callers for the same worktree await one shared promise.
 const inFlight = new Map<string, Promise<string>>()
+
+/**
+ * Return `summaries` trimmed to at most `max` entries, dropping the oldest by
+ * `generatedAt` first. Pure (no store access) so it can be unit-tested. Returns
+ * the same reference unchanged when already within the cap.
+ */
+export function evictOldestSummaries<T extends { generatedAt: number }>(
+  summaries: Record<string, T>,
+  max = MAX_CACHED_SUMMARIES
+): Record<string, T> {
+  const ids = Object.keys(summaries)
+  if (ids.length <= max) return summaries
+  const keep = ids
+    .sort((a, b) => summaries[b].generatedAt - summaries[a].generatedAt)
+    .slice(0, max)
+  const next: Record<string, T> = {}
+  for (const id of keep) next[id] = summaries[id]
+  return next
+}
 
 export const useWorktreeContextCacheStore = create<WorktreeContextCacheState>()(
   persist(
@@ -49,10 +75,10 @@ export const useWorktreeContextCacheStore = create<WorktreeContextCacheState>()(
             const summary = result.success && result.summary ? result.summary : ''
             if (summary) {
               set((state) => ({
-                summaries: {
+                summaries: evictOldestSummaries({
                   ...state.summaries,
                   [worktreeId]: { summary, branch, generatedAt: Date.now() }
-                }
+                })
               }))
             }
             return summary

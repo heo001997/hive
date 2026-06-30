@@ -1,7 +1,40 @@
+import { exec } from 'node:child_process'
 import * as pty from 'node-pty'
 import { createLogger } from './logger'
 
 const log = createLogger({ component: 'PtyService' })
+
+/**
+ * Collect every transitive descendant pid of `rootPid` from a `ps` listing.
+ * Pure so it can be unit-tested without spawning real processes. Used to fell a
+ * PTY's whole subtree by absolute pid on teardown — reaching grandchildren (e.g.
+ * MCP servers) that `setsid`'d into their own process group and so are invisible
+ * to a `kill(-pgid)` group signal.
+ */
+export function collectDescendants(
+  rows: Array<{ pid: number; ppid: number }>,
+  rootPid: number
+): number[] {
+  const childrenByParent = new Map<number, number[]>()
+  for (const { pid, ppid } of rows) {
+    const siblings = childrenByParent.get(ppid)
+    if (siblings) siblings.push(pid)
+    else childrenByParent.set(ppid, [pid])
+  }
+  const descendants: number[] = []
+  const seen = new Set<number>([rootPid])
+  const stack = [rootPid]
+  while (stack.length > 0) {
+    const parent = stack.pop() as number
+    for (const child of childrenByParent.get(parent) ?? []) {
+      if (seen.has(child)) continue // guards against a malformed cyclic listing
+      seen.add(child)
+      descendants.push(child)
+      stack.push(child)
+    }
+  }
+  return descendants
+}
 
 /**
  * Terminal backend type.
@@ -226,6 +259,55 @@ class PtyService {
     }
   }
 
+  /**
+   * Best-effort fast reap of subtree stragglers the group signal can't reach:
+   * grandchildren that `setsid`'d into their own group (notably
+   * `@delorenj/mcp-server-trello`, whose un-`.unref()`'d `setInterval` keeps it
+   * alive past stdin EOF). The synchronous group SIGTERM in `destroy()` downs the
+   * leader and same-group children; this snapshots the live tree and kills the
+   * setsid'd ones by absolute pid (which still lands after a reparent).
+   *
+   * It races the leader's death — if the leader exits first the straggler has
+   * already reparented to PID 1 and dropped out of the subtree, so the snapshot
+   * misses it. That's fine: the periodic orphan reaper (now with a SIGKILL
+   * escalation) is the guarantee; this just usually beats it, sparing a 0–15s
+   * orphan window and its alert. SIGTERM here, then a SIGKILL backstop.
+   */
+  private killSubtreeStragglers(pid: number): void {
+    if (!pid || process.platform === 'win32') return
+    exec('ps -Ao pid,ppid', { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      if (err) {
+        log.warn('Subtree snapshot failed; relying on group kill', { pid, err: String(err) })
+        return
+      }
+      const rows: Array<{ pid: number; ppid: number }> = []
+      for (const line of stdout.split('\n')) {
+        const match = line.trim().match(/^(\d+)\s+(\d+)/)
+        if (match) rows.push({ pid: Number(match[1]), ppid: Number(match[2]) })
+      }
+      const descendants = collectDescendants(rows, pid)
+      if (descendants.length === 0) return
+      for (const child of descendants) {
+        try {
+          process.kill(child, 'SIGTERM')
+        } catch (killErr) {
+          const code = (killErr as NodeJS.ErrnoException)?.code
+          if (code !== 'ESRCH') log.warn('Failed to SIGTERM PTY descendant', { pid: child, code })
+        }
+      }
+      log.info('Signalled PTY descendant subtree', { pid, count: descendants.length })
+      setTimeout(() => {
+        for (const child of descendants) {
+          try {
+            process.kill(child, 'SIGKILL')
+          } catch {
+            // ESRCH: exited cleanly on the SIGTERM — the happy path.
+          }
+        }
+      }, 2000).unref?.()
+    })
+  }
+
   destroy(id: string): void {
     const instance = this.ptys.get(id)
     if (!instance) {
@@ -234,15 +316,19 @@ class PtyService {
     }
     const pid = instance.pty.pid
     log.info('Destroying PTY', { id, pid })
+    // Group SIGTERM first (synchronous) so the leader and same-group children go
+    // down immediately and reliably — including on app quit, where async work may
+    // not get to run. Then kick the best-effort subtree snapshot to mop up any
+    // setsid'd grandchildren the group signal can't reach, racing it against the
+    // leader's death (see killSubtreeStragglers). pty.kill() also tears down the
+    // master fd; the SIGKILL backstop (unref'd) finishes off anything stubborn.
+    this.killProcessGroup(pid, 'SIGTERM')
+    this.killSubtreeStragglers(pid)
     try {
       instance.pty.kill()
     } catch (err) {
       log.error('Error killing PTY', err instanceof Error ? err : new Error(String(err)), { id })
     }
-    // Reap the whole process group so grandchild MCP servers don't orphan to
-    // PID 1. SIGTERM first for a clean exit, then a SIGKILL backstop for any
-    // stragglers. The backstop timer is unref'd so it never keeps the app alive.
-    this.killProcessGroup(pid, 'SIGTERM')
     setTimeout(() => this.killProcessGroup(pid, 'SIGKILL'), 2000).unref?.()
     this.ptys.delete(id)
   }

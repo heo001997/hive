@@ -24,6 +24,14 @@ const log = createLogger({ component: 'OrphanMcpReaper' })
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
+// How long to wait after SIGTERM before force-killing a still-living orphan.
+// A SIGTERM that doesn't throw is *not* proof the process exited: some MCP
+// servers install a graceful-shutdown handler but keep a non-`.unref()`'d timer
+// pending, so the event loop never drains and the process lingers — only to be
+// re-detected and "reaped" again on the next sweep. The escalation below makes a
+// reap actually stick.
+const REAP_SIGKILL_GRACE_MS = 2_000
+
 // Matches the npm-exec wrapper and the node child for MCP servers, e.g.
 // "npm exec @delorenj/mcp-server-trello" and ".../mcp-server-trello/build/index.js".
 // Exported so the system monitor can reuse the same orphan-matching heuristic.
@@ -50,7 +58,7 @@ export function reapOrphans(pattern: RegExp): Promise<number> {
         resolve(0)
         return
       }
-      let killed = 0
+      const signalled: number[] = []
       for (const line of stdout.split('\n')) {
         const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)
         if (!match) continue
@@ -62,7 +70,7 @@ export function reapOrphans(pattern: RegExp): Promise<number> {
         if (!pattern.test(command)) continue
         try {
           process.kill(pid, 'SIGTERM')
-          killed++
+          signalled.push(pid)
           log.info('Reaped orphaned process', { pid, command: command.slice(0, 160) })
         } catch (killErr) {
           const code = (killErr as NodeJS.ErrnoException)?.code
@@ -71,11 +79,45 @@ export function reapOrphans(pattern: RegExp): Promise<number> {
           }
         }
       }
-      if (killed > 0) {
-        log.info('Orphan sweep complete', { killed })
+      if (signalled.length > 0) {
+        log.info('Orphan sweep complete', { killed: signalled.length })
+        // Backstop: SIGKILL any that ignored the SIGTERM, so a stubborn server
+        // can't survive sweep after sweep. Unref'd so it never holds the app
+        // open. We re-scan rather than trust the stale pid list, so a pid that
+        // exited and got recycled into something innocent is never hit.
+        setTimeout(() => escalateKill(signalled, pattern), REAP_SIGKILL_GRACE_MS).unref?.()
       }
-      resolve(killed)
+      resolve(signalled.length)
     })
+  })
+}
+
+/**
+ * Re-scan and SIGKILL any of `pids` that are STILL orphaned (ppid===1) and still
+ * match `pattern`. Both guards matter: skipping a pid that reparented away or got
+ * recycled into an unrelated command means the hard kill can only ever land on a
+ * process we already SIGTERM'd and that refused to die.
+ */
+function escalateKill(pids: number[], pattern: RegExp): void {
+  const targets = new Set(pids)
+  exec('ps -Ao pid,ppid,command', { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+    if (err) return
+    for (const line of stdout.split('\n')) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/)
+      if (!match) continue
+      const pid = Number(match[1])
+      const ppid = Number(match[2])
+      const command = match[3]
+      if (!targets.has(pid)) continue
+      if (ppid !== 1) continue // reparented away — leave it alone
+      if (!pattern.test(command)) continue // pid recycled into something else
+      try {
+        process.kill(pid, 'SIGKILL')
+        log.info('Force-killed orphan that ignored SIGTERM', { pid })
+      } catch {
+        // ESRCH: it finally exited on its own between the scan and the kill.
+      }
+    }
   })
 }
 

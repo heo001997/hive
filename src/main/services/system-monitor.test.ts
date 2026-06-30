@@ -217,8 +217,8 @@ describe('computeProcessFlags', () => {
   })
 
   it('flags RSS_GROWTH past the floor and growth factor', () => {
-    const baseline = 300 * 1024 * 1024
-    const grown = 600 * 1024 * 1024
+    const baseline = 700 * 1024 * 1024
+    const grown = 1200 * 1024 * 1024 // > 800MB floor and > baseline x 1.5
     expect(grown).toBeGreaterThan(RSS_GROWTH_MIN_BYTES)
     expect(computeProcessFlags({ cpuPct: 5, rss: grown, ppid: 200 }, baseline)).toEqual([
       'RSS_GROWTH'
@@ -227,7 +227,15 @@ describe('computeProcessFlags', () => {
 
   it('does not flag RSS_GROWTH below the absolute floor', () => {
     const baseline = 10 * 1024 * 1024
-    const grown = 100 * 1024 * 1024 // 10x growth but under the 400MB floor
+    const grown = 100 * 1024 * 1024 // 10x growth but under the 800MB floor
+    expect(computeProcessFlags({ cpuPct: 5, rss: grown, ppid: 200 }, baseline)).toEqual([])
+  })
+
+  it('does not flag a large but sub-floor-multiple working set', () => {
+    // 700MB warmed -> 760MB: over nothing meaningful, comfortably under both the
+    // floor and baseline x factor. The renderer's normal settle must stay quiet.
+    const baseline = 700 * 1024 * 1024
+    const grown = 760 * 1024 * 1024
     expect(computeProcessFlags({ cpuPct: 5, rss: grown, ppid: 200 }, baseline)).toEqual([])
   })
 

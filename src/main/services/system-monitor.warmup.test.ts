@@ -42,10 +42,10 @@ describe('warm-up baseline suppresses the cold-start false positive', () => {
   })
 
   it('still flags a genuine leak that climbs past the warmed working set', () => {
-    // Warmed to ~400MB, then leaks past 1.5x after the window has elapsed.
-    let baseline = resolveRssBaseline(undefined, 400 * MB, 0)
-    baseline = resolveRssBaseline(baseline, 400 * MB, RSS_BASELINE_WARMUP_MS) // frozen at 400MB
-    const leaked = Math.ceil(400 * MB * RSS_GROWTH_FACTOR) + MB
+    // Warmed to ~600MB, then leaks past 1.5x after the window has elapsed.
+    let baseline = resolveRssBaseline(undefined, 600 * MB, 0)
+    baseline = resolveRssBaseline(baseline, 600 * MB, RSS_BASELINE_WARMUP_MS) // frozen at 600MB
+    const leaked = Math.ceil(600 * MB * RSS_GROWTH_FACTOR) + MB
     expect(leaked).toBeGreaterThanOrEqual(RSS_GROWTH_MIN_BYTES)
     const flags = computeProcessFlags({ cpuPct: 5, rss: leaked, ppid }, baseline)
     expect(flags).toContain('RSS_GROWTH')

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ptyService } from '../pty-service'
+import { collectDescendants, ptyService } from '../pty-service'
 
 const nodePtyMocks = vi.hoisted(() => ({
   spawn: vi.fn()
@@ -84,5 +84,43 @@ describe('ptyService.create spawn environment', () => {
 
     expect(spawnedEnv().COLUMNS).toBe('120')
     expect(spawnedEnv().HIVE_TEST_VAR).toBe('yes')
+  })
+})
+
+describe('collectDescendants', () => {
+  it('walks the whole subtree, not just direct children', () => {
+    // 100 (leader) -> 200 (claude) -> 300 (mcp wrapper) -> 400 (mcp node child)
+    const rows = [
+      { pid: 100, ppid: 1 },
+      { pid: 200, ppid: 100 },
+      { pid: 300, ppid: 200 },
+      { pid: 400, ppid: 300 },
+      { pid: 999, ppid: 1 } // unrelated sibling tree
+    ]
+    expect(collectDescendants(rows, 100).sort((a, b) => a - b)).toEqual([200, 300, 400])
+  })
+
+  it('reaches a grandchild that setsid\'d into its own group', () => {
+    // The setsid'd child still lists its real ppid in `ps`, so the tree walk
+    // finds it even though a kill(-pgid) on the leader never would.
+    const rows = [
+      { pid: 100, ppid: 1 },
+      { pid: 200, ppid: 100 },
+      { pid: 555, ppid: 200 } // own pgid, but ppid still points at the leader's child
+    ]
+    expect(collectDescendants(rows, 100)).toContain(555)
+  })
+
+  it('excludes the root itself and returns empty for a childless leader', () => {
+    expect(collectDescendants([{ pid: 100, ppid: 1 }], 100)).toEqual([])
+  })
+
+  it('does not loop forever on a malformed cyclic listing', () => {
+    const rows = [
+      { pid: 100, ppid: 1 },
+      { pid: 200, ppid: 100 },
+      { pid: 100, ppid: 200 } // bogus cycle back to the root
+    ]
+    expect(collectDescendants(rows, 100)).toEqual([200])
   })
 })
