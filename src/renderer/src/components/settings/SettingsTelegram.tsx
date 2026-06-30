@@ -46,6 +46,7 @@ export function SettingsTelegram(): React.JSX.Element {
   const notifyOnQuestion = useSettingsStore((s) => s.kanbanTelegramNotifyOnQuestion)
   const notifyOnStuckReview = useSettingsStore((s) => s.kanbanTelegramNotifyOnStuckReview)
   const notifyOnDone = useSettingsStore((s) => s.kanbanTelegramNotifyOnDone)
+  const autoForwardOnUserAction = useSettingsStore((s) => s.kanbanTelegramAutoForwardOnUserAction)
   const {
     connectionStatus,
     lastError,
@@ -290,6 +291,13 @@ export function SettingsTelegram(): React.JSX.Element {
           checked={notifyOnDone}
           disabled={!notifyEnabled}
           onChange={(next) => updateSetting('kanbanTelegramNotifyOnDone', next)}
+        />
+        <ToggleRow
+          label="Open two-way chat when you're needed"
+          description="When a ticket asks a question or gets stuck in Review (Strict Verify exhausted), mirror its session to Telegram in full chat mode so you can reply and tap option buttons like the terminal. Won't interrupt an active forward for another session."
+          checked={autoForwardOnUserAction}
+          disabled={!notifyEnabled}
+          onChange={(next) => updateSetting('kanbanTelegramAutoForwardOnUserAction', next)}
         />
       </div>
     </div>

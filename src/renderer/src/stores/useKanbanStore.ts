@@ -1030,13 +1030,24 @@ async function onInProgressRescueSettled(
       // "stuck review" notification trigger. Once per session (the rescue budget
       // is per-session, so a fresh session re-arms and can notify again).
       void import('../lib/ticket-telegram-notify')
-        .then((m) =>
-          m.notifyTicketEvent('stuck_review', {
-            ticketId,
-            title: current.title,
-            dedupeKey: `stuck_review:${ticketId}:${sessionId}`
-          })
-        )
+        .then((m) => {
+          void m
+            .notifyTicketEvent('stuck_review', {
+              ticketId,
+              title: current.title,
+              dedupeKey: `stuck_review:${ticketId}:${sessionId}`
+            })
+            .catch(() => {})
+          // Also unlock two-way Telegram chat for this stuck session so the user can act
+          // from Telegram like the terminal (opt-in; never steals an active forward).
+          void m
+            .autoForwardTicketForUserAction({
+              sessionId,
+              worktreeId: current.worktree_id ?? null,
+              connectionId: null
+            })
+            .catch(() => {})
+        })
         .catch(() => {})
     }
     return

@@ -132,6 +132,8 @@ export interface AppSettings {
   kanbanTelegramNotifyOnStuckReview: boolean
   /** Kanban: notify when a ticket moves to Done. */
   kanbanTelegramNotifyOnDone: boolean
+  /** Kanban: Auto-forward to Telegram when a ticket needs your action — when on, the ticket's session is mirrored to the configured Telegram chat in full ("all") mode the moment it reaches a Question or stuck-Review (Strict Verify exhausted) state, so you can chat and tap option buttons from Telegram like the session terminal. Off by default (opt-in). Never steals an active forward for a different session, and is gated by the master toggle above. */
+  kanbanTelegramAutoForwardOnUserAction: boolean
 
   // Editor
   defaultEditor: EditorOption
@@ -290,6 +292,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanTelegramNotifyOnQuestion: true,
   kanbanTelegramNotifyOnStuckReview: true,
   kanbanTelegramNotifyOnDone: true,
+  kanbanTelegramAutoForwardOnUserAction: false,
   defaultEditor: 'vscode',
   customEditorCommand: '',
   defaultTerminal: 'terminal',
@@ -548,6 +551,7 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
     kanbanTelegramNotifyOnStuckReview: state.kanbanTelegramNotifyOnStuckReview,
     kanbanTelegramNotifyOnDone: state.kanbanTelegramNotifyOnDone,
+    kanbanTelegramAutoForwardOnUserAction: state.kanbanTelegramAutoForwardOnUserAction,
     defaultEditor: state.defaultEditor,
     customEditorCommand: state.customEditorCommand,
     defaultTerminal: state.defaultTerminal,
@@ -948,6 +952,7 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
         kanbanTelegramNotifyOnStuckReview: state.kanbanTelegramNotifyOnStuckReview,
         kanbanTelegramNotifyOnDone: state.kanbanTelegramNotifyOnDone,
+        kanbanTelegramAutoForwardOnUserAction: state.kanbanTelegramAutoForwardOnUserAction,
         defaultEditor: state.defaultEditor,
         customEditorCommand: state.customEditorCommand,
         defaultTerminal: state.defaultTerminal,
