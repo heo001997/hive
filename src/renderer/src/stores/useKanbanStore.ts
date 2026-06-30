@@ -19,11 +19,30 @@ import { isPlanLike } from '../lib/constants'
 import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import type {
   CompletionCheckProvider,
+  CompletionVerdict,
   SessionFingerprint,
   StoredCompletionVerdict,
   VerifyProgress
 } from '@shared/types/completion'
 import { sortTicketsBy, SORT_STEP, type SortField, type SortDir } from '../lib/kanban-sort'
+import {
+  actionsForSlot,
+  branchesForState,
+  buildDefaultLoopConfig,
+  combineVerdicts,
+  decideBranch,
+  isLifecycleEnabled,
+  renderTemplate,
+  retryMaxForState,
+  verdictToLifecycle
+} from '../lib/ticket-lifecycle'
+import type {
+  LifecycleAction,
+  LifecycleEntryContext,
+  LifecycleSlot,
+  LifecycleState,
+  LifecycleVerdict
+} from '@shared/types/ticket-lifecycle'
 import { useConnectionStore } from './useConnectionStore'
 import { usePinnedStore } from './usePinnedStore'
 import { useWorktreeStatusStore } from './useWorktreeStatusStore'
@@ -675,6 +694,25 @@ const rescueSnapshots = new Map<
 >()
 const rescueAttempts = new Map<TicketKey, { sessionId: string; count: number }>()
 
+/**
+ * Iterate Loop iteration count is now PERSISTED on the ticket (`lifecycle_iteration`)
+ * so the loop budget survives app restarts — see `applyIncompleteVerdict` /
+ * `transitionLifecycle`.
+ *
+ * This set only dedups the `during` slot: a `during` action fires once per stable
+ * occupancy of a state. Key = `${ticketKey}:${lifecycleState}`; cleared when the
+ * ticket changes `lifecycle_state` (`transitionLifecycle`) or leaves the board
+ * (`forgetTicketState`).
+ */
+const lifecycleDuringFired = new Set<string>()
+
+/** Drop every `during`-dedup entry for a ticket (any state). */
+function clearDuringFired(key: TicketKey): void {
+  for (const entry of lifecycleDuringFired) {
+    if (entry.startsWith(`${key}:`)) lifecycleDuringFired.delete(entry)
+  }
+}
+
 function cancelInProgressRescue(key: TicketKey): void {
   const timer = pendingRescue.get(key)
   if (timer) {
@@ -719,6 +757,7 @@ function cancelAll(key: TicketKey): void {
 function forgetTicketState(get: () => KanbanState, key: TicketKey): void {
   cancelAll(key)
   rescueAttempts.delete(key)
+  clearDuringFired(key)
   get().clearCompletionVerdict(key)
   get().setVerifyProgress(key, null)
 }
@@ -814,7 +853,14 @@ async function armSettleTimers(
   }
   const { useSettingsStore } = await import('./useSettingsStore')
   const settings = useSettingsStore.getState()
-  if (settings.kanbanStrictVerifyEnabled) {
+  // A ticket whose lifecycle enables a DURING(review) reviewer arms the settle
+  // pipeline even when the GLOBAL Strict-Verify toggle is off (per-ticket opt-in).
+  // The Reviewer sub-gate defaults on, so onStrictVerifySettled still judges it.
+  const cfg = ticket.lifecycle_callbacks
+  const lifecycleArmsReview =
+    isLifecycleEnabled(cfg) &&
+    actionsForSlot(cfg, 'review', 'during').some((a) => a.type === 'review')
+  if (settings.kanbanStrictVerifyEnabled || lifecycleArmsReview) {
     scheduleStrictVerify(
       get,
       ticketId,
@@ -1156,6 +1202,330 @@ function reportStrictVerifyError(
   })
 }
 
+/**
+ * Move a ticket into an arbitrary lifecycle (kanban) state as part of a branch
+ * `goto`. In Progress reuses the dedicated bounce helper (bottom-of-column +
+ * status bookkeeping the rest of the engine expects); any other destination
+ * drops it at the top of that column. Best-effort: a failed move is logged, not
+ * thrown, so a branch can never strand the pipeline.
+ */
+async function moveTicketToLifecycleState(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  state: LifecycleState
+): Promise<void> {
+  if (state === 'in_progress') {
+    await moveTicketBackToInProgress(get, ticketId, projectId)
+    return
+  }
+  try {
+    const sortOrder = topOfColumnSortOrder(get, projectId, state)
+    await get().moveTicket(ticketId, projectId, state, sortOrder)
+  } catch (err) {
+    console.error(`[StrictVerify] iterate-loop: move ${ticketId} → ${state} failed`, err)
+  }
+}
+
+/**
+ * Resolve the working directory for a session's `check` hooks: the path of the
+ * worktree the session runs in. Returns null when the session has no worktree
+ * (e.g. a non-isolated session) so the caller can skip the hook.
+ */
+async function resolveSessionCwd(sessionId: string): Promise<string | null> {
+  const { useSessionStore } = await import('./useSessionStore')
+  const session = useSessionStore.getState().getSessionById(sessionId)
+  if (!session?.worktree_id) return null
+  const { useWorktreeStore } = await import('./useWorktreeStore')
+  const worktree = Array.from(useWorktreeStore.getState().worktreesByProject.values())
+    .flat()
+    .find((w) => w.id === session.worktree_id)
+  return worktree?.path ?? null
+}
+
+/**
+ * Execute ONE lifecycle action and return its verdict. Verdict-producing types
+ * (`check`, `review`) could fail a slot; every other type returns `pass`. By
+ * contract best-effort — the caller wraps this so a throw never strands a
+ * transition. Executors map onto existing engine primitives (no second runner):
+ *   prompt → dispatchClaudeCliFollowup   notify → notifyTicketEvent
+ *   goto   → moveTicketToLifecycleState  agent  → autoLaunchTicket
+ *   wait   → timer                       check  → session bash (fire-and-forget)
+ *   review → settle-driven (armSettleTimers / onStrictVerifySettled), skipped here.
+ */
+async function runLifecycleAction(
+  get: () => KanbanState,
+  projectId: string,
+  ticketId: string,
+  ticket: KanbanTicket,
+  state: LifecycleState,
+  slot: LifecycleSlot,
+  action: LifecycleAction,
+  ctx: { reason?: string; iteration?: number }
+): Promise<LifecycleVerdict> {
+  const cfg = action.config ?? {}
+  const sessionId = ticket.current_session_id
+  switch (action.type) {
+    case 'prompt': {
+      const template = typeof cfg.template === 'string' ? cfg.template : ''
+      if (!template.trim() || !sessionId) return 'pass'
+      const text = renderTemplate(template, {
+        reason: ctx.reason,
+        title: ticket.title,
+        iteration: ctx.iteration
+      })
+      const { dispatchClaudeCliFollowup } = await import('@/lib/claude-cli-followup')
+      await dispatchClaudeCliFollowup(sessionId, text)
+      return 'pass'
+    }
+    case 'notify': {
+      const ev = cfg.event
+      const event =
+        ev === 'started' || ev === 'question' || ev === 'stuck_review' || ev === 'done'
+          ? ev
+          : 'started'
+      const { notifyTicketEvent } = await import('../lib/ticket-telegram-notify')
+      await notifyTicketEvent(event, {
+        ticketId,
+        title: ticket.title,
+        dedupeKey: `lifecycle:${state}:${slot}:${action.id}:${sessionId ?? 'none'}`
+      })
+      return 'pass'
+    }
+    case 'goto': {
+      // Default an unset target to In Progress (the editor's shown default) so a
+      // goto can never silently no-op on a config missing its `state`.
+      const target = cfg.state ?? 'in_progress'
+      if (
+        target === 'todo' ||
+        target === 'in_progress' ||
+        target === 'review' ||
+        target === 'done'
+      ) {
+        await moveTicketToLifecycleState(get, ticketId, projectId, target)
+      }
+      return 'pass'
+    }
+    case 'check': {
+      // Best-effort side effect, NOT a verdict source — the loop's only verdict
+      // source is the Reviewer (no fail-open). Always reports pass.
+      const command = typeof cfg.command === 'string' ? cfg.command.trim() : ''
+      if (!command || !sessionId) return 'pass'
+      const cwd = await resolveSessionCwd(sessionId)
+      if (!cwd) return 'pass'
+      const { bashApi } = await import('@/api/bash-api')
+      void bashApi.run(sessionId, command, cwd).catch(() => {})
+      return 'pass'
+    }
+    case 'agent': {
+      // Re-launch the ticket's agent (graceful: a launch failure is logged, never
+      // thrown, so a missing primitive can't strand the transition).
+      const { autoLaunchTicket } = await import('@/lib/auto-launch')
+      await autoLaunchTicket(ticket).catch((err) =>
+        console.warn(`[Lifecycle] agent action failed for ticket ${ticketId}`, err)
+      )
+      return 'pass'
+    }
+    case 'wait': {
+      const seconds = typeof cfg.seconds === 'number' ? cfg.seconds : 0
+      if (seconds > 0) await new Promise((resolve) => setTimeout(resolve, seconds * 1000))
+      return 'pass'
+    }
+    case 'review':
+      // The Reviewer is settle-driven (armSettleTimers → onStrictVerifySettled),
+      // never invoked inline — treated as a no-op verdict here.
+      return 'pass'
+    default:
+      return 'pass'
+  }
+}
+
+/**
+ * Run every action configured for `state`/`slot` in order, filtered by entry
+ * context (`runOn`), and combine their verdicts (first non-pass wins). Best-effort:
+ * a throwing action is logged and treated as `pass` so it can never strand a
+ * lifecycle transition. Returns `pass` when the slot is empty or lifecycle is off.
+ */
+async function runLifecycleSlot(
+  get: () => KanbanState,
+  projectId: string,
+  ticketId: string,
+  ticket: KanbanTicket,
+  state: LifecycleState,
+  slot: LifecycleSlot,
+  ctx: { context?: LifecycleEntryContext; reason?: string; iteration?: number } = {}
+): Promise<LifecycleVerdict> {
+  const cfg = ticket.lifecycle_callbacks
+  if (!isLifecycleEnabled(cfg)) return 'pass'
+  const actions = actionsForSlot(cfg, state, slot, ctx.context)
+  if (!actions.length) return 'pass'
+  const verdicts: LifecycleVerdict[] = []
+  for (const action of actions) {
+    try {
+      verdicts.push(
+        await runLifecycleAction(get, projectId, ticketId, ticket, state, slot, action, ctx)
+      )
+    } catch (err) {
+      console.warn(`[Lifecycle] ${state}.${slot} ${action.type} failed for ticket ${ticketId}`, err)
+      verdicts.push('pass')
+    }
+  }
+  return combineVerdicts(verdicts)
+}
+
+/**
+ * Fire a STABLE lifecycle-state transition: run `from.after` then `to.before` (in
+ * that order, with the entry `context`), then PERSIST the new `lifecycle_state` so
+ * the edge is idempotent across `session_completed` replays and app restarts.
+ * Deduped on the persisted state actually changing (`from === to` → no-op). A
+ * stable entry into a loop state (`in_progress`/`review`) also resets the iterate
+ * counter so each fresh occupancy restarts the loop budget. Best-effort throughout.
+ */
+async function transitionLifecycle(
+  get: () => KanbanState,
+  projectId: string,
+  ticketId: string,
+  toState: LifecycleState,
+  context: LifecycleEntryContext
+): Promise<void> {
+  const ticket = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  if (!ticket || !isLifecycleEnabled(ticket.lifecycle_callbacks)) return
+  const from = ticket.lifecycle_state ?? null
+  if (from === toState) return // already stable here — fire once per occupancy
+
+  if (from) await runLifecycleSlot(get, projectId, ticketId, ticket, from, 'after', { context })
+  await runLifecycleSlot(get, projectId, ticketId, ticket, toState, 'before', { context })
+
+  clearDuringFired(ticketKey(projectId, ticketId))
+  const patch: KanbanTicketUpdate = { lifecycle_state: toState }
+  if (toState === 'in_progress' || toState === 'review') patch.lifecycle_iteration = 0
+  await get()
+    .updateTicket(ticketId, projectId, patch)
+    .catch((err) =>
+      console.warn(`[Lifecycle] persist lifecycle_state=${toState} for ${ticketId} failed`, err)
+    )
+}
+
+/**
+ * Dispatch an INCOMPLETE Reviewer verdict (the AFTER(review) gate). When the
+ * ticket runs the Iterate Loop — lifecycle enabled, a `review` fail-branch
+ * present, and the verdict maps to `'fail'` — the loop owns the outcome:
+ *
+ *  - under `review.retryMax` → BOUNCE to the branch's `goto` state and, for a
+ *    fresh fail landing in In Progress, deliver that state's BEFORE prompt hook
+ *    via `dispatchClaudeCliFollowup` with the reviewer's reason substituted in.
+ *    This is the missing edge that makes the loop actually iterate.
+ *  - at/over the cap → GIVE UP STUCK: leave the ticket in Review (NO fail-open
+ *    to Done), mark `lifecycleStuck`/`rescueExhausted` on the verdict, clear the
+ *    verify badge, and fire the `stuck_review` notification once per session.
+ *
+ * Every other case (no loop configured, or a `needsInput` verdict the loop does
+ * not own) keeps today's behavior: bounce to In Progress + arm the rescue.
+ *
+ * `isFresh` separates a brand-new verdict (advance the iteration counter, deliver
+ * the prompt) from a cached-verdict replay (re-apply the move only — the agent
+ * already got the prompt, so don't re-prompt or re-count) so `session_completed`
+ * replays stay idempotent.
+ */
+async function applyIncompleteVerdict(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  ticket: KanbanTicket,
+  verdict: CompletionVerdict,
+  threshold: number,
+  settings: StrictVerifySettings,
+  sessionId: string,
+  isFresh: boolean
+): Promise<void> {
+  const key = ticketKey(projectId, ticketId)
+  const cfg = ticket.lifecycle_callbacks
+  const ownsFail =
+    isLifecycleEnabled(cfg) &&
+    branchesForState(cfg, 'review').some((b) => b.when === 'fail') &&
+    verdictToLifecycle(verdict, threshold) === 'fail'
+
+  if (!ownsFail) {
+    // No Iterate Loop for this fail → today's exact behavior.
+    await moveTicketBackToInProgress(get, ticketId, projectId)
+    maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, verdict.needsInput, settings)
+    return
+  }
+
+  // ── Iterate Loop owns this fail ─────────────────────────────────────────
+  // 1-based fail counter PERSISTED on the ticket (`lifecycle_iteration`) so the
+  // loop budget survives app restarts. A fresh verdict advances it; a cached
+  // replay reuses the existing count (never advances) so status replays don't
+  // burn iterations. `lifecycle_state` is NOT changed on a fail — the ticket is
+  // not stable in Review, it stays anchored at In Progress for the bounce.
+  const prevIter = ticket.lifecycle_iteration ?? 0
+  const iteration = isFresh ? prevIter + 1 : Math.max(prevIter, 1)
+  const decision = decideBranch(cfg, 'review', 'fail', iteration)
+
+  if (decision.kind === 'stuck') {
+    const cap = retryMaxForState(cfg, 'review')
+    console.warn(
+      `[StrictVerify] iterate-loop: ticket ${ticketId} hit retryMax (${iteration}/${cap ?? '?'}) — ` +
+        `leaving STUCK in Review, NOT advanced (no fail-open)`
+    )
+    if (isFresh) {
+      void get()
+        .updateTicket(ticketId, projectId, { lifecycle_iteration: iteration })
+        .catch(() => {})
+    }
+    const prior = get().completionVerdicts.get(key)
+    const alreadyStuck = !!prior?.lifecycleStuck
+    get().setCompletionVerdict(key, {
+      ...(prior ?? { ...verdict, checkedAt: Date.now() }),
+      sessionId,
+      movedBack: false,
+      lifecycleStuck: true,
+      rescueExhausted: true
+    })
+    get().setVerifyProgress(key, null)
+    if (!alreadyStuck) {
+      void import('../lib/ticket-telegram-notify')
+        .then((m) =>
+          m.notifyTicketEvent('stuck_review', {
+            ticketId,
+            title: ticket.title,
+            dedupeKey: `stuck_review:${ticketId}:${sessionId}`
+          })
+        )
+        .catch(() => {})
+    }
+    return
+  }
+
+  if (decision.kind !== 'goto') {
+    // goto:'end' or no matching branch (the loop has nothing to say) → default bounce.
+    await moveTicketBackToInProgress(get, ticketId, projectId)
+    maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, verdict.needsInput, settings)
+    return
+  }
+
+  // BOUNCE: move to the branch destination, then re-arm the agent via the
+  // destination's RETRY slot (the fix-prompt, with the reviewer reason injected).
+  await moveTicketToLifecycleState(get, ticketId, projectId, decision.state)
+  if (isFresh) {
+    void get()
+      .updateTicket(ticketId, projectId, { lifecycle_iteration: iteration })
+      .catch(() => {})
+    const cap = retryMaxForState(cfg, 'review')
+    console.log(
+      `[StrictVerify] iterate-loop: ticket ${ticketId} bounced to ${decision.state} ` +
+        `(iteration ${iteration}/${cap ?? '∞'}) — running ${decision.state}.retry`
+    )
+    void runLifecycleSlot(get, projectId, ticketId, ticket, decision.state, 'retry', {
+      context: 'retry',
+      reason: verdict.reason,
+      iteration
+    }).catch((err) =>
+      console.error('[StrictVerify] iterate-loop: retry slot dispatch failed', err)
+    )
+  }
+}
+
 async function runStrictVerify(
   get: () => KanbanState,
   ticketId: string,
@@ -1167,6 +1537,9 @@ async function runStrictVerify(
   if (!sessionId) return 'complete' // no transcript to judge → don't block
 
   const key = ticketKey(projectId, ticketId)
+  const threshold = settings.kanbanStrictVerifyConfidenceThreshold ?? 0.6
+  // Freshest copy of the row (its lifecycle config drives the dispatcher).
+  const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId) ?? ticket
   const prior = get().completionVerdicts.get(key)
   if (prior && prior.sessionId === sessionId) {
     // Already judged this session's settle — reuse it (no model call). Re-apply
@@ -1176,14 +1549,29 @@ async function runStrictVerify(
       `[StrictVerify] REUSING cached verdict for ticket ${ticketId} — session ${sessionId} unchanged, NO fresh model call. ` +
         `complete=${prior.complete} conf=${prior.confidence} reason="${prior.reason}"`
     )
+    // A stuck Iterate-Loop verdict must NOT fail open: keep it in Review, don't
+    // advance, and don't re-bounce/re-prompt — the loop already gave up.
+    if (prior.lifecycleStuck) {
+      get().setVerifyProgress(key, null)
+      return 'bounced'
+    }
     if (prior.movedBack) {
-      await moveTicketBackToInProgress(get, ticketId, projectId)
-      maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, prior.needsInput, settings)
+      // Re-apply the bounce idempotently: no re-prompt, no extra iteration count.
+      await applyIncompleteVerdict(
+        get,
+        ticketId,
+        projectId,
+        current,
+        prior,
+        threshold,
+        settings,
+        sessionId,
+        false
+      )
     }
     return prior.movedBack ? 'bounced' : 'complete'
   }
 
-  const threshold = settings.kanbanStrictVerifyConfidenceThreshold ?? 0.6
   let result
   try {
     const { completionApi } = await import('@/api/completion-api')
@@ -1220,8 +1608,17 @@ async function runStrictVerify(
   })
 
   if (incomplete) {
-    await moveTicketBackToInProgress(get, ticketId, projectId)
-    maybeArmRescueAfterBounce(get, ticketId, projectId, sessionId, verdict.needsInput, settings)
+    await applyIncompleteVerdict(
+      get,
+      ticketId,
+      projectId,
+      current,
+      verdict,
+      threshold,
+      settings,
+      sessionId,
+      true
+    )
   }
   return incomplete ? 'bounced' : 'complete'
 }
@@ -1408,6 +1805,12 @@ async function onStrictVerifySettled(
     get().setVerifyProgress(key, null)
     return
   }
+
+  // Verified-complete AND staying in Review (no queued follow-up re-entered In
+  // Progress above) = the ticket is genuinely STABLE in Review. Fire the stability
+  // edge (in_progress.after → review.before, reset the loop counter) BEFORE any
+  // auto-approve handoff. Idempotent: dedups on lifecycle_state already being review.
+  await transitionLifecycle(get, projectId, ticketId, 'review', 'initial')
 
   // Verified complete — the ticket stays in Review. Hand off to Feature B if this
   // ticket opted into auto-approve; otherwise the pipeline is done.
@@ -1699,12 +2102,33 @@ export const useKanbanStore = create<KanbanState>()(
 
       // ── createTicket ─────────────────────────────────────────────
       createTicket: async (projectId: string, data: KanbanTicketCreate) => {
-        // Seed the per-ticket Review auto-approve flag from the global default
-        // (Settings → "Auto-approve Review by default"), unless the caller set it.
+        // Seed the per-ticket Review auto-approve flag AND the Iterate Loop config
+        // from the global defaults (Settings), unless the caller set them. Same
+        // shape as `auto_approve_review`: the global toggle seeds new tickets; the
+        // per-ticket value owns its behavior thereafter.
         let seeded = data
-        if (data.auto_approve_review === undefined) {
+        if (data.auto_approve_review === undefined || data.lifecycle_callbacks === undefined) {
           const { useSettingsStore } = await import('./useSettingsStore')
-          seeded = { ...data, auto_approve_review: useSettingsStore.getState().kanbanAutoApproveReview }
+          const s = useSettingsStore.getState()
+          seeded = { ...data }
+          if (data.auto_approve_review === undefined) {
+            seeded.auto_approve_review = s.kanbanAutoApproveReview
+          }
+          if (data.lifecycle_callbacks === undefined) {
+            seeded.lifecycle_callbacks = s.kanbanIterateLoopEnabled
+              ? buildDefaultLoopConfig({
+                  maxIterations: s.kanbanIterateLoopMaxIterations,
+                  fixPromptTemplate: s.kanbanIterateLoopFixPromptTemplate
+                })
+              : null
+          }
+        }
+        // Anchor a lifecycle-enabled ticket at its initial stable state (`todo`) so
+        // the first launch fires `todo.after → in_progress.before`; iteration 0.
+        if (seeded.lifecycle_state === undefined && isLifecycleEnabled(seeded.lifecycle_callbacks)) {
+          if (seeded === data) seeded = { ...data }
+          seeded.lifecycle_state = 'todo'
+          seeded.lifecycle_iteration = 0
         }
         const ticket = await kanban.ticket.create<KanbanTicket, KanbanTicketCreate>(
           projectId,
@@ -2161,6 +2585,7 @@ export const useKanbanStore = create<KanbanState>()(
           // call below — so a dependency launch and a freed-slot launch can't race and
           // blow past the cap. Uncapped projects keep the direct dependency launch.
           const capped = getMaxParallelWorktrees(projectId) > 0
+          let launchedDependent = false
           if (
             column === 'done' ||
             (triggerColumn === 'review' && column === 'review' && movedTicket?.mode === 'build')
@@ -2187,6 +2612,7 @@ export const useKanbanStore = create<KanbanState>()(
                 if (!capped && depTicket?.pending_launch_config) {
                   // Auto-launch the dependent using its own pending_launch_config
                   // (worktree `new`/`existing` exactly as it was queued).
+                  launchedDependent = true
                   import('../lib/auto-launch')
                     .then(({ autoLaunchTicket }) => {
                       autoLaunchTicket(depTicket).catch((err) => {
@@ -2224,6 +2650,24 @@ export const useKanbanStore = create<KanbanState>()(
           void import('../lib/ticket-telegram-notify')
             .then((m) => m.notifyTicketColumnChange({ ticketId, title: ticketTitle, prevColumn, column }))
             .catch(() => {})
+
+          // Per-ticket lifecycle callbacks fire on STABILITY, not the optimistic
+          // column move — so most edges are driven by the settle handlers, NOT here.
+          // The one stable edge a move owns is landing in Done (user sticky-move or
+          // `moveReviewedTicketToDone`): fire `review.after → done.before`. The
+          // optimistic → Review / → In Progress moves are deliberately NOT fired
+          // here (only a Strict-Verify PASS / a loop bounce confirm those).
+          if (updated && column === 'done') {
+            void transitionLifecycle(get, projectId, ticketId, 'done', 'initial')
+              .then(() => {
+                // Chain edge: a dependent launched off this Done = `done.after`.
+                if (launchedDependent) {
+                  const fresh = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+                  if (fresh) void runLifecycleSlot(get, projectId, ticketId, fresh, 'done', 'after')
+                }
+              })
+              .catch(() => {})
+          }
         } catch (err) {
           // Revert on failure
           set((state) => {
@@ -2534,6 +2978,24 @@ export const useKanbanStore = create<KanbanState>()(
                     .moveTicket(ticket.id, projectId, 'in_progress', topOfColumnSortOrder(get, projectId, 'in_progress'))
                     .catch(() => {})
                 }
+                // Per-ticket lifecycle: a genuinely-working agent makes In Progress
+                // STABLE (fires todo.after → in_progress.before once, resets the loop
+                // counter on a FRESH occupancy — a loop bounce keeps state=in_progress
+                // so this dedups to a no-op and the iteration count survives). Then run
+                // the active state's DURING actions, once per occupancy. Best-effort.
+                void transitionLifecycle(get, projectId, ticket.id, 'in_progress', 'initial')
+                  .catch(() => {})
+                  .finally(() => {
+                    const fresh = (get().tickets.get(projectId) ?? []).find(
+                      (t) => t.id === ticket.id
+                    )
+                    if (!fresh || !isLifecycleEnabled(fresh.lifecycle_callbacks)) return
+                    const state: LifecycleState = fresh.lifecycle_state ?? fresh.column
+                    const dedupeKey = `${ticketKey(projectId, ticket.id)}:${state}`
+                    if (lifecycleDuringFired.has(dedupeKey)) return
+                    lifecycleDuringFired.add(dedupeKey)
+                    void runLifecycleSlot(get, projectId, ticket.id, fresh, state, 'during')
+                  })
                 break
               }
             }

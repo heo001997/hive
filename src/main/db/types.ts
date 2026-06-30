@@ -1,5 +1,22 @@
 import type { CustomProjectCommand } from '@shared/lib/custom-commands'
 import type { AgentSdk } from '@shared/types/agent-sdk'
+import type { TicketLifecycleConfig, LifecycleState } from '@shared/types/ticket-lifecycle'
+
+// Re-export the lifecycle-callback types from the kanban types barrel so consumers
+// that already import KanbanTicket from here can grab them in one place.
+export type {
+  TicketLifecycleConfig,
+  LifecycleState,
+  LifecycleStateConfig,
+  LifecycleAction,
+  LifecycleActionType,
+  LifecycleSlot,
+  LifecycleEntryContext,
+  LifecycleHook,
+  LifecycleHookType,
+  LifecycleBranch,
+  LifecycleVerdict
+} from '@shared/types/ticket-lifecycle'
 
 export interface Project {
   id: string
@@ -525,6 +542,27 @@ export interface KanbanTicket {
    * KanbanTicket literals (e.g. test factories) don't all need updating.
    */
   review_seen_at?: string | null
+  /**
+   * Per-ticket lifecycle-callback config (BEFORE/DURING/AFTER hooks + branches +
+   * retryMax per kanban state). NULL = no lifecycle automation (today's behavior).
+   * Seeded at creation from the global Iterate Loop default. Stored as JSON TEXT.
+   * Optional in the type (like `review_seen_at`) so existing KanbanTicket literals
+   * — e.g. test factories — don't all need updating; the DB mapper always sets it.
+   */
+  lifecycle_callbacks?: TicketLifecycleConfig | null
+  /**
+   * Confirmed STABLE lifecycle state — the kanban state the ticket genuinely
+   * settled into, distinct from the optimistic board `column`. Drives the
+   * BEFORE/AFTER edge dispatch (fires once per stable occupancy). NULL until the
+   * lifecycle engine first stamps it. Persisted so the loop survives restarts.
+   */
+  lifecycle_state?: LifecycleState | null
+  /**
+   * Active iterate-loop counter — how many times the Reviewer has FAILED the work
+   * in the current review↔fix cycle. Compared against `review.retryMax` to break
+   * the loop. Reset to 0 on a stable entry; incremented on each fail bounce.
+   */
+  lifecycle_iteration?: number
 }
 
 /** One column's slice of tickets plus the total active count in that column. */
@@ -557,6 +595,9 @@ export interface KanbanTicketCreate {
   mark?: TicketMark | null
   created_from_session?: boolean
   auto_approve_review?: boolean
+  lifecycle_callbacks?: TicketLifecycleConfig | null
+  lifecycle_state?: LifecycleState | null
+  lifecycle_iteration?: number
 }
 
 export interface KanbanTicketUpdate {
@@ -580,6 +621,9 @@ export interface KanbanTicketUpdate {
   note?: string | null
   auto_approve_review?: boolean
   review_seen_at?: string | null
+  lifecycle_callbacks?: TicketLifecycleConfig | null
+  lifecycle_state?: LifecycleState | null
+  lifecycle_iteration?: number
 }
 
 export interface BoardAssistantDraft {
@@ -610,6 +654,7 @@ export interface KanbanTicketBatchCreateItem {
   github_pr_url?: string | null
   mark?: TicketMark | null
   auto_approve_review?: boolean
+  lifecycle_callbacks?: TicketLifecycleConfig | null
   depends_on?: string[]
 }
 

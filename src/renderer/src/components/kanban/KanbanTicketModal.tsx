@@ -94,6 +94,8 @@ import { useConflictFixFlow } from '@/hooks/useConflictFixFlow'
 import { TicketAttachmentEditor } from './TicketAttachmentEditor'
 import { TicketDiscardChangesDialog } from './TicketDiscardChangesDialog'
 import { AutoApprovePlanToggle } from './AutoApprovePlanToggle'
+import { LifecycleCallbacksEditor } from './LifecycleCallbacksEditor'
+import type { TicketLifecycleConfig } from '@shared/types/ticket-lifecycle'
 import { useImagePaste } from '@/hooks/useImagePaste'
 import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoffSelection'
 import { canonicalizeTicketTitle, extractPlanTitle } from '@shared/types/branch-utils'
@@ -1537,14 +1539,23 @@ function EditModeContent({
       })) ?? []
   )
   const [autoApproveReview, setAutoApproveReview] = useState(ticket.auto_approve_review)
+  const [lifecycleConfig, setLifecycleConfig] = useState<TicketLifecycleConfig | null>(
+    ticket.lifecycle_callbacks ?? null
+  )
   const [isSaving, setIsSaving] = useState(false)
   const lifecycle = useLifecycleActions(ticket.worktree_id)
+  const iterateMaxIterations = useSettingsStore((s) => s.kanbanIterateLoopMaxIterations)
+  const iterateFixPromptTemplate = useSettingsStore((s) => s.kanbanIterateLoopFixPromptTemplate)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const lifecycleDirty =
+    JSON.stringify(lifecycleConfig ?? null) !==
+    JSON.stringify(ticket.lifecycle_callbacks ?? null)
   const isDirty =
     normalizeDraftText(title) !== normalizeDraftText(ticket.title) ||
     normalizeDraftText(description) !== normalizeDraftText(ticket.description) ||
     normalizeTicketAttachments(attachments) !== normalizeTicketAttachments(ticket.attachments) ||
-    autoApproveReview !== ticket.auto_approve_review
+    autoApproveReview !== ticket.auto_approve_review ||
+    lifecycleDirty
 
   useEffect(() => {
     onDirtyChange(isDirty)
@@ -1608,11 +1619,14 @@ function EditModeContent({
     if (!title.trim() || isSaving) return
     setIsSaving(true)
     try {
+      // Only write lifecycle_callbacks when the user actually edited it — sending
+      // it on every save would clobber a null (seed-from-global) with a default.
       await updateTicket(ticket.id, ticket.project_id, {
         title: title.trim(),
         description: description.trim() || null,
         attachments: attachments.map((a) => ({ type: a.type, url: a.url, label: a.label })),
-        auto_approve_review: autoApproveReview
+        auto_approve_review: autoApproveReview,
+        ...(lifecycleDirty ? { lifecycle_callbacks: lifecycleConfig } : {})
       })
       toast.success('Ticket updated')
       onClose()
@@ -1626,6 +1640,8 @@ function EditModeContent({
     description,
     attachments,
     autoApproveReview,
+    lifecycleDirty,
+    lifecycleConfig,
     isSaving,
     updateTicket,
     ticket.id,
@@ -1767,6 +1783,16 @@ function EditModeContent({
           checked={autoApproveReview}
           onChange={setAutoApproveReview}
           testId="ticket-edit-auto-approve-review-toggle"
+        />
+
+        {/* Iterate Loop — per-ticket lifecycle callbacks (review↔fix loop builder) */}
+        <LifecycleCallbacksEditor
+          value={lifecycleConfig}
+          onChange={setLifecycleConfig}
+          defaults={{
+            maxIterations: iterateMaxIterations,
+            fixPromptTemplate: iterateFixPromptTemplate
+          }}
         />
 
         {/* Prompt queue (Claude CLI) — author a batch of follow-ups up front.
