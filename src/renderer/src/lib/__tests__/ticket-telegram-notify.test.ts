@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const sendNotification = vi.fn()
+const startForwarding = vi.fn()
+const setStatus = vi.fn()
 const getSettingsState = vi.fn()
 const getKanbanState = vi.fn()
+const getTelegramState = vi.fn()
 
 vi.mock('@/api/telegram-api', () => ({
-  telegramApi: { sendNotification: (text: string) => sendNotification(text) }
+  telegramApi: {
+    sendNotification: (text: string) => sendNotification(text),
+    startForwarding: (params: unknown) => startForwarding(params)
+  }
 }))
 vi.mock('@/stores/useSettingsStore', () => ({
   useSettingsStore: { getState: () => getSettingsState() }
@@ -13,8 +19,12 @@ vi.mock('@/stores/useSettingsStore', () => ({
 vi.mock('@/stores/useKanbanStore', () => ({
   useKanbanStore: { getState: () => getKanbanState() }
 }))
+vi.mock('@/stores/useTelegramStore', () => ({
+  useTelegramStore: { getState: () => getTelegramState() }
+}))
 
 import {
+  autoForwardTicketForUserAction,
   notifyTicketColumnChange,
   notifyTicketEvent,
   notifyTicketQuestion,
@@ -28,13 +38,17 @@ const allOn = {
   kanbanTelegramNotifyOnStuckReview: true,
   kanbanTelegramNotifyOnDone: true
 }
+const autoOn = { ...allOn, kanbanTelegramAutoForwardOnUserAction: true }
 
 describe('ticket-telegram-notify', () => {
   beforeEach(() => {
     resetTicketNotifyStateForTests()
     sendNotification.mockReset().mockResolvedValue({ ok: true })
+    startForwarding.mockReset().mockResolvedValue({ ok: true, status: { active: true } })
+    setStatus.mockReset()
     getSettingsState.mockReset().mockReturnValue({ ...allOn })
     getKanbanState.mockReset()
+    getTelegramState.mockReset().mockReturnValue({ activeForwardingSessionId: null, setStatus })
   })
 
   it('sends a formatted message for an enabled event', async () => {
@@ -121,5 +135,68 @@ describe('ticket-telegram-notify', () => {
     notifyTicketColumnChange({ ticketId: 't-c3', title: 'Loop', prevColumn: 'review', column: 'done' })
     await flush()
     expect(sendNotification).toHaveBeenCalledTimes(2)
+  })
+
+  describe('auto-forward on user action', () => {
+    it('starts forwarding the session in all mode when enabled', async () => {
+      getSettingsState.mockReturnValue({ ...autoOn })
+      await autoForwardTicketForUserAction({ sessionId: 's1', worktreeId: 'wt1', connectionId: null })
+      expect(startForwarding).toHaveBeenCalledTimes(1)
+      expect(startForwarding.mock.calls[0][0]).toMatchObject({
+        sessionId: 's1',
+        worktreeId: 'wt1',
+        connectionId: null,
+        mode: 'all'
+      })
+      expect(setStatus).toHaveBeenCalledTimes(1)
+    })
+
+    it('no-ops when the auto-forward toggle is off', async () => {
+      await autoForwardTicketForUserAction({ sessionId: 's2', worktreeId: 'wt2', connectionId: null })
+      expect(startForwarding).not.toHaveBeenCalled()
+    })
+
+    it('no-ops when the master toggle is off', async () => {
+      getSettingsState.mockReturnValue({ ...autoOn, kanbanTelegramNotifyEnabled: false })
+      await autoForwardTicketForUserAction({ sessionId: 's2b', worktreeId: 'wt2', connectionId: null })
+      expect(startForwarding).not.toHaveBeenCalled()
+    })
+
+    it('does not steal an active forward for a different session', async () => {
+      getSettingsState.mockReturnValue({ ...autoOn })
+      getTelegramState.mockReturnValue({ activeForwardingSessionId: 'other', setStatus })
+      await autoForwardTicketForUserAction({ sessionId: 's3', worktreeId: 'wt3', connectionId: null })
+      expect(startForwarding).not.toHaveBeenCalled()
+    })
+
+    it('does not re-forward a session that is already being forwarded', async () => {
+      getSettingsState.mockReturnValue({ ...autoOn })
+      getTelegramState.mockReturnValue({ activeForwardingSessionId: 's4', setStatus })
+      await autoForwardTicketForUserAction({ sessionId: 's4', worktreeId: 'wt4', connectionId: null })
+      expect(startForwarding).not.toHaveBeenCalled()
+    })
+
+    it('no-ops without a single forwarding target (neither / both)', async () => {
+      getSettingsState.mockReturnValue({ ...autoOn })
+      await autoForwardTicketForUserAction({ sessionId: 's5', worktreeId: null, connectionId: null })
+      await autoForwardTicketForUserAction({ sessionId: 's5', worktreeId: 'wt5', connectionId: 'cx5' })
+      expect(startForwarding).not.toHaveBeenCalled()
+    })
+
+    it('auto-forwards on a question, resolving the ticket worktree', async () => {
+      getSettingsState.mockReturnValue({ ...autoOn })
+      getKanbanState.mockReturnValue({
+        tickets: new Map([
+          ['p', [{ id: 'tq', title: 'Q', current_session_id: 'sq', worktree_id: 'wq' }]]
+        ])
+      })
+      await notifyTicketQuestion('sq', 'r1')
+      expect(startForwarding).toHaveBeenCalledTimes(1)
+      expect(startForwarding.mock.calls[0][0]).toMatchObject({
+        sessionId: 'sq',
+        worktreeId: 'wq',
+        mode: 'all'
+      })
+    })
   })
 })

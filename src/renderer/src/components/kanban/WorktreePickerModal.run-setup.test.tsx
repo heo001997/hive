@@ -291,6 +291,7 @@ describe('WorktreePickerModal — run setup command toggle', () => {
       'Hive',
       'main',
       expect.any(String),
+      false,
       { runSetup: true }
     )
   })
@@ -307,6 +308,7 @@ describe('WorktreePickerModal — run setup command toggle', () => {
       'Hive',
       'main',
       expect.any(String),
+      false,
       { runSetup: false }
     )
   })

@@ -45,6 +45,7 @@ type WorktreeCreateFromBranchParams = WorktreeCreateParams & {
   branchName: string
   prNumber?: number
   nameHint?: string
+  useExistingBranch?: boolean
 }
 
 type WorktreeDeleteParams = {
@@ -171,7 +172,10 @@ export const worktreeApi = {
       projectName: params.projectName,
       branchName: params.branchName,
       ...(params.prNumber === undefined ? {} : { prNumber: params.prNumber }),
-      ...(params.nameHint === undefined ? {} : { nameHint: params.nameHint })
+      ...(params.nameHint === undefined ? {} : { nameHint: params.nameHint }),
+      ...(params.useExistingBranch === undefined
+        ? {}
+        : { useExistingBranch: params.useExistingBranch })
     }),
   delete: async (params: WorktreeDeleteParams): Promise<WorktreeMutationResult> =>
     getRendererRpcClient().request<WorktreeMutationResult>('worktreeOps.delete', params),

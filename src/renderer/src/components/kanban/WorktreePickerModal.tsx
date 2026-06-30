@@ -219,6 +219,9 @@ export function WorktreePickerModal({
   const [injectContext, setInjectContext] = useState(false)
   const [contextTemplate, setContextTemplate] = useState(DEFAULT_CONTEXT_TEMPLATE)
   const [contextPanelOpen, setContextPanelOpen] = useState(false)
+  // New worktree: when true, check out the chosen branch directly (commits land
+  // on it) instead of forking a fresh ticket-named branch off it.
+  const [assignExistingBranch, setAssignExistingBranch] = useState(false)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -390,6 +393,7 @@ export function WorktreePickerModal({
       setContextPanelOpen(false)
       setSelectedModel(null)
       setSelectedSdk(null)
+      setAssignExistingBranch(false)
       setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
       setBranches([])
       setBranchFilter('')
@@ -413,6 +417,14 @@ export function WorktreePickerModal({
         return a.name.localeCompare(b.name)
       })
   }, [branches, branchFilter])
+
+  // For the New-worktree branch picker: when assigning an existing branch,
+  // hide branches already checked out elsewhere (git allows one worktree per
+  // branch, so they can't be assigned). Forking a new branch off them is fine.
+  const newWorktreeBranchOptions = useMemo(
+    () => (assignExistingBranch ? filteredBranches.filter((b) => !b.isCheckedOut) : filteredBranches),
+    [assignExistingBranch, filteredBranches]
+  )
 
   // ── Handle SDK change ───────────────────────────────────────────
   const handleSdkChange = useCallback((sdk: PickerAgentSdk) => {
@@ -452,6 +464,7 @@ export function WorktreePickerModal({
   const handleSelectWorktree = useCallback((wtId: string) => {
     setSelectedWorktreeId(wtId)
     setIsNewWorktree(false)
+    setAssignExistingBranch(false)
     // Reuse base defaults to the repo default branch, independent of the
     // last-used New-worktree source branch.
     setSourceBranch(null)
@@ -460,8 +473,18 @@ export function WorktreePickerModal({
   const handleSelectNewWorktree = useCallback(() => {
     setSelectedWorktreeId(null)
     setIsNewWorktree(true)
+    setAssignExistingBranch(false)
     setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
   }, [projectId])
+
+  // Assign-existing requires a concrete branch that isn't already checked out
+  // somewhere (git allows only one worktree per branch).
+  const assignBranchValid = useMemo(() => {
+    if (!assignExistingBranch) return true
+    if (!sourceBranch) return false
+    const match = branches.find((b) => b.name === sourceBranch)
+    return !match || !match.isCheckedOut
+  }, [assignExistingBranch, sourceBranch, branches])
 
   // ── Create a fresh branch on a reused worktree ──────────────────
   // Branches off the chosen base (default branch, the worktree's own branch, or
@@ -497,7 +520,9 @@ export function WorktreePickerModal({
   const canSend =
     (isConnectionMode
       ? !isSending
-      : (selectedWorktreeId !== null || isNewWorktree) && !isSending) && goalCriteriaValid
+      : (selectedWorktreeId !== null || isNewWorktree) && !isSending) &&
+    goalCriteriaValid &&
+    (isConnectionMode || !isNewWorktree || assignBranchValid)
 
   const handleSend = useCallback(async () => {
     if (!canSend) return
@@ -760,7 +785,11 @@ export function WorktreePickerModal({
       if (saveConfigOnly) {
         const pendingConfig = {
           worktree: isNewWorktree
-            ? { type: 'new' as const, sourceBranch: sourceBranch ?? defaultBranchName }
+            ? {
+                type: 'new' as const,
+                sourceBranch: sourceBranch ?? defaultBranchName,
+                useExistingBranch: assignExistingBranch
+              }
             : { type: 'existing' as const, worktreeId: worktreeId! },
           prompt: promptText.trim() || buildPrompt(mode, ticket),
           mode,
@@ -812,13 +841,18 @@ export function WorktreePickerModal({
         if (isNewWorktree && project) {
           const targetBranch = sourceBranch ?? defaultBranchName
           _lastSourceBranchByProject[projectId] = targetBranch
-          const nameHint = canonicalizeTicketTitle(ticket.title)
+          // Assigning an existing branch keeps the branch's own name; only a
+          // forked branch is named after the ticket.
+          const nameHint = assignExistingBranch
+            ? undefined
+            : canonicalizeTicketTitle(ticket.title) || undefined
           const result = await createWorktreeFromBranch(
             projectId,
             project.path,
             project.name,
             targetBranch,
-            nameHint || undefined,
+            nameHint,
+            assignExistingBranch,
             { runSetup }
           )
           if (!result.success || !result.worktree?.id) {
@@ -884,7 +918,11 @@ export function WorktreePickerModal({
       if ((isNewWorktree || selectedWorktreeId) && !canLaunchWorktreeNow(projectId)) {
         const pendingConfig = {
           worktree: isNewWorktree
-            ? { type: 'new' as const, sourceBranch: sourceBranch ?? defaultBranchName }
+            ? {
+                type: 'new' as const,
+                sourceBranch: sourceBranch ?? defaultBranchName,
+                useExistingBranch: assignExistingBranch
+              }
             : { type: 'existing' as const, worktreeId: selectedWorktreeId! },
           prompt: promptText.trim() || buildPrompt(mode, ticket),
           mode,
@@ -924,13 +962,18 @@ export function WorktreePickerModal({
       if (isNewWorktree && project) {
         const targetBranch = sourceBranch ?? defaultBranchName
         _lastSourceBranchByProject[projectId] = targetBranch
-        const nameHint = canonicalizeTicketTitle(ticket.title)
+        // Assigning an existing branch keeps the branch's own name; only a forked
+        // branch is named after the ticket.
+        const nameHint = assignExistingBranch
+          ? undefined
+          : canonicalizeTicketTitle(ticket.title) || undefined
         const result = await createWorktreeFromBranch(
           projectId,
           project.path,
           project.name,
           targetBranch,
-          nameHint || undefined,
+          nameHint,
+          assignExistingBranch,
           { runSetup }
         )
         if (!result.success || !result.worktree?.id) {
@@ -1242,7 +1285,8 @@ export function WorktreePickerModal({
     dependencyMap,
     createNewBranch,
     runSetup,
-    branchWorktreeFromBase
+    branchWorktreeFromBase,
+    assignExistingBranch
   ])
 
   // ── Mode toggle chip ────────────────────────────────────────────
@@ -1356,76 +1400,119 @@ export function WorktreePickerModal({
                 </button>
 
                 {isNewWorktree && (
-                  <div className="flex items-center gap-2 px-3.5 py-2 border-b border-border/40 bg-muted/5">
-                    <span className="text-xs text-muted-foreground whitespace-nowrap">from</span>
-                    <Popover open={branchPopoverOpen} onOpenChange={setBranchPopoverOpen}>
-                      <PopoverTrigger asChild>
-                        <button
-                          type="button"
-                          data-testid="source-branch-trigger"
-                          className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md border border-border/60 hover:bg-muted/30 transition-colors"
-                        >
-                          <GitBranch className="h-3 w-3 text-muted-foreground" />
-                          <span className="truncate max-w-[180px]">
-                            {sourceBranch ?? defaultBranchName}
-                          </span>
-                          <ChevronDown className="h-3 w-3 text-muted-foreground" />
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-72 p-0" align="start">
-                        <div className="p-2 border-b border-border/40">
-                          <div className="relative">
-                            <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
-                            <Input
-                              placeholder="Filter branches..."
-                              value={branchFilter}
-                              onChange={(e) => setBranchFilter(e.target.value)}
-                              className="pl-7 h-8 text-xs"
-                              autoFocus
-                            />
-                          </div>
-                        </div>
-                        <div className="max-h-[200px] overflow-y-auto py-1">
-                          {branchesLoading ? (
-                            <div className="flex items-center justify-center py-4">
-                              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                            </div>
-                          ) : filteredBranches.length === 0 ? (
-                            <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                              No branches found
-                            </div>
-                          ) : (
-                            filteredBranches.map((branch) => (
-                              <button
-                                type="button"
-                                key={`${branch.name}-${branch.isRemote}`}
-                                data-testid={`source-branch-${branch.name}`}
-                                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-muted/30 transition-colors"
-                                onClick={() => {
-                                  setSourceBranch(branch.name)
-                                  _lastSourceBranchByProject[projectId] = branch.name
-                                  setBranchPopoverOpen(false)
-                                  setBranchFilter('')
-                                }}
-                              >
-                                <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" />
-                                <span className="flex-1 truncate">{branch.name}</span>
-                                {branch.isRemote && (
-                                  <span className="text-[10px] text-muted-foreground">remote</span>
-                                )}
-                                {branch.isCheckedOut && (
-                                  <span className="text-[10px] text-primary">active</span>
-                                )}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                    {worktreeNamePreview && (
-                      <span className="ml-auto text-xs text-muted-foreground font-mono truncate max-w-[180px]">
-                        {worktreeNamePreview}
+                  <div className="border-b border-border/40 bg-muted/5">
+                    <div className="flex items-center gap-2 px-3.5 py-2">
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">
+                        {assignExistingBranch ? 'branch' : 'from'}
                       </span>
+                      <Popover open={branchPopoverOpen} onOpenChange={setBranchPopoverOpen}>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            data-testid="source-branch-trigger"
+                            className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md border border-border/60 hover:bg-muted/30 transition-colors"
+                          >
+                            <GitBranch className="h-3 w-3 text-muted-foreground" />
+                            <span className="truncate max-w-[180px]">
+                              {sourceBranch ??
+                                (assignExistingBranch ? 'Select a branch…' : defaultBranchName)}
+                            </span>
+                            <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-72 p-0" align="start">
+                          <div className="p-2 border-b border-border/40">
+                            <div className="relative">
+                              <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+                              <Input
+                                placeholder="Filter branches..."
+                                value={branchFilter}
+                                onChange={(e) => setBranchFilter(e.target.value)}
+                                className="pl-7 h-8 text-xs"
+                                autoFocus
+                              />
+                            </div>
+                          </div>
+                          <div className="max-h-[200px] overflow-y-auto py-1">
+                            {branchesLoading ? (
+                              <div className="flex items-center justify-center py-4">
+                                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                              </div>
+                            ) : newWorktreeBranchOptions.length === 0 ? (
+                              <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+                                {assignExistingBranch
+                                  ? 'No assignable branches (all are checked out)'
+                                  : 'No branches found'}
+                              </div>
+                            ) : (
+                              newWorktreeBranchOptions.map((branch) => (
+                                <button
+                                  type="button"
+                                  key={`${branch.name}-${branch.isRemote}`}
+                                  data-testid={`source-branch-${branch.name}`}
+                                  className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left hover:bg-muted/30 transition-colors"
+                                  onClick={() => {
+                                    setSourceBranch(branch.name)
+                                    _lastSourceBranchByProject[projectId] = branch.name
+                                    setBranchPopoverOpen(false)
+                                    setBranchFilter('')
+                                  }}
+                                >
+                                  <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                  <span className="flex-1 truncate">{branch.name}</span>
+                                  {branch.isRemote && (
+                                    <span className="text-[10px] text-muted-foreground">remote</span>
+                                  )}
+                                  {branch.isCheckedOut && (
+                                    <span className="text-[10px] text-primary">active</span>
+                                  )}
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                      {!assignExistingBranch && worktreeNamePreview && (
+                        <span className="ml-auto text-xs text-muted-foreground font-mono truncate max-w-[180px]">
+                          {worktreeNamePreview}
+                        </span>
+                      )}
+                    </div>
+
+                    <label
+                      className="flex items-start gap-2.5 px-3.5 py-2 border-t border-border/40 cursor-pointer select-none"
+                      data-testid="assign-existing-branch-row"
+                    >
+                      <Checkbox
+                        checked={assignExistingBranch}
+                        onCheckedChange={(v) => {
+                          const on = v === true
+                          setAssignExistingBranch(on)
+                          // The default branch is already checked out in the main
+                          // worktree, so it can't be assigned — force a fresh pick.
+                          if (on) setSourceBranch(null)
+                          else setSourceBranch(_lastSourceBranchByProject[projectId] ?? null)
+                        }}
+                        data-testid="assign-existing-branch-checkbox"
+                        className="mt-0.5"
+                        aria-label="Assign an existing branch to the new worktree"
+                      />
+                      <span className="text-xs text-foreground">
+                        Use the existing branch as-is
+                        <span className="block text-muted-foreground">
+                          Check out the selected branch directly so commits land on it, instead of
+                          forking a new ticket-named branch off it.
+                        </span>
+                      </span>
+                    </label>
+
+                    {assignExistingBranch && !assignBranchValid && (
+                      <p
+                        className="px-3.5 pb-2 text-xs text-destructive"
+                        data-testid="assign-existing-branch-error"
+                      >
+                        Pick a branch that isn&apos;t already checked out in another worktree.
+                      </p>
                     )}
                   </div>
                 )}

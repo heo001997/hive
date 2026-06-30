@@ -1,5 +1,6 @@
 import { telegramApi } from '@/api/telegram-api'
 import { useSettingsStore } from '@/stores/useSettingsStore'
+import { useTelegramStore } from '@/stores/useTelegramStore'
 
 /**
  * Kanban ticket lifecycle events that fan out to Telegram. Each maps 1:1 to a
@@ -28,10 +29,14 @@ interface NotifySettings {
   kanbanTelegramNotifyOnQuestion?: boolean
   kanbanTelegramNotifyOnStuckReview?: boolean
   kanbanTelegramNotifyOnDone?: boolean
+  kanbanTelegramAutoForwardOnUserAction?: boolean
 }
 
 const passesGate = (event: TicketNotifyEvent, settings: NotifySettings): boolean =>
   !!settings.kanbanTelegramNotifyEnabled && !!settings[SETTING_BY_EVENT[event]]
+
+const passesAutoForwardGate = (settings: NotifySettings): boolean =>
+  !!settings.kanbanTelegramNotifyEnabled && !!settings.kanbanTelegramAutoForwardOnUserAction
 
 const buildText = (event: TicketNotifyEvent, title: string): string => {
   const name = title.trim() || 'Untitled ticket'
@@ -136,7 +141,10 @@ export async function notifyTicketEvent(
  */
 export async function notifyTicketQuestion(sessionId: string, requestId: string): Promise<void> {
   const settings = useSettingsStore.getState()
-  if (!passesGate('question', settings)) return
+  const wantNotify = passesGate('question', settings)
+  const wantForward = passesAutoForwardGate(settings)
+  // Both features resolve the same ticket; skip the kanban read entirely if neither is on.
+  if (!wantNotify && !wantForward) return
 
   const { useKanbanStore } = await import('@/stores/useKanbanStore')
   for (const tickets of useKanbanStore.getState().tickets.values()) {
@@ -144,17 +152,82 @@ export async function notifyTicketQuestion(sessionId: string, requestId: string)
       (t) => t.current_session_id === sessionId && t.column !== 'done' && !t.archived_at
     )
     if (ticket) {
-      await notifyTicketEvent(
-        'question',
-        {
-          ticketId: ticket.id,
-          title: ticket.title,
-          dedupeKey: `question:${ticket.id}:${requestId}`
-        },
-        settings
-      )
+      if (wantNotify) {
+        await notifyTicketEvent(
+          'question',
+          {
+            ticketId: ticket.id,
+            title: ticket.title,
+            dedupeKey: `question:${ticket.id}:${requestId}`
+          },
+          settings
+        )
+      }
+      if (wantForward) {
+        await autoForwardTicketForUserAction(
+          { sessionId, worktreeId: ticket.worktree_id ?? null, connectionId: null },
+          settings
+        )
+      }
       return
     }
+  }
+}
+
+/** Forwarding mode auto-forward starts in — full "all" mode so Telegram mirrors the
+ * session like the real terminal (streams agent output + forwards question /
+ * permission / plan option-buttons + accepts typed replies). */
+const AUTO_FORWARD_MODE = 'all' as const
+
+interface AutoForwardTarget {
+  sessionId: string
+  worktreeId: string | null
+  connectionId: string | null
+}
+
+// Coalesce concurrent auto-forward attempts for the same session — the active-forward
+// guard below only flips once startForwarding's status round-trips through the store,
+// so two near-simultaneous needs-action events could otherwise both start.
+const autoForwardInFlight = new Set<string>()
+
+/**
+ * Auto-start Telegram forwarding for a ticket's session when the ticket reaches a
+ * "needs user action" state (Question or stuck Review), so the user can chat and tap
+ * option-buttons from Telegram exactly like the session terminal. Starts in full "all"
+ * mode. No-op (silent) when the master / auto-forward toggles are off, when there is no
+ * usable forwarding target (needs exactly one of worktree / connection), or when ANY
+ * forward is already active — auto-forward never steals an in-progress forward, and
+ * forwarding the same session again would be redundant. Never throws.
+ */
+export async function autoForwardTicketForUserAction(
+  target: AutoForwardTarget,
+  settings?: NotifySettings
+): Promise<void> {
+  const resolved = settings ?? useSettingsStore.getState()
+  if (!passesAutoForwardGate(resolved)) return
+
+  const { sessionId, worktreeId, connectionId } = target
+  // startForwarding requires exactly one target (worktree XOR connection).
+  if (!sessionId || !!worktreeId === !!connectionId) return
+
+  // Don't steal: if a manual (or earlier auto) forward is already active — whether for
+  // this session or another — leave it. The notification already alerted the user.
+  if (useTelegramStore.getState().activeForwardingSessionId) return
+  if (autoForwardInFlight.has(sessionId)) return
+
+  autoForwardInFlight.add(sessionId)
+  try {
+    const result = await telegramApi.startForwarding({
+      sessionId,
+      worktreeId,
+      connectionId,
+      mode: AUTO_FORWARD_MODE
+    })
+    if (result.ok) useTelegramStore.getState().setStatus(result.status)
+  } catch (error) {
+    console.warn('[TicketTelegramNotify] failed to auto-forward ticket session', error)
+  } finally {
+    autoForwardInFlight.delete(sessionId)
   }
 }
 
@@ -193,4 +266,5 @@ export function notifyTicketColumnChange(args: {
 export function resetTicketNotifyStateForTests(): void {
   delivered.clear()
   inFlight.clear()
+  autoForwardInFlight.clear()
 }

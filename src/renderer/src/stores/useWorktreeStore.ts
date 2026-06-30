@@ -156,6 +156,7 @@ interface WorktreeState {
     projectName: string,
     branchName: string,
     nameHint?: string,
+    useExistingBranch?: boolean,
     opts?: { runSetup?: boolean }
   ) => Promise<{ success: boolean; worktree?: Worktree; error?: string }>
   duplicateWorktree: (
@@ -413,6 +414,7 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
     projectName: string,
     branchName: string,
     nameHint?: string,
+    useExistingBranch?: boolean,
     opts?: { runSetup?: boolean }
   ) => {
     set({ creatingForProjectId: projectId })
@@ -422,7 +424,8 @@ export const useWorktreeStore = create<WorktreeState>((set, get) => ({
         projectPath,
         projectName,
         branchName,
-        nameHint
+        nameHint,
+        useExistingBranch
       })
 
       if (!result.success || !result.worktree) {

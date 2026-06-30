@@ -396,6 +396,19 @@ export class GitService {
     )
   }
 
+  async createWorktreeFromExistingBranch(
+    projectName: string,
+    branchName: string,
+    options?: { autoPull?: boolean; worktreeCreateScript?: string | null }
+  ): Promise<CreateWorktreeResult> {
+    return gitEffectService.createWorktreeFromExistingBranch(
+      this.repoPath,
+      projectName,
+      branchName,
+      options
+    )
+  }
+
   async getRemoteUrl(remote = 'origin'): Promise<{
     success: boolean
     url: string | null
