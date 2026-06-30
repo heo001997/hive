@@ -82,6 +82,10 @@ export const telegramApi = {
     }),
   sendTestMessage: async (): Promise<TelegramSetConfigResult> =>
     getRendererRpcClient().request<TelegramSetConfigResult>('telegramOps.sendTestMessage', {}),
+  sendNotification: async (text: string): Promise<TelegramSetConfigResult> =>
+    getRendererRpcClient().request<TelegramSetConfigResult>('telegramOps.sendNotification', {
+      text
+    }),
   getStatus: async (): Promise<TelegramForwardingStatus> =>
     getRendererRpcClient().request<TelegramForwardingStatus>('telegramOps.getStatus', {}),
   startForwarding: async (

@@ -396,6 +396,11 @@ export function useOpenCodeGlobalListener(): void {
         const request = event.data
         if (request?.id && request?.questions) {
           useQuestionStore.getState().addQuestion(sessionId, request)
+          // Notify Telegram that the ticket owning this session reached a "question"
+          // state (agent waiting on the user). Gated per-event in settings.
+          void import('@/lib/ticket-telegram-notify')
+            .then((m) => m.notifyTicketQuestion(sessionId, String(request.id)))
+            .catch(() => {})
           // Only set status badge for background sessions; active session manages its own
           if (sessionId !== activeId) {
             useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'answering')

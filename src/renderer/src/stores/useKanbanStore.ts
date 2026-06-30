@@ -971,6 +971,19 @@ async function onInProgressRescueSettled(
     const v = get().completionVerdicts.get(key)
     if (v && !v.rescueExhausted) {
       get().setCompletionVerdict(key, { ...v, rescueExhausted: true })
+      // All Strict Verify rescue retries are exhausted and the ticket still isn't
+      // done — it's genuinely stuck and needs user action. This is the ONLY
+      // "stuck review" notification trigger. Once per session (the rescue budget
+      // is per-session, so a fresh session re-arms and can notify again).
+      void import('../lib/ticket-telegram-notify')
+        .then((m) =>
+          m.notifyTicketEvent('stuck_review', {
+            ticketId,
+            title: current.title,
+            dedupeKey: `stuck_review:${ticketId}:${sessionId}`
+          })
+        )
+        .catch(() => {})
     }
     return
   }
@@ -1308,7 +1321,9 @@ async function onStrictVerifySettled(
     if (outcome === 'error') {
       // The Reviewer failed — error already surfaced + logged by runStrictVerify.
       // Do NOT fail open: leave the ticket in Review (no verdict, no advance) so
-      // the failure can be traced, and clear the in-progress badge.
+      // the failure can be traced, and clear the in-progress badge. This is a
+      // transient verifier failure (retried internally), NOT the "stuck — needs
+      // user action" state, so it does not fire a Telegram notification.
       get().setVerifyProgress(key, null)
       return
     }
@@ -1674,6 +1689,25 @@ export const useKanbanStore = create<KanbanState>()(
         if (data.auto_approve_review !== undefined) {
           const updated = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
           await armSettleTimers(get, projectId, ticketId, updated)
+        }
+
+        // An in-place column write (auto-launch / auto-attach move a ticket
+        // Todo → In Progress via updateTicket, not moveTicket) must still fire the
+        // Telegram lifecycle notification. The shared handler gates on the actual
+        // transition, so passing a non-column update is a harmless no-op.
+        if (data.column !== undefined) {
+          const prevTicket = prev.find((t) => t.id === ticketId)
+          const title = data.title ?? prevTicket?.title ?? ''
+          void import('../lib/ticket-telegram-notify')
+            .then((m) =>
+              m.notifyTicketColumnChange({
+                ticketId,
+                title,
+                prevColumn: prevTicket?.column,
+                column: data.column
+              })
+            )
+            .catch(() => {})
         }
       },
 
@@ -2108,6 +2142,16 @@ export const useKanbanStore = create<KanbanState>()(
           // reflects the move target) — `movedTicket` is the pre-move snapshot.
           const updated = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
           await armSettleTimers(get, projectId, ticketId, updated)
+
+          // Telegram ticket-lifecycle notifications (gated per-event in settings).
+          // Hand the pre-move snapshot column and the target to the shared
+          // transition handler: it fires "started" on the first Todo → In Progress
+          // and "done" on a genuine move into Done (and frees stale dedupe slots).
+          const prevColumn = movedTicket?.column
+          const ticketTitle = updated?.title ?? movedTicket?.title ?? ''
+          void import('../lib/ticket-telegram-notify')
+            .then((m) => m.notifyTicketColumnChange({ ticketId, title: ticketTitle, prevColumn, column }))
+            .catch(() => {})
         } catch (err) {
           // Revert on failure
           set((state) => {

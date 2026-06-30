@@ -122,6 +122,16 @@ export interface AppSettings {
   kanbanInProgressRescueEnabled: boolean
   /** Kanban: Queue prompts (claude-code-cli only) — when on, follow-ups typed while a claude-cli ticket is busy are queued; the next queued prompt is entered automatically once the ticket reaches Review AND is verified complete by Strict Verify. Gated by (and auto-disabled without) Strict Verify. */
   kanbanQueuePromptsEnabled: boolean
+  /** Kanban: Telegram ticket notifications — master switch. Off by default (opt-in) so users who already configured a Telegram bot for forwarding aren't surprised by ticket messages. When on, a message is sent to the configured Telegram bot + chat on the ticket lifecycle events toggled below. No-op until a Telegram bot is configured. */
+  kanbanTelegramNotifyEnabled: boolean
+  /** Kanban: notify when a ticket first moves Todo → In Progress (work started). */
+  kanbanTelegramNotifyOnStart: boolean
+  /** Kanban: notify when a ticket's agent asks the user a question (waiting on input). */
+  kanbanTelegramNotifyOnQuestion: boolean
+  /** Kanban: notify when Strict Verify has exhausted all its rescue retries and the ticket still isn't done — genuinely stuck and needs user action. (Transient Reviewer errors do NOT notify.) */
+  kanbanTelegramNotifyOnStuckReview: boolean
+  /** Kanban: notify when a ticket moves to Done. */
+  kanbanTelegramNotifyOnDone: boolean
 
   // Editor
   defaultEditor: EditorOption
@@ -275,6 +285,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanStrictVerifyConfidenceThreshold: 0.6,
   kanbanInProgressRescueEnabled: true,
   kanbanQueuePromptsEnabled: false,
+  kanbanTelegramNotifyEnabled: false,
+  kanbanTelegramNotifyOnStart: true,
+  kanbanTelegramNotifyOnQuestion: true,
+  kanbanTelegramNotifyOnStuckReview: true,
+  kanbanTelegramNotifyOnDone: true,
   defaultEditor: 'vscode',
   customEditorCommand: '',
   defaultTerminal: 'terminal',
@@ -528,6 +543,11 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
     kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
     kanbanQueuePromptsEnabled: state.kanbanQueuePromptsEnabled,
+    kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
+    kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
+    kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
+    kanbanTelegramNotifyOnStuckReview: state.kanbanTelegramNotifyOnStuckReview,
+    kanbanTelegramNotifyOnDone: state.kanbanTelegramNotifyOnDone,
     defaultEditor: state.defaultEditor,
     customEditorCommand: state.customEditorCommand,
     defaultTerminal: state.defaultTerminal,
@@ -923,6 +943,11 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanStrictVerifyConfidenceThreshold: state.kanbanStrictVerifyConfidenceThreshold,
         kanbanInProgressRescueEnabled: state.kanbanInProgressRescueEnabled,
         kanbanQueuePromptsEnabled: state.kanbanQueuePromptsEnabled,
+        kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
+        kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
+        kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
+        kanbanTelegramNotifyOnStuckReview: state.kanbanTelegramNotifyOnStuckReview,
+        kanbanTelegramNotifyOnDone: state.kanbanTelegramNotifyOnDone,
         defaultEditor: state.defaultEditor,
         customEditorCommand: state.customEditorCommand,
         defaultTerminal: state.defaultTerminal,

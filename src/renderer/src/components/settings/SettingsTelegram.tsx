@@ -3,10 +3,32 @@ import { Check, Loader2, Send, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Switch } from '@/components/ui/switch'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useTelegramStore } from '@/stores/useTelegramStore'
 import type { TelegramConfig } from '@shared/types/telegram'
 import { telegramApi } from '@/api/telegram-api'
+import { cn } from '@/lib/utils'
+
+interface ToggleRowProps {
+  label: string
+  description?: string
+  checked: boolean
+  disabled?: boolean
+  onChange: (next: boolean) => void
+}
+
+function ToggleRow({ label, description, checked, disabled, onChange }: ToggleRowProps): React.JSX.Element {
+  return (
+    <div className={cn('flex items-center justify-between gap-4', disabled && 'opacity-50')}>
+      <div>
+        <label className="text-sm font-medium">{label}</label>
+        {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+      </div>
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
+    </div>
+  )
+}
 
 const DEFAULT_CONFIG: TelegramConfig = {
   botToken: '',
@@ -18,6 +40,12 @@ const DEFAULT_CONFIG: TelegramConfig = {
 export function SettingsTelegram(): React.JSX.Element {
   const telegramConfig = useSettingsStore((s) => s.telegramConfig)
   const setTelegramConfig = useSettingsStore((s) => s.setTelegramConfig)
+  const updateSetting = useSettingsStore((s) => s.updateSetting)
+  const notifyEnabled = useSettingsStore((s) => s.kanbanTelegramNotifyEnabled)
+  const notifyOnStart = useSettingsStore((s) => s.kanbanTelegramNotifyOnStart)
+  const notifyOnQuestion = useSettingsStore((s) => s.kanbanTelegramNotifyOnQuestion)
+  const notifyOnStuckReview = useSettingsStore((s) => s.kanbanTelegramNotifyOnStuckReview)
+  const notifyOnDone = useSettingsStore((s) => s.kanbanTelegramNotifyOnDone)
   const {
     connectionStatus,
     lastError,
@@ -219,6 +247,50 @@ export function SettingsTelegram(): React.JSX.Element {
             Test message
           </Button>
         </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-medium mb-1">Ticket notifications</h3>
+        <p className="text-xs text-muted-foreground">
+          Send a Telegram message (to the bot + chat above) on key ticket events.
+        </p>
+      </div>
+
+      <div className="space-y-4 rounded-lg border p-4">
+        <ToggleRow
+          label="Enable ticket notifications"
+          description="Master switch for the events below. No messages are sent until a bot + chat are configured."
+          checked={notifyEnabled}
+          onChange={(next) => updateSetting('kanbanTelegramNotifyEnabled', next)}
+        />
+        <ToggleRow
+          label="Work started"
+          description="A ticket first moves Todo → In Progress."
+          checked={notifyOnStart}
+          disabled={!notifyEnabled}
+          onChange={(next) => updateSetting('kanbanTelegramNotifyOnStart', next)}
+        />
+        <ToggleRow
+          label="Question asked"
+          description="The agent asks a question and is waiting on your input."
+          checked={notifyOnQuestion}
+          disabled={!notifyEnabled}
+          onChange={(next) => updateSetting('kanbanTelegramNotifyOnQuestion', next)}
+        />
+        <ToggleRow
+          label="Stuck — needs you"
+          description="Strict Verify exhausted all its retries and the ticket still isn't done — it needs your action. Requires Strict Verify + In Progress rescue enabled."
+          checked={notifyOnStuckReview}
+          disabled={!notifyEnabled}
+          onChange={(next) => updateSetting('kanbanTelegramNotifyOnStuckReview', next)}
+        />
+        <ToggleRow
+          label="Done"
+          description="A ticket moves to Done."
+          checked={notifyOnDone}
+          disabled={!notifyEnabled}
+          onChange={(next) => updateSetting('kanbanTelegramNotifyOnDone', next)}
+        />
       </div>
     </div>
   )
