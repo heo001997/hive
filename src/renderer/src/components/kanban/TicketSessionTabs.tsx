@@ -114,6 +114,8 @@ interface TicketSessionTabsProps {
   onSelectView: (sessionId: string | null) => void
   /** Called after a new session is spawned from the + menu. */
   onSpawned?: (sessionId: string) => void
+  /** Optional control pinned to the right edge, kept visible while tabs scroll. */
+  trailing?: React.ReactNode
 }
 
 /**
@@ -130,7 +132,8 @@ export function TicketSessionTabs({
   ticket,
   activeViewSessionId,
   onSelectView,
-  onSpawned
+  onSpawned,
+  trailing
 }: TicketSessionTabsProps): React.JSX.Element {
   const worktreeId = ticket.worktree_id
 
@@ -242,31 +245,34 @@ export function TicketSessionTabs({
 
   return (
     <div
-      className="shrink-0 flex items-stretch border-b border-border bg-muted/30 overflow-x-auto"
+      className="shrink-0 flex items-stretch border-b border-border bg-muted/30"
       data-testid="ticket-session-tabs"
     >
-      <CreateSessionMenu
-        onDefaultCreate={() => void handleSpawn('terminal')}
-        onCreate={(sdk) => void handleSpawn(sdk)}
-        triggerTitle="New session (right-click for options)"
-        data-testid="ticket-create-session"
-      />
-      {sessions.length === 0 ? (
-        <span className="flex items-center px-3 py-1.5 text-xs text-muted-foreground">
-          No sessions yet — use + to start one
-        </span>
-      ) : (
-        sessions.map((session) => (
-          <TicketSessionTab
-            key={session.id}
-            session={session}
-            isActive={session.id === activeViewSessionId}
-            isPrimary={session.id === ticket.current_session_id}
-            onSelect={() => onSelectView(session.id)}
-            onClose={(e) => handleCloseClick(e, session.id)}
-          />
-        ))
-      )}
+      <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
+        <CreateSessionMenu
+          onDefaultCreate={() => void handleSpawn('terminal')}
+          onCreate={(sdk) => void handleSpawn(sdk)}
+          triggerTitle="New session (right-click for options)"
+          data-testid="ticket-create-session"
+        />
+        {sessions.length === 0 ? (
+          <span className="flex items-center px-3 py-1.5 text-xs text-muted-foreground">
+            No sessions yet — use + to start one
+          </span>
+        ) : (
+          sessions.map((session) => (
+            <TicketSessionTab
+              key={session.id}
+              session={session}
+              isActive={session.id === activeViewSessionId}
+              isPrimary={session.id === ticket.current_session_id}
+              onSelect={() => onSelectView(session.id)}
+              onClose={(e) => handleCloseClick(e, session.id)}
+            />
+          ))
+        )}
+      </div>
+      {trailing}
 
       <AlertDialog
         open={confirmCloseId !== null}
