@@ -379,10 +379,20 @@ export class TelegramForwardingService {
   }
 
   async sendTestMessage(): Promise<{ ok: boolean; error?: string }> {
+    return this.sendNotification('Hive connected ✅')
+  }
+
+  /**
+   * Send a one-off notification to the configured chat (used by the Kanban ticket
+   * lifecycle notifications — started / question / stuck-review / done). Independent
+   * of any active forwarding session: the configured bot + chat is the single target.
+   * No-op (returns ok:false) when Telegram is not configured.
+   */
+  async sendNotification(text: string): Promise<{ ok: boolean; error?: string }> {
     const cfg = this.getConfig()
     if (!cfg?.botToken || !cfg.chatId) return { ok: false, error: 'Telegram is not configured' }
     try {
-      await this.sendMessage(cfg, 'Hive connected ✅')
+      await this.sendMessage(cfg, text)
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }

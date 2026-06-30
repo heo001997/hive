@@ -23,6 +23,9 @@ export interface TelegramOpsRpcService {
     config?: TelegramConfig | null
   ) => Effect.Effect<TelegramDiscoveredChat[], unknown, never>
   readonly sendTestMessage: () => Effect.Effect<TelegramSetConfigResult, unknown, never>
+  readonly sendNotification: (
+    text: string
+  ) => Effect.Effect<TelegramSetConfigResult, unknown, never>
   readonly startForwarding: (
     params: TelegramStartForwardingRequest
   ) => Effect.Effect<TelegramStartForwardingResult, unknown, never>
@@ -81,6 +84,11 @@ const discoverChatsParamsSchema = z
   .transform((params) =>
     params && typeof params === 'object' && 'config' in params ? params.config : undefined
   )
+const sendNotificationParamsSchema = z
+  .object({
+    text: z.string().min(1)
+  })
+  .strict()
 const startForwardingRequestSchema = z.object({
   sessionId: z.string().min(1),
   worktreeId: z.string().nullable(),
@@ -187,6 +195,14 @@ export const makeLiveTelegramOpsRpcService = (eventBus?: EventBus): TelegramOpsR
       },
       catch: (cause) => cause
     }),
+  sendNotification: (text) =>
+    Effect.tryPromise({
+      try: async () => {
+        const telegramForwardingService = await importTelegramForwardingService(eventBus)
+        return telegramForwardingService.sendNotification(text)
+      },
+      catch: (cause) => cause
+    }),
   startForwarding: (params) =>
     Effect.tryPromise({
       try: async () => {
@@ -288,6 +304,17 @@ export const makeTelegramOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.sendTestMessage()
+        })
+    ],
+    [
+      'telegramOps.sendNotification',
+      (params) =>
+        Effect.gen(function* () {
+          const { text } = yield* Effect.try({
+            try: () => sendNotificationParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.sendNotification(text)
         })
     ],
     [
