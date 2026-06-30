@@ -18,6 +18,14 @@ export interface DetectTicketCompletionParams {
   systemPrompt?: string
 }
 
+/** Result envelope returned by {@link completionApi.getTicketTranscript}. */
+export interface GetTicketTranscriptResult {
+  success: boolean
+  /** The transcript tail (present on success; may be empty when no source had text). */
+  text?: string
+  error?: string
+}
+
 export const completionApi = {
   /**
    * Send the tail of a session's transcript to an AI provider and ask whether
@@ -55,6 +63,22 @@ export const completionApi = {
   }): Promise<CompletionCheckResult> =>
     getRendererRpcClient().request<CompletionCheckResult>(
       'completionOps.testStrictVerifyProvider',
+      params
+    ),
+
+  /**
+   * Fetch the same provider-agnostic transcript tail the Watcher judges, WITHOUT
+   * a model call. Used by the Speckit review-gate to scan a settled review
+   * ticket's output for a `board-ticket-drafts` block. Resolves to a result
+   * envelope — `{ success: false, error }` on failure rather than throwing.
+   */
+  getTicketTranscript: async (params: {
+    sessionId: string
+    ticketId: string
+    maxChars?: number
+  }): Promise<GetTicketTranscriptResult> =>
+    getRendererRpcClient().request<GetTicketTranscriptResult>(
+      'completionOps.getTicketTranscript',
       params
     )
 }

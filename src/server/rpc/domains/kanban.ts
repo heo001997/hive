@@ -215,7 +215,7 @@ const ticketMarkSchema = z.enum(['common', 'rare', 'epic', 'legendary'])
 // Per-ticket lifecycle-callback config (mirrors src/shared/types/ticket-lifecycle.ts).
 const lifecycleActionSchema = z.object({
   id: z.string(),
-  type: z.enum(['prompt', 'agent', 'check', 'review', 'notify', 'goto', 'wait']),
+  type: z.enum(['prompt', 'agent', 'check', 'review', 'notify', 'goto', 'wait', 'spawn']),
   // z.record requires 2 args (keySchema, valueSchema).
   config: z.record(z.string(), z.unknown()),
   runOn: z.array(z.enum(['initial', 'retry'])).optional()
@@ -649,9 +649,7 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   moveTicketToProject: (projectId, id, targetProjectId) =>
     Effect.tryPromise({
       try: async () => {
-        const { moveKanbanTicketToProject } = await import(
-          '../../../main/services/kanban-backend'
-        )
+        const { moveKanbanTicketToProject } = await import('../../../main/services/kanban-backend')
         return moveKanbanTicketToProject(projectId, id, targetProjectId)
       },
       catch: (cause) => cause
@@ -675,9 +673,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   getTicketsBySession: (sessionId) =>
     Effect.tryPromise({
       try: async () => {
-        const { getAllKanbanTicketsBySession } = await import(
-          '../../../main/services/kanban-backend'
-        )
+        const { getAllKanbanTicketsBySession } =
+          await import('../../../main/services/kanban-backend')
         return getAllKanbanTicketsBySession(sessionId)
       },
       catch: (cause) => cause
@@ -701,7 +698,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   clearPrFromTickets: (worktreeId) =>
     Effect.tryPromise({
       try: async () => {
-        const { clearPRFromAllKanbanBackends } = await import('../../../main/services/kanban-backend')
+        const { clearPRFromAllKanbanBackends } =
+          await import('../../../main/services/kanban-backend')
         return clearPRFromAllKanbanBackends(worktreeId)
       },
       catch: (cause) => cause
@@ -725,9 +723,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   detachWorktreeFromTickets: (worktreeId) =>
     Effect.tryPromise({
       try: async () => {
-        const { detachWorktreeFromAllKanbanBackends } = await import(
-          '../../../main/services/kanban-backend'
-        )
+        const { detachWorktreeFromAllKanbanBackends } =
+          await import('../../../main/services/kanban-backend')
         return detachWorktreeFromAllKanbanBackends(worktreeId)
       },
       catch: (cause) => cause
@@ -744,7 +741,11 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
     Effect.tryPromise({
       try: async () => {
         const { getKanbanBackendForProject } = await import('../../../main/services/kanban-backend')
-        return getKanbanBackendForProject(projectId).addDependency(projectId, dependentId, blockerId)
+        return getKanbanBackendForProject(projectId).addDependency(
+          projectId,
+          dependentId,
+          blockerId
+        )
       },
       catch: (cause) => cause
     }),
@@ -820,9 +821,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
     Effect.gen(function* () {
       const { exportData, ticketCount } = yield* Effect.tryPromise({
         try: async () => {
-          const { getKanbanBackendForProject } = await import(
-            '../../../main/services/kanban-backend'
-          )
+          const { getKanbanBackendForProject } =
+            await import('../../../main/services/kanban-backend')
           const { tickets, dependencies } =
             await getKanbanBackendForProject(projectId).exportBoard(projectId)
 
@@ -906,9 +906,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   createFolders: (projectId, config) =>
     Effect.tryPromise({
       try: async () => {
-        const { createConfiguredMarkdownFolders } = await import(
-          '../../../main/services/kanban-backend'
-        )
+        const { createConfiguredMarkdownFolders } =
+          await import('../../../main/services/kanban-backend')
         await createConfiguredMarkdownFolders(projectId, config)
         return { success: true }
       },
@@ -929,9 +928,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   getDiagnostics: (projectId) =>
     Effect.tryPromise({
       try: async () => {
-        const { getKanbanStorageConfig, getMarkdownKanbanBackend } = await import(
-          '../../../main/services/kanban-backend'
-        )
+        const { getKanbanStorageConfig, getMarkdownKanbanBackend } =
+          await import('../../../main/services/kanban-backend')
         if (getKanbanStorageConfig(projectId).mode !== 'markdown') return []
         return getMarkdownKanbanBackend().getDiagnostics(projectId)
       },
@@ -948,9 +946,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   startWatch: (projectId) =>
     Effect.tryPromise({
       try: async () => {
-        const { startMarkdownKanbanProjectWatch } = await import(
-          '../../../main/services/markdown-kanban-watcher'
-        )
+        const { startMarkdownKanbanProjectWatch } =
+          await import('../../../main/services/markdown-kanban-watcher')
         return startMarkdownKanbanProjectWatch(projectId)
       },
       catch: (cause) => cause
@@ -958,9 +955,8 @@ export const makeLiveKanbanRpcService = (): KanbanRpcService => ({
   stopWatch: (projectId) =>
     Effect.tryPromise({
       try: async () => {
-        const { stopMarkdownKanbanProjectWatch } = await import(
-          '../../../main/services/markdown-kanban-watcher'
-        )
+        const { stopMarkdownKanbanProjectWatch } =
+          await import('../../../main/services/markdown-kanban-watcher')
         return stopMarkdownKanbanProjectWatch(projectId)
       },
       catch: (cause) => cause
@@ -1610,9 +1606,7 @@ export const makeKanbanRpcHandlers = (
             catch: (cause) => cause
           })
           if (!service.getDiagnostics) {
-            return yield* Effect.die(
-              new Error('kanban.diagnostics.get service is not implemented')
-            )
+            return yield* Effect.die(new Error('kanban.diagnostics.get service is not implemented'))
           }
           return yield* service.getDiagnostics(projectId)
         })

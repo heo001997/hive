@@ -23,6 +23,18 @@
  * default, exactly like `auto_approve_review`. The active-loop runtime state
  * (`lifecycle_state` + `lifecycle_iteration`) is persisted on the ticket row too,
  * so the loop survives app restarts.
+ *
+ * The second concrete instance is the Speckit review GATE (`type: 'spawn'`):
+ *   review.during = [{ type: 'spawn', config: {} }]   — marks a review ticket as a GATE
+ *   (and intentionally has NO `review.branches` fail→in_progress edge, so the
+ *    review↔fix internal bounce is disabled for gate tickets).
+ * When such a ticket settles in Review, the engine reads the review agent's
+ * transcript and routes three outcomes (see `lib/create-tickets-from-drafts` and
+ * `useKanbanStore.runSpeckitGate`): a valid ` ```board-ticket-drafts ` block →
+ * auto-create the next loop round (no human confirm) + move this ticket to Done;
+ * a clean/complete verdict with no drafts → PASS (stays/auto-approves); anything
+ * ambiguous → leave in Review (blocked) + notify. The `spawn` action carries no
+ * config today — it is purely a marker the gate runner keys off of.
  */
 
 /** Action kinds a lifecycle slot can hold. Each runs an existing engine primitive. */
@@ -34,6 +46,7 @@ export type LifecycleActionType =
   | 'notify'
   | 'goto'
   | 'wait'
+  | 'spawn'
 
 /** The slots a state's actions can live in. */
 export type LifecycleSlot = 'before' | 'retry' | 'during' | 'after'

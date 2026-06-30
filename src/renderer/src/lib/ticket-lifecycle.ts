@@ -62,6 +62,68 @@ export function isLifecycleEnabled(cfg?: TicketLifecycleConfig | null): boolean 
 }
 
 /**
+ * The Speckit review-GATE lifecycle config (the second concrete instance). A
+ * `DURING(review)` action of `type: 'spawn'` MARKS the review ticket as a gate;
+ * the engine (`useKanbanStore.runSpeckitGate`) keys off it. There is intentionally
+ * NO `review.branches` fail→in_progress edge — the gate must never run the #110
+ * internal review↔fix bounce; it routes its three outcomes itself.
+ */
+export function buildSpeckitGateConfig(): TicketLifecycleConfig {
+  return {
+    enabled: true,
+    states: {
+      review: {
+        during: [{ id: 'speckit-gate-spawn', type: 'spawn', config: {} }]
+      }
+    }
+  }
+}
+
+/** True when `cfg` marks a Speckit review gate (a `DURING(review)` `spawn` action). */
+export function isSpeckitGate(cfg?: TicketLifecycleConfig | null): boolean {
+  return (
+    isLifecycleEnabled(cfg) && (cfg?.states?.review?.during ?? []).some((a) => a.type === 'spawn')
+  )
+}
+
+/** Minimal draft shape the review-gate matcher needs (board-chat + parsed drafts both fit). */
+export interface SpeckitDraftLike {
+  draftKey?: string
+  description?: string | null
+}
+
+/**
+ * True when a draft is the Speckit `review` step (the gate ticket of a chain or
+ * loop round) — so the gate config gets seeded onto it and not its siblings.
+ * Matches by draftKey (`review`, `review-r1`, `review-r12`, …) OR, since an
+ * omitted draftKey degrades to `draft-N`, by a `/speckit-review` reference in the
+ * description. The `review-plan` step is deliberately NOT a gate (its key starts
+ * with `review-plan`, which the anchored regex rejects).
+ */
+const SPECKIT_REVIEW_DRAFT_KEY_RE = /^review(-r\d+)?$/i
+export function isSpeckitReviewDraft(draft: SpeckitDraftLike): boolean {
+  const key = draft.draftKey?.trim() ?? ''
+  if (SPECKIT_REVIEW_DRAFT_KEY_RE.test(key)) return true
+  const desc = draft.description ?? ''
+  // `/speckit-review` followed by a non-`-` boundary so `/speckit-review-plan`
+  // (the review-plan step) does NOT match.
+  return /\/speckit-review(?![\w-])/i.test(desc)
+}
+
+/**
+ * Parse the loop round of a Speckit review ticket from its title. Loop tickets
+ * carry `(round {R})` (e.g. "Speckit review (gate, round 3) — 2611"); the base
+ * review has none → round 0. Brittle-but-acceptable v1 source for the auto-spawn
+ * round cap (the round number itself stays agent-computed in the draft titles).
+ */
+export function parseSpeckitRound(title: string | null | undefined): number {
+  const match = /\(\s*(?:gate,\s*)?round\s+(\d+)\s*\)/i.exec(title ?? '')
+  if (!match) return 0
+  const n = Number.parseInt(match[1], 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/**
  * The actions configured for `state`/`slot`, filtered by entry context. An action
  * with `runOn` set runs only when `context` is in its list; an action with no
  * `runOn` (or no `context` supplied) always runs. Returns an empty array when none.

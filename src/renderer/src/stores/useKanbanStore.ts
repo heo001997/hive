@@ -29,9 +29,13 @@ import {
   actionsForSlot,
   branchesForState,
   buildDefaultLoopConfig,
+  buildSpeckitGateConfig,
   combineVerdicts,
   decideBranch,
   isLifecycleEnabled,
+  isSpeckitGate,
+  isSpeckitReviewDraft,
+  parseSpeckitRound,
   renderTemplate,
   retryMaxForState,
   verdictToLifecycle
@@ -312,11 +316,7 @@ function flattenColumnPages(pages: ColumnPagesResult): KanbanTicket[] {
  * removed locally. No-op (and no re-render) when the load was superseded or the
  * page adds nothing.
  */
-function mergeStreamedPage(
-  projectId: string,
-  generation: number,
-  batch: KanbanTicket[]
-): void {
+function mergeStreamedPage(projectId: string, generation: number, batch: KanbanTicket[]): void {
   useKanbanStore.setState((state) => {
     if (!isCurrentLoad(projectId, generation)) return {}
     const existing = state.tickets.get(projectId) ?? []
@@ -502,12 +502,19 @@ interface KanbanState {
 
   // ── Dependency tracking ────────────────────────────────────────────
   dependencyMap: Map<TicketKey, Set<TicketKey>> // Map<dependent_ticket_key, Set<blocker_ticket_key>>
-  dependencyMode: { active: boolean; sourceTicketId: string | null; sourceProjectId?: string | null } | null
+  dependencyMode: {
+    active: boolean
+    sourceTicketId: string | null
+    sourceProjectId?: string | null
+  } | null
   hoveredBlockedTicketKey: TicketKey | null
 
   // ── Dependency actions ─────────────────────────────────────────────
   loadDependencies: (projectId: string) => Promise<void>
-  addDependency: (dependent: TicketRef, blocker: TicketRef) => Promise<{ success: boolean; error?: string }>
+  addDependency: (
+    dependent: TicketRef,
+    blocker: TicketRef
+  ) => Promise<{ success: boolean; error?: string }>
   removeDependency: (dependent: TicketRef, blocker: TicketRef) => Promise<void>
   enterDependencyMode: (sourceTicketId: string, sourceProjectId?: string) => void
   exitDependencyMode: () => void
@@ -853,13 +860,14 @@ async function armSettleTimers(
   }
   const { useSettingsStore } = await import('./useSettingsStore')
   const settings = useSettingsStore.getState()
-  // A ticket whose lifecycle enables a DURING(review) reviewer arms the settle
-  // pipeline even when the GLOBAL Strict-Verify toggle is off (per-ticket opt-in).
-  // The Reviewer sub-gate defaults on, so onStrictVerifySettled still judges it.
+  // A ticket whose lifecycle enables a DURING(review) reviewer OR a Speckit review
+  // GATE (`spawn`) arms the settle pipeline even when the GLOBAL Strict-Verify
+  // toggle is off (per-ticket opt-in). Without matching `spawn` here a gate ticket
+  // would never arm its settle when Strict Verify is off, and the gate would die.
   const cfg = ticket.lifecycle_callbacks
   const lifecycleArmsReview =
     isLifecycleEnabled(cfg) &&
-    actionsForSlot(cfg, 'review', 'during').some((a) => a.type === 'review')
+    actionsForSlot(cfg, 'review', 'during').some((a) => a.type === 'review' || a.type === 'spawn')
   if (settings.kanbanStrictVerifyEnabled || lifecycleArmsReview) {
     scheduleStrictVerify(
       get,
@@ -886,11 +894,7 @@ async function armSettleTimers(
  * non-terminal link in a dependency chain. Terminal tickets (the last step of a
  * chain, or a standalone ticket) have no dependents.
  */
-function ticketHasDependent(
-  get: () => KanbanState,
-  projectId: string,
-  ticketId: string
-): boolean {
+function ticketHasDependent(get: () => KanbanState, projectId: string, ticketId: string): boolean {
   const key = ticketKey(projectId, ticketId)
   for (const blockers of get().dependencyMap.values()) {
     if (blockers.has(key)) return true
@@ -954,7 +958,9 @@ async function moveTicketBackToInProgress(
   projectId: string
 ): Promise<void> {
   try {
-    const inProgress = (get().tickets.get(projectId) ?? []).filter((t) => t.column === 'in_progress')
+    const inProgress = (get().tickets.get(projectId) ?? []).filter(
+      (t) => t.column === 'in_progress'
+    )
     const sortOrder = get().computeSortOrder(inProgress, inProgress.length)
     await get().moveTicket(ticketId, projectId, 'in_progress', sortOrder)
   } catch (err) {
@@ -1055,9 +1061,7 @@ async function onInProgressRescueSettled(
 
   const frozen = s1.length === s0.length && s1.hash === s0.hash
   if (!frozen) {
-    console.log(
-      `[StrictVerify] rescue: ticket ${ticketId} still emitting → leaving in In Progress`
-    )
+    console.log(`[StrictVerify] rescue: ticket ${ticketId} still emitting → leaving in In Progress`)
     return
   }
 
@@ -1150,6 +1154,8 @@ interface StrictVerifySettings {
   kanbanStrictVerifyDelaySeconds?: number
   /** In Progress rescue master switch (re-promote a frozen "Not done" ticket once). */
   kanbanInProgressRescueEnabled?: boolean
+  /** Speckit review-gate: max loop rounds before the gate stops auto-spawning and blocks for Tu. */
+  kanbanAutoSpawnMaxRounds?: number
 }
 
 /**
@@ -1524,9 +1530,7 @@ async function applyIncompleteVerdict(
       context: 'retry',
       reason: verdict.reason,
       iteration
-    }).catch((err) =>
-      console.error('[StrictVerify] iterate-loop: retry slot dispatch failed', err)
-    )
+    }).catch((err) => console.error('[StrictVerify] iterate-loop: retry slot dispatch failed', err))
   }
 }
 
@@ -1714,6 +1718,192 @@ async function maybeDispatchClaudeCliQueue(
 }
 
 /**
+ * Char budget for the gate's transcript fetch. The `board-ticket-drafts` block is
+ * the review agent's final output and its loop-batch descriptions are long, so we
+ * request the server's max tail (24KB) to be sure the whole block is captured.
+ */
+const SPECKIT_GATE_TRANSCRIPT_CHARS = 24 * 1024
+
+/** Outcome of the Speckit review GATE — only `'pass'` falls through to the verified-complete tail. */
+type SpeckitGateOutcome = 'pass' | 'spawned' | 'blocked'
+
+/**
+ * The Speckit review GATE runner. Called when a build ticket marked as a gate
+ * (`isSpeckitGate`) settles in Review, AFTER the frozen check. The gate
+ * classification is AGENT-DRIVEN — the `/speckit-review` agent decides by WHAT it
+ * emits; Hive only materializes the result and routes three outcomes:
+ *
+ *  - **FAIL-auto-fixable** — the transcript carries a valid `board-ticket-drafts`
+ *    block (≥1 draft, no validation errors) AND we're under the round cap →
+ *    auto-create the next loop round (NO human confirm; the new `review-r{R}` is
+ *    itself seeded as a gate), commit this ticket's worktree, move it to Done.
+ *  - **PASS** — no drafts block + the Watcher judges the work genuinely complete
+ *    → return `'pass'` so the caller's verified-complete tail runs (stays in
+ *    Review / auto-approves as configured).
+ *  - **FAIL-needs-Tu** — anything ambiguous (no drafts + not-complete; transcript
+ *    fetch fails; drafts present-but-invalid; round cap hit; no session) → store a
+ *    blocked verdict, fire the `question` notify, LEAVE IN REVIEW. Never bounce,
+ *    never spawn an invalid batch. Fail-safe bias mirrors the no-fail-open rule.
+ */
+async function runSpeckitGate(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  current: KanbanTicket,
+  settings: StrictVerifySettings
+): Promise<SpeckitGateOutcome> {
+  const key = ticketKey(projectId, ticketId)
+  const sessionId = current.current_session_id
+
+  // needs-Tu: store a blocked marker, clear the badge, notify, leave in Review.
+  // `lifecycleStuck` reuses the "left stuck in Review, no advance" semantics.
+  const blockForTu = (reason: string, base?: CompletionVerdict): SpeckitGateOutcome => {
+    const prior = get().completionVerdicts.get(key)
+    const verdictBase: CompletionVerdict = base ??
+      prior ?? { complete: false, needsInput: false, confidence: 0, reason }
+    get().setCompletionVerdict(key, {
+      ...verdictBase,
+      reason,
+      sessionId,
+      checkedAt: Date.now(),
+      movedBack: false,
+      lifecycleStuck: true
+    })
+    get().setVerifyProgress(key, null)
+    console.warn(`[SpeckitGate] ticket ${ticketId} BLOCKED (needs Tu): ${reason}`)
+    void import('../lib/ticket-telegram-notify')
+      .then((m) =>
+        m.notifyTicketEvent('question', {
+          ticketId,
+          title: current.title,
+          dedupeKey: `speckit_gate_block:${ticketId}:${sessionId ?? 'none'}`
+        })
+      )
+      .catch(() => {})
+    return 'blocked'
+  }
+
+  if (!sessionId) return blockForTu('gate ticket has no session to read a transcript from')
+
+  // 1. Fetch the review agent's transcript tail (no model call). On failure → needs-Tu.
+  let transcript: string
+  try {
+    const { completionApi } = await import('@/api/completion-api')
+    const res = await completionApi.getTicketTranscript({
+      sessionId,
+      ticketId,
+      maxChars: SPECKIT_GATE_TRANSCRIPT_CHARS
+    })
+    if (!res.success || typeof res.text !== 'string') {
+      return blockForTu(`transcript fetch failed: ${res.error ?? 'no text'}`)
+    }
+    transcript = res.text
+  } catch (err) {
+    return blockForTu(`transcript fetch threw: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  // 2. Parse a board-ticket-drafts block (the FAIL-auto-fixable signal).
+  const { parseBoardAssistantDraftSet } = await import('@/lib/board-assistant-drafts')
+  const draftSet = parseBoardAssistantDraftSet(transcript, { fallbackProjectId: projectId })
+
+  if (draftSet && draftSet.drafts.length > 0) {
+    // Drafts present-but-invalid → needs-Tu (never spawn a broken batch).
+    if (draftSet.hasValidationErrors) {
+      return blockForTu('review emitted a board-ticket-drafts block with validation errors')
+    }
+    // Round cap → needs-Tu (the loop ran too deep; surface for Tu).
+    const round = parseSpeckitRound(current.title)
+    const maxRounds = settings.kanbanAutoSpawnMaxRounds ?? 20
+    if (round >= maxRounds) {
+      return blockForTu(`auto-spawn round cap reached (round ${round} ≥ max ${maxRounds})`)
+    }
+
+    // FAIL-auto-fixable: create the next round (NO confirm), seeding the gate
+    // config onto the new review draft so it re-arms this same gate.
+    try {
+      const { createTicketsFromDrafts } = await import('@/lib/create-tickets-from-drafts')
+      const result = await createTicketsFromDrafts(
+        draftSet.drafts.map((d) => ({
+          id: d.draftKey,
+          draftKey: d.draftKey,
+          title: d.title,
+          description: d.description,
+          projectId: d.projectId,
+          dependsOn: d.dependsOn
+        })),
+        {
+          seedLifecycle: (d) => (isSpeckitReviewDraft(d) ? buildSpeckitGateConfig() : null),
+          mode: 'build'
+        }
+      )
+      if (result.ticketCount === 0 || result.failures.length > 0) {
+        // Nothing created / partial failure → don't strand a half batch silently.
+        return blockForTu(
+          `auto-spawn batch failed: ${result.failures.join('; ') || 'no tickets created'}`
+        )
+      }
+      console.log(
+        `[SpeckitGate] ticket ${ticketId} auto-spawned round ${round + 1} ` +
+          `(${result.ticketCount} tickets, ${result.dependencyCount} deps) → moving this gate to Done`
+      )
+    } catch (err) {
+      return blockForTu(`auto-spawn threw: ${err instanceof Error ? err.message : String(err)}`)
+    }
+
+    // Commit this review ticket's worktree, then move it to Done. Unconditional —
+    // the base review IS the chain tail (no dependent), so `finalizeReviewBypass`
+    // (which only advances a ticket with a dependent) would wrongly leave it in
+    // Review. The freshly-spawned round is an independent mini-chain.
+    await commitTicketWorktree(ticketId, current)
+    await moveReviewedTicketToDone(get, ticketId, projectId)
+    get().setVerifyProgress(key, null)
+    return 'spawned'
+  }
+
+  // 3. No drafts block → run the Watcher directly (NOT runStrictVerify, which would
+  //    bounce to In Progress — a gate has no fail→in_progress branch and must never
+  //    bounce). complete & confident → PASS; anything else → needs-Tu.
+  const threshold = settings.kanbanStrictVerifyConfidenceThreshold ?? 0.6
+  let verdict: CompletionVerdict
+  try {
+    const { completionApi } = await import('@/api/completion-api')
+    const res = await completionApi.detectTicketCompletion({
+      sessionId,
+      ticketId,
+      maxChars: settings.kanbanStrictVerifyChars,
+      provider: settings.kanbanStrictVerifyProvider,
+      model: settings.kanbanStrictVerifyModel || undefined,
+      systemPrompt: settings.kanbanStrictVerifyPrompt || undefined
+    })
+    if (!res.success || !res.verdict) {
+      return blockForTu(`watcher failed: ${res.error ?? 'no verdict'}`)
+    }
+    verdict = res.verdict
+  } catch (err) {
+    return blockForTu(`watcher threw: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  const passed = verdict.complete && verdict.confidence >= threshold && !verdict.needsInput
+  console.log(
+    `[SpeckitGate] ticket ${ticketId} no-drafts watcher: complete=${verdict.complete} ` +
+      `conf=${verdict.confidence} needsInput=${verdict.needsInput} threshold=${threshold} → ` +
+      `${passed ? 'PASS' : 'needs-Tu'} reason="${verdict.reason}"`
+  )
+  if (passed) {
+    // Record the verified verdict so the caller's verified-complete tail (queue
+    // drain / auto-approve handoff) sees a fresh complete verdict for this session.
+    get().setCompletionVerdict(key, {
+      ...verdict,
+      sessionId,
+      checkedAt: Date.now(),
+      movedBack: false
+    })
+    return 'pass'
+  }
+  return blockForTu(`review not complete and no fix batch emitted: ${verdict.reason}`, verdict)
+}
+
+/**
  * Feature A settle handler (D1). Runs the two-gate Strict Verify pipeline:
  *
  *   Gate 1 (frozen check, ALWAYS runs) — confirm the session is frozen before any
@@ -1785,10 +1975,23 @@ async function onStrictVerifySettled(
     frozenSnapshots.delete(key)
   }
 
+  // ── Speckit review GATE intercept ─────────────────────────────────
+  // A gate ticket routes its OWN three outcomes (auto-spawn the next loop round /
+  // PASS / block for Tu) instead of the plain Reviewer bounce, and runs the Watcher
+  // itself for the no-drafts case — so the Gate 2 block below is skipped for it.
+  // Only a PASS falls through to the verified-complete tail (so a clean gate ticket
+  // still stays in Review / auto-approves exactly like any verified ticket).
+  const isGate = isSpeckitGate(current.lifecycle_callbacks)
+  if (isGate) {
+    const gateOutcome = await runSpeckitGate(get, ticketId, projectId, current, settings)
+    if (gateOutcome !== 'pass') return
+  }
+
   // ── Gate 2: Ticket Reviewer (the AI Watcher) ──────────────────────
-  // Skipped when the Reviewer sub-gate is off — a ticket that cleared the
-  // snapshot (or had it disabled) is then treated as verified without a model call.
-  if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
+  // Skipped for gate tickets (handled above) and when the Reviewer sub-gate is off
+  // — a ticket that cleared the snapshot (or had it disabled) is then treated as
+  // verified without a model call.
+  if (!isGate && (settings.kanbanStrictVerifyReviewerEnabled ?? true)) {
     const outcome = await runStrictVerify(get, ticketId, projectId, current, settings)
     if (outcome === 'bounced') return // verdict stored + moved back (the move clears progress)
     if (outcome === 'error') {
@@ -2073,11 +2276,9 @@ export const useKanbanStore = create<KanbanState>()(
       loadTicketsForProjectInAggregate: async (projectId: string) => {
         set({ isLoading: true })
         try {
-          const includeArchived = get().showArchivedByProject[projectId] ?? get().showArchivedByProject[''] ?? false
-          const tickets = await kanban.ticket.getByProject<KanbanTicket>(
-            projectId,
-            includeArchived
-          )
+          const includeArchived =
+            get().showArchivedByProject[projectId] ?? get().showArchivedByProject[''] ?? false
+          const tickets = await kanban.ticket.getByProject<KanbanTicket>(projectId, includeArchived)
           const diagnostics = await kanban.diagnostics
             .get<MarkdownCardDiagnostic>(projectId)
             .catch(() => [])
@@ -2129,7 +2330,10 @@ export const useKanbanStore = create<KanbanState>()(
         }
         // Anchor a lifecycle-enabled ticket at its initial stable state (`todo`) so
         // the first launch fires `todo.after → in_progress.before`; iteration 0.
-        if (seeded.lifecycle_state === undefined && isLifecycleEnabled(seeded.lifecycle_callbacks)) {
+        if (
+          seeded.lifecycle_state === undefined &&
+          isLifecycleEnabled(seeded.lifecycle_callbacks)
+        ) {
           if (seeded === data) seeded = { ...data }
           seeded.lifecycle_state = 'todo'
           seeded.lifecycle_iteration = 0
@@ -2237,7 +2441,12 @@ export const useKanbanStore = create<KanbanState>()(
           kanban.dependency.removeAll(projectId, ticketId).catch(() => {})
           // Update local dependency map
           set((state) => {
-            return { dependencyMap: removeDependencyLinksForTicket(state.dependencyMap, ticketKey(projectId, ticketId)) }
+            return {
+              dependencyMap: removeDependencyLinksForTicket(
+                state.dependencyMap,
+                ticketKey(projectId, ticketId)
+              )
+            }
           })
           // Drop the persisted ticket-detail tab view (dynamic import avoids a
           // static cycle with useSessionStore, matching the pattern elsewhere here).
@@ -2378,7 +2587,12 @@ export const useKanbanStore = create<KanbanState>()(
           await kanban.dependency.removeAll(projectId, ticketId)
           // Update local dependency map
           set((state) => {
-            return { dependencyMap: removeDependencyLinksForTicket(state.dependencyMap, ticketKey(projectId, ticketId)) }
+            return {
+              dependencyMap: removeDependencyLinksForTicket(
+                state.dependencyMap,
+                ticketKey(projectId, ticketId)
+              )
+            }
           })
 
           // Archiving a running ticket frees a worktree slot (and unblocks any
@@ -2562,9 +2776,7 @@ export const useKanbanStore = create<KanbanState>()(
                   sort_order: sortOrder,
                   // Re-arm the unviewed-Review glow the instant the ticket first
                   // enters Review (mirrors the DB reset in moveKanbanTicket).
-                  ...(column === 'review' && t.column !== 'review'
-                    ? { review_seen_at: null }
-                    : {})
+                  ...(column === 'review' && t.column !== 'review' ? { review_seen_at: null } : {})
                 }
               : t
           )
@@ -2580,9 +2792,8 @@ export const useKanbanStore = create<KanbanState>()(
           // When a ticket moves to done (or review, if that's the trigger), check if any dependents can be auto-launched
           const { useSettingsStore } = await import('./useSettingsStore')
           const { isBlockerSatisfied } = await import('../lib/blocker-utils')
-          const { getMaxParallelWorktrees, launchNextQueuedTickets } = await import(
-            '../lib/worktree-concurrency'
-          )
+          const { getMaxParallelWorktrees, launchNextQueuedTickets } =
+            await import('../lib/worktree-concurrency')
           const triggerColumn = useSettingsStore.getState().followUpTriggerColumn
           // Capped projects route EVERY auto-launch (dependency-ready AND
           // concurrency-queued) through the single serialized launchNextQueuedTickets
@@ -2604,7 +2815,10 @@ export const useKanbanStore = create<KanbanState>()(
               for (const blockerKey of blockers) {
                 const blockerRef = parseTicketKey(blockerKey)
                 const blockerTicket = findTicketByRef(allTickets, blockerRef)
-                if (blockerTicket && !isBlockerSatisfied(blockerTicket.column, blockerTicket.mode, triggerColumn)) {
+                if (
+                  blockerTicket &&
+                  !isBlockerSatisfied(blockerTicket.column, blockerTicket.mode, triggerColumn)
+                ) {
                   allSatisfied = false
                   break
                 }
@@ -2652,7 +2866,9 @@ export const useKanbanStore = create<KanbanState>()(
           const prevColumn = movedTicket?.column
           const ticketTitle = updated?.title ?? movedTicket?.title ?? ''
           void import('../lib/ticket-telegram-notify')
-            .then((m) => m.notifyTicketColumnChange({ ticketId, title: ticketTitle, prevColumn, column }))
+            .then((m) =>
+              m.notifyTicketColumnChange({ ticketId, title: ticketTitle, prevColumn, column })
+            )
             .catch(() => {})
 
           // Per-ticket lifecycle callbacks fire on STABILITY, not the optimistic
@@ -2841,7 +3057,12 @@ export const useKanbanStore = create<KanbanState>()(
                 ) {
                   // Auto-advance build ticket to review column (idempotent — skip if already there)
                   get()
-                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                    .moveTicket(
+                      ticket.id,
+                      projectId,
+                      'review',
+                      topOfColumnSortOrder(get, projectId, 'review')
+                    )
                     .catch(() => {})
                 } else if (isPlanLike(ticket.mode) && !ticket.plan_ready) {
                   // Plan finished — set plan_ready and move to review for user attention
@@ -2850,7 +3071,12 @@ export const useKanbanStore = create<KanbanState>()(
                     .catch(() => {})
                   if (ticket.column !== 'review' && ticket.column !== 'done') {
                     get()
-                      .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                      .moveTicket(
+                        ticket.id,
+                        projectId,
+                        'review',
+                        topOfColumnSortOrder(get, projectId, 'review')
+                      )
                       .catch(() => {})
                   }
                 }
@@ -2883,7 +3109,12 @@ export const useKanbanStore = create<KanbanState>()(
                     .catch(() => {})
                   if (ticket.column !== 'review' && ticket.column !== 'done') {
                     get()
-                      .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                      .moveTicket(
+                        ticket.id,
+                        projectId,
+                        'review',
+                        topOfColumnSortOrder(get, projectId, 'review')
+                      )
                       .catch(() => {})
                   }
                 }
@@ -2901,7 +3132,12 @@ export const useKanbanStore = create<KanbanState>()(
                 }
                 if (ticket.column !== 'in_progress' && ticket.column !== 'done') {
                   get()
-                    .moveTicket(ticket.id, projectId, 'in_progress', topOfColumnSortOrder(get, projectId, 'in_progress'))
+                    .moveTicket(
+                      ticket.id,
+                      projectId,
+                      'in_progress',
+                      topOfColumnSortOrder(get, projectId, 'in_progress')
+                    )
                     .catch(() => {})
                 }
                 break
@@ -2954,7 +3190,12 @@ export const useKanbanStore = create<KanbanState>()(
                 // Error requires user attention — move to review if currently in_progress
                 if (ticket.column === 'in_progress') {
                   get()
-                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                    .moveTicket(
+                      ticket.id,
+                      projectId,
+                      'review',
+                      topOfColumnSortOrder(get, projectId, 'review')
+                    )
                     .catch(() => {})
                 }
                 break
@@ -2979,7 +3220,12 @@ export const useKanbanStore = create<KanbanState>()(
                 }
                 if (ticket.column === 'todo' || ticket.column === 'review') {
                   get()
-                    .moveTicket(ticket.id, projectId, 'in_progress', topOfColumnSortOrder(get, projectId, 'in_progress'))
+                    .moveTicket(
+                      ticket.id,
+                      projectId,
+                      'in_progress',
+                      topOfColumnSortOrder(get, projectId, 'in_progress')
+                    )
                     .catch(() => {})
                 }
                 // Per-ticket lifecycle: a genuinely-working agent makes In Progress
@@ -3060,7 +3306,10 @@ export const useKanbanStore = create<KanbanState>()(
               const relinked = relinkedByKey.get(ticketKey(projectId, ticket.id))
               if (!relinked) return ticket
               projectChanged = true
-              if (boardTelegramTarget?.projectId === projectId && boardTelegramTarget.ticketId === ticket.id) {
+              if (
+                boardTelegramTarget?.projectId === projectId &&
+                boardTelegramTarget.ticketId === ticket.id
+              ) {
                 boardTelegramTarget = {
                   ...boardTelegramTarget,
                   sessionId: newSessionId,
@@ -3181,7 +3430,9 @@ export const useKanbanStore = create<KanbanState>()(
                 .catch(() => [])
             }))
           )
-          const diagnosticsMap = new Map(diagnosticsByProject.map((result) => [result.projectId, result.diagnostics]))
+          const diagnosticsMap = new Map(
+            diagnosticsByProject.map((result) => [result.projectId, result.diagnostics])
+          )
 
           // Batch update all projects at once
           set((state) => {
@@ -3265,7 +3516,9 @@ export const useKanbanStore = create<KanbanState>()(
                 .catch(() => [])
             }))
           )
-          const diagnosticsMap = new Map(diagnosticsByProject.map((result) => [result.projectId, result.diagnostics]))
+          const diagnosticsMap = new Map(
+            diagnosticsByProject.map((result) => [result.projectId, result.diagnostics])
+          )
 
           // Batch update all projects at once
           set((state) => {
@@ -3437,7 +3690,10 @@ export const useKanbanStore = create<KanbanState>()(
       // ── addDependency ───────────────────────────────────────────────
       addDependency: async (dependent: TicketRef, blocker: TicketRef) => {
         if (dependent.projectId !== blocker.projectId) {
-          return { success: false, error: 'Dependencies can only be created within the same project' }
+          return {
+            success: false,
+            error: 'Dependencies can only be created within the same project'
+          }
         }
         const result = await kanban.dependency.add(
           dependent.projectId,
@@ -3481,7 +3737,9 @@ export const useKanbanStore = create<KanbanState>()(
 
       // ── enterDependencyMode ─────────────────────────────────────────
       enterDependencyMode: (sourceTicketId: string, sourceProjectId?: string) => {
-        set({ dependencyMode: { active: true, sourceTicketId, sourceProjectId: sourceProjectId ?? null } })
+        set({
+          dependencyMode: { active: true, sourceTicketId, sourceProjectId: sourceProjectId ?? null }
+        })
       },
 
       // ── exitDependencyMode ──────────────────────────────────────────
@@ -3736,7 +3994,9 @@ export const useKanbanStore = create<KanbanState>()(
         if (current.column !== 'in_progress') {
           const inProgress = get().getTicketsByColumn(projectId, 'in_progress')
           const sortOrder = get().computeSortOrder(inProgress, 0)
-          await get().moveTicket(ticketId, projectId, 'in_progress', sortOrder).catch(() => {})
+          await get()
+            .moveTicket(ticketId, projectId, 'in_progress', sortOrder)
+            .catch(() => {})
         }
         const { dispatchClaudeCliFollowup } = await import('@/lib/claude-cli-followup')
         return dispatchClaudeCliFollowup(sessionId, buildQueuedPromptText(text, attachments))
