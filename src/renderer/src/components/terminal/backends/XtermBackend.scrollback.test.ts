@@ -6,6 +6,10 @@ import type { TerminalBackendCallbacks, TerminalOpts } from './types'
 // scrollback it was created with and observe runtime `options.scrollback` writes.
 const h = vi.hoisted(() => ({ last: null as { options: Record<string, unknown> } | null }))
 
+// Track every WebglAddon ever constructed and whether it's been disposed, so
+// tests can assert the WebGL renderer is loaded only while visible.
+const webgl = vi.hoisted(() => ({ instances: [] as Array<{ disposed: boolean }> }))
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     options: Record<string, unknown>
@@ -43,8 +47,14 @@ vi.mock('@xterm/addon-fit', () => ({
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
+    disposed = false
+    constructor() {
+      webgl.instances.push(this)
+    }
     onContextLoss(): void {}
-    dispose(): void {}
+    dispose(): void {
+      this.disposed = true
+    }
   }
 }))
 vi.mock('@xterm/addon-search', () => ({
@@ -78,7 +88,9 @@ function mountBackend(opts: Partial<TerminalOpts>): { backend: XtermBackend; con
     {
       terminalId: 't1',
       cwd: '/tmp',
-      createTerminal: vi.fn(() => Promise.resolve({ success: true })) as TerminalOpts['createTerminal'],
+      createTerminal: vi.fn(() =>
+        Promise.resolve({ success: true })
+      ) as unknown as TerminalOpts['createTerminal'],
       ...opts
     },
     callbacks
@@ -89,6 +101,7 @@ function mountBackend(opts: Partial<TerminalOpts>): { backend: XtermBackend; con
 describe('XtermBackend scrollback gating', () => {
   beforeEach(() => {
     h.last = null
+    webgl.instances.length = 0
     // jsdom has no ResizeObserver; XtermBackend constructs one in mount().
     ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
       observe(): void {}
@@ -136,5 +149,61 @@ describe('XtermBackend scrollback gating', () => {
     backend.setVisible(false)
     // min(full, HIDDEN_SCROLLBACK) — stays at 500, not bumped up to 1000.
     expect(h.last?.options.scrollback).toBe(small)
+  })
+})
+
+describe('XtermBackend WebGL gating', () => {
+  const active = (): number => webgl.instances.filter((w) => !w.disposed).length
+
+  beforeEach(() => {
+    h.last = null
+    webgl.instances.length = 0
+    ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+      observe(): void {}
+      disconnect(): void {}
+    }
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('does not load WebGL when mounted hidden', () => {
+    mountBackend({ initialVisible: false })
+    expect(webgl.instances.length).toBe(0)
+    expect(active()).toBe(0)
+  })
+
+  it('loads WebGL when mounted visible', () => {
+    mountBackend({ initialVisible: true })
+    expect(active()).toBe(1)
+  })
+
+  it('drops WebGL on hide and reloads it on show', () => {
+    const { backend } = mountBackend({ initialVisible: true })
+    expect(active()).toBe(1)
+
+    backend.setVisible(false)
+    expect(active()).toBe(0) // GL context + glyph atlas freed while hidden
+
+    backend.setVisible(true)
+    expect(active()).toBe(1) // a fresh context is loaded on becoming visible
+    expect(webgl.instances.length).toBe(2)
+  })
+
+  it('loads WebGL on first show for a terminal mounted hidden', () => {
+    const { backend } = mountBackend({ initialVisible: false })
+    expect(active()).toBe(0)
+
+    backend.setVisible(true)
+    expect(active()).toBe(1)
+  })
+
+  it('disposes the WebGL addon on dispose()', () => {
+    const { backend } = mountBackend({ initialVisible: true })
+    expect(active()).toBe(1)
+
+    backend.dispose()
+    expect(active()).toBe(0)
   })
 })
