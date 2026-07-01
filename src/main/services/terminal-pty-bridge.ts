@@ -391,6 +391,10 @@ export async function createClaudeCliTerminal(
 
     return { success: true, cols, rows }
   } catch (error) {
+    // The session-id watcher is armed before the PTY is created; if creation
+    // throws we'd otherwise leak its poll interval until the next full cleanup.
+    claudeWatchers.get(sessionId)?.close()
+    claudeWatchers.delete(sessionId)
     log.error(
       'RPC: terminalOps.createClaudeCli failed',
       error instanceof Error ? error : new Error(String(error)),
