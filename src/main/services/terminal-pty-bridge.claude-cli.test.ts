@@ -35,7 +35,8 @@ const mocks = vi.hoisted(() => {
       write: vi.fn(),
       resize: vi.fn(),
       destroy: vi.fn(),
-      destroyAll: vi.fn()
+      destroyAll: vi.fn(),
+      destroyAllGraceful: vi.fn(() => Promise.resolve())
     }
   }
 })
