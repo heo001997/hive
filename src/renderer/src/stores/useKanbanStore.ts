@@ -1464,6 +1464,30 @@ async function applyIncompleteVerdict(
 ): Promise<void> {
   const key = ticketKey(projectId, ticketId)
   const cfg = ticket.lifecycle_callbacks
+
+  // A `needsInput` verdict is the ONLY signal that a PLAIN-TEXT question flow is
+  // waiting on the user — e.g. speckit clarify-all's "answer Q1–Q4" prompt, which
+  // asks via transcript text and so never emits the structured `question.asked` event
+  // that drives notifyTicketQuestion. Fire the Telegram "question" ping (+ auto-forward)
+  // here so the alert stays in sync with the "Questions" badge (which is also driven by
+  // this verdict). Fresh verdicts only — a cached-verdict replay must not re-ping.
+  if (verdict.needsInput && isFresh) {
+    console.log(
+      `[StrictVerify] ticket ${ticketId} needs user input (session ${sessionId}) — ` +
+        `firing Telegram question notify. reason="${verdict.reason}"`
+    )
+    void import('../lib/ticket-telegram-notify')
+      .then((m) =>
+        m.notifyTicketNeedsInput({
+          ticketId,
+          title: ticket.title,
+          sessionId,
+          worktreeId: ticket.worktree_id ?? null
+        })
+      )
+      .catch(() => {})
+  }
+
   const ownsFail =
     isLifecycleEnabled(cfg) &&
     branchesForState(cfg, 'review').some((b) => b.when === 'fail') &&
@@ -1509,13 +1533,26 @@ async function applyIncompleteVerdict(
     get().setVerifyProgress(key, null)
     if (!alreadyStuck) {
       void import('../lib/ticket-telegram-notify')
-        .then((m) =>
-          m.notifyTicketEvent('stuck_review', {
-            ticketId,
-            title: ticket.title,
-            dedupeKey: `stuck_review:${ticketId}:${sessionId}`
-          })
-        )
+        .then((m) => {
+          void m
+            .notifyTicketEvent('stuck_review', {
+              ticketId,
+              title: ticket.title,
+              dedupeKey: `stuck_review:${ticketId}:${sessionId}`
+            })
+            .catch(() => {})
+          // Parity with the rescue-exhausted stuck path: also unlock two-way Telegram
+          // chat for this stuck session so the user can act from Telegram like the
+          // terminal (opt-in; never steals an active forward). Previously the
+          // iterate-loop stuck path notified but did NOT auto-forward — an asymmetry.
+          void m
+            .autoForwardTicketForUserAction({
+              sessionId,
+              worktreeId: ticket.worktree_id ?? null,
+              connectionId: null
+            })
+            .catch(() => {})
+        })
         .catch(() => {})
     }
     return
@@ -2425,6 +2462,17 @@ export const useKanbanStore = create<KanbanState>()(
           next.set(projectId, [...existing, ticket])
           return { tickets: next }
         })
+        // "Work started" for a ticket born directly in In Progress (auto-create-from-session
+        // via registerKanbanAutoCreateTicket). Such a ticket never passes through a
+        // todo→in_progress column move, so notifyTicketColumnChange's started branch (which
+        // requires prevColumn==='todo') would miss it — that was the silent "no started ping
+        // when a session auto-creates its ticket" gap. Fire it directly here, scoped to the
+        // in_progress case; the shared `started:${id}` dedupe slot coalesces any double-fire.
+        if (ticket.column === 'in_progress') {
+          void import('../lib/ticket-telegram-notify')
+            .then((m) => m.notifyTicketEvent('started', { ticketId: ticket.id, title: ticket.title }))
+            .catch(() => {})
+        }
         return ticket
       },
 

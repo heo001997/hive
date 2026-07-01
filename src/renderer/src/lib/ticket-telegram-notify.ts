@@ -138,11 +138,52 @@ export async function notifyTicketEvent(
 }
 
 /**
+ * The shared "ticket is waiting on the user" fan-out: the Telegram `question` ping
+ * plus (when enabled) auto-forwarding the session so the user can answer from
+ * Telegram. Both question triggers funnel through here so they behave identically —
+ * the structured `question.asked` tool-hold ([[notifyTicketQuestion]]) and the
+ * transcript-verdict `needsInput` signal ([[notifyTicketNeedsInput]]). `dedupeKey`
+ * distinguishes each distinct question. Never throws.
+ */
+async function deliverQuestionNotify(
+  args: {
+    ticketId: string
+    title: string
+    sessionId: string
+    worktreeId: string | null
+    dedupeKey: string
+  },
+  settings: NotifySettings,
+  wantNotify: boolean,
+  wantForward: boolean
+): Promise<void> {
+  if (wantNotify) {
+    await notifyTicketEvent(
+      'question',
+      { ticketId: args.ticketId, title: args.title, dedupeKey: args.dedupeKey },
+      settings
+    )
+  }
+  if (wantForward) {
+    await autoForwardTicketForUserAction(
+      { sessionId: args.sessionId, worktreeId: args.worktreeId, connectionId: null },
+      settings
+    )
+  }
+}
+
+/**
  * Resolve the (active, non-terminal) ticket owning `sessionId` and notify that it
  * reached a "question" state (the agent asked the user something). `requestId` keys
  * the dedupe so each distinct question notifies at most once. Tickets already in Done
  * or archived are skipped, so a question.asked replayed on app relaunch for a closed
  * ticket does not raise a spurious alert.
+ *
+ * This is the STRUCTURED-tool trigger: it fires only when the agent used the question
+ * tool-hold (which emits `question.asked`). Flows that ask the user via plain
+ * transcript text — e.g. speckit clarify-all's "answer Q1–Q4" prompt — never emit that
+ * event; those surface through the Strict-Verify `needsInput` verdict instead and are
+ * covered by [[notifyTicketNeedsInput]].
  */
 export async function notifyTicketQuestion(sessionId: string, requestId: string): Promise<void> {
   const settings = useSettingsStore.getState()
@@ -157,26 +198,57 @@ export async function notifyTicketQuestion(sessionId: string, requestId: string)
       (t) => t.current_session_id === sessionId && t.column !== 'done' && !t.archived_at
     )
     if (ticket) {
-      if (wantNotify) {
-        await notifyTicketEvent(
-          'question',
-          {
-            ticketId: ticket.id,
-            title: ticket.title,
-            dedupeKey: `question:${ticket.id}:${requestId}`
-          },
-          settings
-        )
-      }
-      if (wantForward) {
-        await autoForwardTicketForUserAction(
-          { sessionId, worktreeId: ticket.worktree_id ?? null, connectionId: null },
-          settings
-        )
-      }
+      await deliverQuestionNotify(
+        {
+          ticketId: ticket.id,
+          title: ticket.title,
+          sessionId,
+          worktreeId: ticket.worktree_id ?? null,
+          dedupeKey: `question:${ticket.id}:${requestId}`
+        },
+        settings,
+        wantNotify,
+        wantForward
+      )
       return
     }
   }
+}
+
+/**
+ * Verdict-driven sibling of [[notifyTicketQuestion]]. Fires the same "question" ping
+ * (+ auto-forward) when Strict Verify judges a ticket's transcript as `needsInput:true`
+ * — i.e. the agent stopped to ask the user something as PLAIN TRANSCRIPT TEXT rather
+ * than through the structured question tool-hold. That plain-text path never emits
+ * `question.asked`, so without this hook the "Questions" badge lights up but no Telegram
+ * alert is sent (the exact speckit clarify-all gap this closes). The caller already holds
+ * the ticket, so no session→ticket resolution is needed. Deduped per (ticket, session):
+ * one genuine waiting-on-user verdict pings once; a later user resume (new session) pings
+ * again. Never throws.
+ */
+export async function notifyTicketNeedsInput(args: {
+  ticketId: string
+  title: string
+  sessionId: string
+  worktreeId?: string | null
+}): Promise<void> {
+  const settings = useSettingsStore.getState()
+  const wantNotify = passesGate('question', settings)
+  const wantForward = passesAutoForwardGate(settings)
+  if (!wantNotify && !wantForward) return
+
+  await deliverQuestionNotify(
+    {
+      ticketId: args.ticketId,
+      title: args.title,
+      sessionId: args.sessionId,
+      worktreeId: args.worktreeId ?? null,
+      dedupeKey: `question:${args.ticketId}:${args.sessionId}`
+    },
+    settings,
+    wantNotify,
+    wantForward
+  )
 }
 
 /** Forwarding mode auto-forward starts in — full "all" mode so Telegram mirrors the

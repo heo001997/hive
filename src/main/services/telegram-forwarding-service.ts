@@ -389,13 +389,29 @@ export class TelegramForwardingService {
    * No-op (returns ok:false) when Telegram is not configured.
    */
   async sendNotification(text: string): Promise<{ ok: boolean; error?: string }> {
+    // Observability: every Kanban ticket lifecycle notification (started / question /
+    // review / stuck-review / done) funnels through here, and this is the ONLY layer that
+    // reaches the persistent log file (renderer console.log does NOT). Log every attempt +
+    // outcome so "why didn't ticket X notify?" is answerable from the log after the fact.
+    // A MISSING line = the renderer never called (gate off / deduped / code path skipped);
+    // an ok:false "Telegram is not configured" line = it fired but there is no bot/chat.
+    const preview = text.replace(/\s+/g, ' ').slice(0, 120)
+    const { logger } = await import('./logger')
     const cfg = this.getConfig()
-    if (!cfg?.botToken || !cfg.chatId) return { ok: false, error: 'Telegram is not configured' }
+    if (!cfg?.botToken || !cfg.chatId) {
+      logger.warn('TelegramNotify', 'sendNotification skipped — Telegram not configured', {
+        preview
+      })
+      return { ok: false, error: 'Telegram is not configured' }
+    }
     try {
       await this.sendMessage(cfg, text)
+      logger.info('TelegramNotify', 'sendNotification delivered', { preview })
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      const message = error instanceof Error ? error.message : String(error)
+      logger.warn('TelegramNotify', 'sendNotification failed', { preview, error: message })
+      return { ok: false, error: message }
     }
   }
 
