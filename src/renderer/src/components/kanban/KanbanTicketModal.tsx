@@ -3100,7 +3100,10 @@ function ReviewModeContent({
     try {
       const verdict = await recheckTicketCompletion(ticket.id, ticket.project_id)
       if (!verdict) {
-        toast.error('Completion check unavailable — no session transcript or provider error')
+        // A null verdict is not an unexplained failure: the store already
+        // surfaced the specific reason (no session, agent still working, or a
+        // provider/parse error with a Retry). Adding a generic toast here just
+        // double-toasted and misreported the cause — so stay quiet.
         return
       }
       if (verdict.needsInput) {
