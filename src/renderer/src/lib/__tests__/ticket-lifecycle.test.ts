@@ -232,6 +232,54 @@ describe('isReviewGateDraft', () => {
       isReviewGateDraft({ draftKey: 'draft-2', description: 'Run /speckit-review-plan first' })
     ).toBe(false)
   })
+
+  it('mode "key" ignores the description; mode "word" ignores the draftKey', () => {
+    // key-only: a matching description does not seed the gate
+    expect(
+      isReviewGateDraft(
+        { draftKey: 'draft-3', description: 'Run /speckit-review' },
+        { mode: 'key' }
+      )
+    ).toBe(false)
+    expect(isReviewGateDraft({ draftKey: 'review' }, { mode: 'key' })).toBe(true)
+    // word-only: a matching key does not seed the gate
+    expect(isReviewGateDraft({ draftKey: 'review' }, { mode: 'word' })).toBe(false)
+    expect(
+      isReviewGateDraft(
+        { draftKey: 'anything', description: 'Run /speckit-review' },
+        { mode: 'word' }
+      )
+    ).toBe(true)
+  })
+
+  it('honors a custom key pattern', () => {
+    const cfg = { mode: 'key' as const, keyPattern: '^qa(-r\\d+)?$' }
+    expect(isReviewGateDraft({ draftKey: 'qa' }, cfg)).toBe(true)
+    expect(isReviewGateDraft({ draftKey: 'qa-r2' }, cfg)).toBe(true)
+    expect(isReviewGateDraft({ draftKey: 'review' }, cfg)).toBe(false)
+  })
+
+  it('honors a custom word pattern', () => {
+    const cfg = { mode: 'word' as const, wordPattern: '/my-review-cmd' }
+    expect(
+      isReviewGateDraft({ draftKey: 'x', description: 'run /my-review-cmd now' }, cfg)
+    ).toBe(true)
+    expect(
+      isReviewGateDraft({ draftKey: 'x', description: 'run /speckit-review' }, cfg)
+    ).toBe(false)
+  })
+
+  it('falls back to the default pattern when a custom regex is invalid', () => {
+    // '(' is an invalid regex — must not throw, and must keep matching via the default.
+    expect(isReviewGateDraft({ draftKey: 'review' }, { mode: 'key', keyPattern: '(' })).toBe(true)
+    expect(isReviewGateDraft({ draftKey: 'nope' }, { mode: 'key', keyPattern: '(' })).toBe(false)
+  })
+
+  it('empty pattern strings fall back to the defaults', () => {
+    expect(
+      isReviewGateDraft({ draftKey: 'review' }, { mode: 'both', keyPattern: '', wordPattern: '' })
+    ).toBe(true)
+  })
 })
 
 describe('parseGateRound', () => {

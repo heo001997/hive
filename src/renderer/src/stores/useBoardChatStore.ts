@@ -1009,7 +1009,14 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
       const { ticketCount, dependencyCount, createdDraftIds, failures } =
         await createTicketsFromDrafts(selectedDrafts, {
           seedLifecycle: conditionGateEnabled
-            ? (draft) => (isReviewGateDraft(draft) ? buildConditionGateConfig() : null)
+            ? (draft) =>
+                isReviewGateDraft(draft, {
+                  mode: settings.kanbanConditionGateMatchMode,
+                  keyPattern: settings.kanbanConditionGateKeyPattern,
+                  wordPattern: settings.kanbanConditionGateWordPattern
+                })
+                  ? buildConditionGateConfig()
+                  : null
             : undefined,
           mode: conditionGateEnabled ? 'build' : undefined
         })

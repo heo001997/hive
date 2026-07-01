@@ -145,21 +145,61 @@ export interface ReviewGateDraftLike {
 }
 
 /**
- * True when a draft is the `review` step (the gate ticket of a chain or loop
- * round) — so the condition-gate config gets seeded onto it and not its siblings.
- * Matches by draftKey (`review`, `review-r1`, `review-r12`, …) OR, since an
- * omitted draftKey degrades to `draft-N`, by a `/speckit-review` reference in the
- * description. The `review-plan` step is deliberately NOT a gate (its key starts
- * with `review-plan`, which the anchored regex rejects).
+ * How {@link isReviewGateDraft} decides a draft is the gate ticket:
+ *   - `key`  — match the draftKey against the key pattern only,
+ *   - `word` — match the description against the word pattern only,
+ *   - `both` — match either (the default; preserves the original behavior).
  */
-const REVIEW_GATE_DRAFT_KEY_RE = /^review(-r\d+)?$/i
-export function isReviewGateDraft(draft: ReviewGateDraftLike): boolean {
+export type ConditionGateMatchMode = 'key' | 'word' | 'both'
+
+/** Default gate matcher (key): draftKey `review` / `review-r{R}`, anchored so `review-plan` is rejected. */
+export const DEFAULT_CONDITION_GATE_KEY_PATTERN = '^review(-r\\d+)?$'
+/** Default gate matcher (word): a `/speckit-review` reference in the description, not `/speckit-review-plan`. */
+export const DEFAULT_CONDITION_GATE_WORD_PATTERN = '/speckit-review(?![\\w-])'
+
+const DEFAULT_GATE_KEY_RE = /^review(-r\d+)?$/i
+const DEFAULT_GATE_WORD_RE = /\/speckit-review(?![\w-])/i
+
+/** User-tunable matcher config (from the Condition Gate settings). All optional → defaults. */
+export interface GateMatchConfig {
+  mode?: ConditionGateMatchMode
+  /** Regex SOURCE tested (case-insensitively) against the draftKey. */
+  keyPattern?: string
+  /** Regex SOURCE tested (case-insensitively) against the description. */
+  wordPattern?: string
+}
+
+/** Compile `source` as a case-insensitive regex; fall back to `fallback` on an empty/invalid pattern. */
+function safeGateRegex(source: string | undefined, fallback: RegExp): RegExp {
+  const src = source?.trim()
+  if (!src) return fallback
+  try {
+    return new RegExp(src, 'i')
+  } catch {
+    // A malformed user pattern must not break seeding — fall back to the default so
+    // the gate keeps matching as before (the Settings hint warns about invalid regex).
+    return fallback
+  }
+}
+
+/**
+ * True when a draft is the `review` step (the gate ticket of a chain or loop round)
+ * — so the condition-gate config gets seeded onto it and not its siblings.
+ *
+ * With no `cfg` (or empty fields) it uses the built-in defaults: match by draftKey
+ * (`review`, `review-r1`, `review-r12`, …) OR, since an omitted draftKey degrades to
+ * `draft-N`, by a `/speckit-review` reference in the description. `review-plan` is
+ * deliberately NOT a gate (the anchored key regex + the `(?![\w-])` word boundary both
+ * reject it). `cfg` lets the user narrow to key-only / description-only and edit either
+ * pattern; an invalid user pattern falls back to the corresponding default.
+ */
+export function isReviewGateDraft(draft: ReviewGateDraftLike, cfg?: GateMatchConfig): boolean {
+  const mode = cfg?.mode ?? 'both'
   const key = draft.draftKey?.trim() ?? ''
-  if (REVIEW_GATE_DRAFT_KEY_RE.test(key)) return true
   const desc = draft.description ?? ''
-  // `/speckit-review` followed by a non-`-` boundary so `/speckit-review-plan`
-  // (the review-plan step) does NOT match.
-  return /\/speckit-review(?![\w-])/i.test(desc)
+  const keyHit = mode !== 'word' && safeGateRegex(cfg?.keyPattern, DEFAULT_GATE_KEY_RE).test(key)
+  const wordHit = mode !== 'key' && safeGateRegex(cfg?.wordPattern, DEFAULT_GATE_WORD_RE).test(desc)
+  return keyHit || wordHit
 }
 
 /**

@@ -29,7 +29,11 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { DEFAULT_AUTO_RESOLVE_CONFLICT_PROMPT } from '@/lib/autoResolveConflictPrompt'
 import { DEFAULT_CONTEXT_TEMPLATE } from '@/lib/worktree-context-constants'
-import { DEFAULT_FIX_PROMPT_TEMPLATE } from '@/lib/ticket-lifecycle'
+import {
+  DEFAULT_CONDITION_GATE_KEY_PATTERN,
+  DEFAULT_CONDITION_GATE_WORD_PATTERN,
+  DEFAULT_FIX_PROMPT_TEMPLATE
+} from '@/lib/ticket-lifecycle'
 import { useShortcutStore } from '@/stores/useShortcutStore'
 import { useAccountStore, useUsageStore } from '@/stores'
 import { toast } from '@/lib/toast'
@@ -177,6 +181,9 @@ export function SettingsGeneral(): React.JSX.Element {
     kanbanConditionGateModel,
     kanbanConditionGatePrompt,
     kanbanConditionGateAutoDone,
+    kanbanConditionGateMatchMode,
+    kanbanConditionGateKeyPattern,
+    kanbanConditionGateWordPattern,
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
@@ -1022,6 +1029,109 @@ export function SettingsGeneral(): React.JSX.Element {
 
         {kanbanConditionGateEnabled && (
           <div className="ml-2 space-y-5 border-l-2 border-border pl-4">
+            {/* Gate matcher — which `review` drafts arm the gate (dynamic target). */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Gate matcher</label>
+              <select
+                value={kanbanConditionGateMatchMode}
+                onChange={(e) =>
+                  updateSetting(
+                    'kanbanConditionGateMatchMode',
+                    e.target.value as typeof kanbanConditionGateMatchMode
+                  )
+                }
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                data-testid="condition-gate-match-mode"
+              >
+                <option value="both">Draft-key or description (default)</option>
+                <option value="key">Draft-key only</option>
+                <option value="word">Description only</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Which new drafts get seeded as a gate. <strong>Draft-key</strong> matches the
+                draft&apos;s key (e.g. <code>review</code>, <code>review-r1</code>);{' '}
+                <strong>description</strong> matches its text (for drafts with a generic key).
+              </p>
+
+              {kanbanConditionGateMatchMode !== 'word' && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Draft-key pattern (regex)
+                    </label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        updateSetting(
+                          'kanbanConditionGateKeyPattern',
+                          DEFAULT_CONDITION_GATE_KEY_PATTERN
+                        )
+                      }
+                      disabled={kanbanConditionGateKeyPattern === DEFAULT_CONDITION_GATE_KEY_PATTERN}
+                      data-testid="condition-gate-key-pattern-reset"
+                    >
+                      <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                      Reset
+                    </Button>
+                  </div>
+                  <Input
+                    type="text"
+                    value={kanbanConditionGateKeyPattern}
+                    placeholder={DEFAULT_CONDITION_GATE_KEY_PATTERN}
+                    onChange={(e) =>
+                      updateSetting('kanbanConditionGateKeyPattern', e.target.value)
+                    }
+                    className="w-full font-mono text-xs"
+                    data-testid="condition-gate-key-pattern"
+                  />
+                </div>
+              )}
+
+              {kanbanConditionGateMatchMode !== 'key' && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Description pattern (regex)
+                    </label>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        updateSetting(
+                          'kanbanConditionGateWordPattern',
+                          DEFAULT_CONDITION_GATE_WORD_PATTERN
+                        )
+                      }
+                      disabled={
+                        kanbanConditionGateWordPattern === DEFAULT_CONDITION_GATE_WORD_PATTERN
+                      }
+                      data-testid="condition-gate-word-pattern-reset"
+                    >
+                      <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                      Reset
+                    </Button>
+                  </div>
+                  <Input
+                    type="text"
+                    value={kanbanConditionGateWordPattern}
+                    placeholder={DEFAULT_CONDITION_GATE_WORD_PATTERN}
+                    onChange={(e) =>
+                      updateSetting('kanbanConditionGateWordPattern', e.target.value)
+                    }
+                    className="w-full font-mono text-xs"
+                    data-testid="condition-gate-word-pattern"
+                  />
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Case-insensitive. An invalid regex falls back to the default so seeding still
+                works.
+              </p>
+            </div>
+
             {/* Max rounds — the fix-loop breaker for the condition gate. */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Max fix rounds</label>
