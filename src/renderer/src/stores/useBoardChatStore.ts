@@ -1,11 +1,16 @@
 import { create } from 'zustand'
-import type { KanbanTicket } from '../../../main/db/types'
+import type {
+  KanbanTicket,
+  KanbanTicketBatchCreate,
+  KanbanTicketBatchCreateResult
+} from '../../../main/db/types'
 import type { OpenCodeMessage } from '@/components/sessions/SessionView'
 import {
   parseBoardAssistantDraftSet,
   removeBoardDraftBlocks,
   hasBoardDraftBlock
 } from '@/lib/board-assistant-drafts'
+import { useKanbanStore } from '@/stores/useKanbanStore'
 import type { SelectedModel } from '@/stores/useSettingsStore'
 import { useSettingsStore, resolveModelForSdk } from '@/stores/useSettingsStore'
 import { BOARD_ASSISTANT_SESSION_NAME_PREFIX } from '@/stores/useSessionStore'
@@ -13,8 +18,6 @@ import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { opencodeApi } from '@/api/opencode-api'
 import { dbApi } from '@/api/db-api'
 import { kanbanApi } from '@/api/kanban-api'
-import { createTicketsFromDrafts } from '@/lib/create-tickets-from-drafts'
-import { buildSpeckitGateConfig, isSpeckitReviewDraft } from '@/lib/ticket-lifecycle'
 import type { Attachment, AttachmentInput } from '@/components/sessions/AttachmentPreview'
 import { buildDisplayContent, MAX_ATTACHMENTS } from '@/lib/file-attachment-utils'
 import { parseUserMessageAttachments } from '@/lib/parse-user-message-attachments'
@@ -858,7 +861,11 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
               ? []
               : snapshot.drafts,
         draftSourceMessageId: latestDraftMessage?.id ?? snapshot.draftSourceMessageId,
-        error: draftParseFailed ? BOARD_DRAFT_PARSE_ERROR : parsedDrafts ? null : snapshot.error,
+        error: draftParseFailed
+          ? BOARD_DRAFT_PARSE_ERROR
+          : parsedDrafts
+            ? null
+            : snapshot.error,
         status: isStreaming
           ? 'thinking'
           : draftParseFailed
@@ -902,7 +909,11 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
               ? []
               : state.drafts,
         draftSourceMessageId: latestDraftMessage?.id ?? state.draftSourceMessageId,
-        error: draftParseFailed ? BOARD_DRAFT_PARSE_ERROR : parsedDrafts ? null : state.error,
+        error: draftParseFailed
+          ? BOARD_DRAFT_PARSE_ERROR
+          : parsedDrafts
+            ? null
+            : state.error,
         status: isStreaming
           ? 'thinking'
           : draftParseFailed
@@ -992,17 +1003,66 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
         throw new Error('Fix draft validation issues before creating tickets.')
       }
 
-      // Speckit auto-spawn: when enabled, seed the review GATE config onto every
-      // `review` draft (so its `review-r{R}` re-arms the gate on completion) and
-      // force build mode on the whole batch (the gate only arms for build tickets).
-      const autoSpawnEnabled = useSettingsStore.getState().kanbanAutoSpawnDraftsEnabled
-      const { ticketCount, dependencyCount, createdDraftIds, failures } =
-        await createTicketsFromDrafts(selectedDrafts, {
-          seedLifecycle: autoSpawnEnabled
-            ? (draft) => (isSpeckitReviewDraft(draft) ? buildSpeckitGateConfig() : null)
-            : undefined,
-          mode: autoSpawnEnabled ? 'build' : undefined
-        })
+      const draftsByProject = new Map<string, typeof selectedDrafts>()
+      for (const draft of selectedDrafts) {
+        draftsByProject.set(draft.projectId, [
+          ...(draftsByProject.get(draft.projectId) ?? []),
+          draft
+        ])
+      }
+
+      // Seed each draft's per-ticket auto-approve flag from the global default,
+      // matching useKanbanStore.createTicket. Batch creation bypasses that store
+      // action, so without this board-assistant tickets would always default to
+      // false and ignore the user's global setting.
+      const autoApproveReviewDefault = useSettingsStore.getState().kanbanAutoApproveReview
+      const batches = [...draftsByProject.entries()].map(([projectId, projectDrafts]) => {
+        const projectDraftKeys = new Set(projectDrafts.map((draft) => draft.draftKey))
+        return {
+          projectId,
+          projectName: projectDrafts[0]?.projectName ?? projectId,
+          projectDrafts,
+          request: kanbanApi.ticket.createBatch<
+            KanbanTicketBatchCreateResult,
+            KanbanTicketBatchCreate
+          >(projectId, {
+            drafts: projectDrafts.map((draft) => ({
+              draft_key: draft.draftKey,
+              project_id: draft.projectId,
+              title: draft.title,
+              description: draft.description ?? null,
+              column: 'todo',
+              auto_approve_review: autoApproveReviewDefault,
+              depends_on: draft.dependsOn.filter((key) => projectDraftKeys.has(key))
+            }))
+          })
+        }
+      })
+
+      const settled = await Promise.allSettled(batches.map((batch) => batch.request))
+      let ticketCount = 0
+      let dependencyCount = 0
+      const createdDraftIds: string[] = []
+      const successfulProjectIds: string[] = []
+      const failures: string[] = []
+
+      settled.forEach((result, index) => {
+        const batch = batches[index]
+        if (result.status === 'fulfilled') {
+          ticketCount += result.value.tickets.length
+          dependencyCount += result.value.dependencies.length
+          createdDraftIds.push(...batch.projectDrafts.map((draft) => draft.id))
+          successfulProjectIds.push(batch.projectId)
+          return
+        }
+        const message = result.reason instanceof Error ? result.reason.message : String(result.reason)
+        failures.push(`${batch.projectName}: ${message}`)
+      })
+
+      for (const projectId of successfulProjectIds) {
+        await useKanbanStore.getState().loadTickets(projectId)
+        await useKanbanStore.getState().loadDependencies(projectId)
+      }
 
       if (createdDraftIds.length > 0) {
         get().markDraftsCreated(createdDraftIds)
@@ -1141,7 +1201,10 @@ export const useBoardChatStore = create<BoardChatState>((set, get) => ({
         return {}
       }
       return patchActiveSnapshot(state, {
-        composerAttachments: [...state.composerAttachments, { id: crypto.randomUUID(), ...input }]
+        composerAttachments: [
+          ...state.composerAttachments,
+          { id: crypto.randomUUID(), ...input }
+        ]
       })
     }),
   removeComposerAttachment: (id) =>

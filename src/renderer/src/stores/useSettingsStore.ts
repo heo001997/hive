@@ -129,10 +129,6 @@ export interface AppSettings {
   kanbanIterateLoopMaxIterations: number
   /** Kanban: Iterate Loop — the fix prompt fed back to the agent on a bounce. Supports `{{reason}}` (the Reviewer's reason). Seeds new tickets' `in_progress.before` prompt. */
   kanbanIterateLoopFixPromptTemplate: string
-  /** Kanban: Speckit auto-spawn — DEFAULT for the Speckit review GATE. When on, `review` drafts created via the Board Assistant are seeded with a gate config (and build mode); a settled gate ticket whose review agent emitted a `board-ticket-drafts` block auto-creates the next loop round with NO confirm dialog, then moves itself to Done. Off by default. */
-  kanbanAutoSpawnDraftsEnabled: boolean
-  /** Kanban: Speckit auto-spawn — max loop rounds before a gate stops auto-spawning and is left in Review (blocked) for Tu. The loop-breaker backstop (the round itself stays agent-computed). */
-  kanbanAutoSpawnMaxRounds: number
   /** Kanban: Telegram ticket notifications — master switch. Off by default (opt-in) so users who already configured a Telegram bot for forwarding aren't surprised by ticket messages. When on, a message is sent to the configured Telegram bot + chat on the ticket lifecycle events toggled below. No-op until a Telegram bot is configured. */
   kanbanTelegramNotifyEnabled: boolean
   /** Kanban: notify when a ticket first moves Todo → In Progress (work started). */
@@ -303,8 +299,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanIterateLoopEnabled: false,
   kanbanIterateLoopMaxIterations: 3,
   kanbanIterateLoopFixPromptTemplate: DEFAULT_FIX_PROMPT_TEMPLATE,
-  kanbanAutoSpawnDraftsEnabled: false,
-  kanbanAutoSpawnMaxRounds: 20,
   kanbanTelegramNotifyEnabled: false,
   kanbanTelegramNotifyOnStart: true,
   kanbanTelegramNotifyOnQuestion: true,
@@ -422,7 +416,9 @@ interface SettingsState extends AppSettings {
     mode: 'build' | 'plan' | 'ask',
     model: SelectedModel | null
   ) => Promise<void>
-  getModelForMode: (mode: 'build' | 'plan' | 'super-plan' | 'ask') => SelectedModel | null
+  getModelForMode: (
+    mode: 'build' | 'plan' | 'super-plan' | 'ask'
+  ) => SelectedModel | null
   setLastHandoffOverride: (value: AppSettings['lastHandoffOverride']) => void
   toggleFavoriteModel: (providerID: string, modelID: string) => void
   setKanbanColumnColor: (column: string, value: string) => void
@@ -566,8 +562,6 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanIterateLoopEnabled: state.kanbanIterateLoopEnabled,
     kanbanIterateLoopMaxIterations: state.kanbanIterateLoopMaxIterations,
     kanbanIterateLoopFixPromptTemplate: state.kanbanIterateLoopFixPromptTemplate,
-    kanbanAutoSpawnDraftsEnabled: state.kanbanAutoSpawnDraftsEnabled,
-    kanbanAutoSpawnMaxRounds: state.kanbanAutoSpawnMaxRounds,
     kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
     kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
     kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
@@ -813,7 +807,10 @@ export const useSettingsStore = create<SettingsState>()(
         saveToDatabase(settings)
       },
 
-      setModeDefaultModel: async (mode: 'build' | 'plan' | 'ask', model: SelectedModel | null) => {
+      setModeDefaultModel: async (
+        mode: 'build' | 'plan' | 'ask',
+        model: SelectedModel | null
+      ) => {
         const currentDefaults = get().defaultModels || {
           build: null,
           plan: null,
@@ -970,8 +967,6 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanIterateLoopEnabled: state.kanbanIterateLoopEnabled,
         kanbanIterateLoopMaxIterations: state.kanbanIterateLoopMaxIterations,
         kanbanIterateLoopFixPromptTemplate: state.kanbanIterateLoopFixPromptTemplate,
-        kanbanAutoSpawnDraftsEnabled: state.kanbanAutoSpawnDraftsEnabled,
-        kanbanAutoSpawnMaxRounds: state.kanbanAutoSpawnMaxRounds,
         kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
         kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
         kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
