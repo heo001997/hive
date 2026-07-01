@@ -1,11 +1,25 @@
 import { getRendererRpcClient } from './rpc-client'
-import { MARKDOWN_KANBAN_CHANGED_CHANNEL } from '@shared/kanban-events'
+import {
+  KANBAN_TICKETS_CREATED_CHANNEL,
+  MARKDOWN_KANBAN_CHANGED_CHANNEL
+} from '@shared/kanban-events'
+import type { KanbanTicketsCreatedEvent } from '@shared/kanban-events'
 import type { ServerEvent } from '@shared/rpc/protocol'
 
 export interface MarkdownKanbanChangedEvent {
   projectId: string
   paths: string[]
   eventTypes: Array<'add' | 'change' | 'unlink'>
+}
+
+const isKanbanTicketsCreatedEvent = (value: unknown): value is KanbanTicketsCreatedEvent => {
+  if (!value || typeof value !== 'object') return false
+  const event = value as Record<string, unknown>
+  return (
+    typeof event.projectId === 'string' &&
+    Array.isArray(event.ticketIds) &&
+    event.ticketIds.every((id) => typeof id === 'string')
+  )
 }
 
 const isMarkdownKanbanChangedEvent = (value: unknown): value is MarkdownKanbanChangedEvent => {
@@ -245,6 +259,12 @@ export const kanbanApi = {
     onChanged: (callback: (event: MarkdownKanbanChangedEvent) => void): (() => void) =>
       getRendererRpcClient().subscribe(MARKDOWN_KANBAN_CHANGED_CHANNEL, (event: ServerEvent) => {
         if (isMarkdownKanbanChangedEvent(event.payload)) {
+          callback(event.payload)
+        }
+      }),
+    onTicketsCreated: (callback: (event: KanbanTicketsCreatedEvent) => void): (() => void) =>
+      getRendererRpcClient().subscribe(KANBAN_TICKETS_CREATED_CHANNEL, (event: ServerEvent) => {
+        if (isKanbanTicketsCreatedEvent(event.payload)) {
           callback(event.payload)
         }
       })

@@ -15,6 +15,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { buildDefaultLoopConfig, type LifecycleSlot } from '@/lib/ticket-lifecycle'
+import { COMPLETION_CHECK_PROVIDERS, COMPLETION_PROVIDER_LABELS } from '@shared/types/completion'
 import type {
   LifecycleAction,
   LifecycleActionType,
@@ -56,6 +57,7 @@ const ACTION_TYPES: LifecycleActionType[] = [
   'agent',
   'check',
   'review',
+  'evaluate',
   'notify',
   'goto',
   'wait'
@@ -539,6 +541,104 @@ function ActionConfig({
           className="h-7 w-20 font-mono text-[11px]"
         />
         <span className="text-muted-foreground">seconds</span>
+      </div>
+    )
+  }
+  if (action.type === 'evaluate') {
+    const provider = typeof config.provider === 'string' ? config.provider : ''
+    const model = typeof config.model === 'string' ? config.model : ''
+    const prompt = typeof config.prompt === 'string' ? config.prompt : ''
+    const maxRounds = typeof config.maxRounds === 'number' ? config.maxRounds : ''
+    const autoDone = config.autoDone === true
+    // Drop blank string fields so an untouched control falls back to the global
+    // Condition Gate setting rather than pinning an empty override.
+    const setText = (patch: Record<string, unknown>): void => {
+      const next = { ...config, ...patch }
+      for (const k of ['provider', 'model', 'prompt']) {
+        if (next[k] === '') delete next[k]
+      }
+      onConfig(next)
+    }
+    return (
+      <div className="space-y-2">
+        <p className="text-[11px] text-muted-foreground">
+          Two-stage review <strong>gate</strong>. After Strict Verify confirms the agent finished,
+          a second LLM reads the review&apos;s findings and routes <strong>pass</strong> (wait for
+          you) / <strong>fix</strong> (open a fix-loop round via the Hive CLI) /{' '}
+          <strong>needs-human</strong> (leave in Review + notify). Blank fields fall back to your
+          global Condition Gate settings. Only takes effect in the <strong>Review · During</strong>{' '}
+          slot.
+        </p>
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="w-20 shrink-0 text-muted-foreground">provider</span>
+          <select
+            value={provider}
+            onChange={(e) => setText({ provider: e.target.value })}
+            className="h-7 flex-1 rounded border border-border bg-background px-1"
+          >
+            <option value="">default (global)</option>
+            {COMPLETION_CHECK_PROVIDERS.map((p) => (
+              <option key={p} value={p}>
+                {COMPLETION_PROVIDER_LABELS[p]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="w-20 shrink-0 text-muted-foreground">model</span>
+          <Input
+            value={model}
+            onChange={(e) => setText({ model: e.target.value })}
+            placeholder="default"
+            className="h-7 flex-1 font-mono text-[11px]"
+          />
+        </div>
+        <div className="flex items-center gap-1.5 text-[11px]">
+          <span className="w-20 shrink-0 text-muted-foreground">max rounds</span>
+          <Input
+            type="number"
+            min={1}
+            max={20}
+            value={maxRounds}
+            placeholder="global"
+            onChange={(e) => {
+              const raw = e.target.value.trim()
+              const n = parseInt(raw, 10)
+              const next = { ...config }
+              if (raw === '' || isNaN(n)) delete next.maxRounds
+              else next.maxRounds = Math.max(1, Math.min(20, n))
+              onConfig(next)
+            }}
+            className="h-7 w-20 font-mono text-[11px]"
+          />
+          <span className="text-[10px] text-muted-foreground">fix loops before stuck</span>
+        </div>
+        <label className="flex items-center gap-1.5 text-[11px]">
+          <input
+            type="checkbox"
+            checked={autoDone}
+            onChange={(e) => onConfig({ ...config, autoDone: e.target.checked })}
+            className="h-3 w-3"
+          />
+          <span className="text-muted-foreground">
+            auto-advance to Done on a <strong>pass</strong> (default: wait in Review)
+          </span>
+        </label>
+        <div className="space-y-1">
+          <span className="text-[11px] text-muted-foreground">routing prompt</span>
+          <Textarea
+            value={prompt}
+            onChange={(e) => setText({ prompt: e.target.value })}
+            rows={4}
+            spellCheck={false}
+            placeholder="Blank uses your global Condition Gate routing prompt."
+            className="w-full font-mono text-[11px] leading-relaxed"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            Must still ask for the <code>verdict</code> / <code>reason</code> / <code>fixes</code>{' '}
+            JSON or the gate can&apos;t be parsed.
+          </p>
+        </div>
       </div>
     )
   }

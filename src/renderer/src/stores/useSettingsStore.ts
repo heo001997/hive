@@ -8,6 +8,7 @@ import { DEFAULT_MAX_VISIBLE_PETS } from '@shared/types/pet'
 import type { PetSettings } from '@shared/types/pet'
 import type { AgentSdk, HandoffAgentSdk } from '@shared/types/agent-sdk'
 import {
+  DEFAULT_CONDITION_GATE_PROMPT,
   DEFAULT_STRICT_VERIFY_PROMPT,
   type CompletionCheckProvider
 } from '@shared/types/completion'
@@ -129,6 +130,18 @@ export interface AppSettings {
   kanbanIterateLoopMaxIterations: number
   /** Kanban: Iterate Loop — the fix prompt fed back to the agent on a bounce. Supports `{{reason}}` (the Reviewer's reason). Seeds new tickets' `in_progress.before` prompt. */
   kanbanIterateLoopFixPromptTemplate: string
+  /** Kanban: Condition Gate (two-stage review) — DEFAULT for seeding review drafts as a two-stage gate. When on, `review` drafts are seeded with an `evaluate` gate: after Stage-1 Strict-Verify confirms the review agent finished, a second LLM reads the review's return and routes pass (wait for you) / fix (open a fix loop round via the Hive CLI) / needs-human (leave in Review + notify). Off by default. */
+  kanbanConditionGateEnabled: boolean
+  /** Kanban: Condition Gate — max fix-loop rounds before the gate stops and is left in Review (blocked) for you. The loop-breaker backstop. */
+  kanbanConditionGateMaxRounds: number
+  /** Kanban: Condition Gate — which AI provider runs the Stage-2 routing LLM (claude-code | codex | opencode). */
+  kanbanConditionGateProvider: CompletionCheckProvider
+  /** Kanban: Condition Gate — optional model id forwarded to the Stage-2 provider (empty → provider default). */
+  kanbanConditionGateModel: string
+  /** Kanban: Condition Gate — user-editable Stage-2 routing system prompt (must still ask for the verdict/reason/fixes JSON). */
+  kanbanConditionGatePrompt: string
+  /** Kanban: Condition Gate — when a `pass` verdict lands, optionally auto-advance a chain ticket to Done instead of leaving it in Review for you. Off by default (the ticket says: wait in Review). */
+  kanbanConditionGateAutoDone: boolean
   /** Kanban: Telegram ticket notifications — master switch. Off by default (opt-in) so users who already configured a Telegram bot for forwarding aren't surprised by ticket messages. When on, a message is sent to the configured Telegram bot + chat on the ticket lifecycle events toggled below. No-op until a Telegram bot is configured. */
   kanbanTelegramNotifyEnabled: boolean
   /** Kanban: notify when a ticket first moves Todo → In Progress (work started). */
@@ -299,6 +312,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanIterateLoopEnabled: false,
   kanbanIterateLoopMaxIterations: 3,
   kanbanIterateLoopFixPromptTemplate: DEFAULT_FIX_PROMPT_TEMPLATE,
+  kanbanConditionGateEnabled: false,
+  kanbanConditionGateMaxRounds: 3,
+  kanbanConditionGateProvider: 'claude-code',
+  kanbanConditionGateModel: '',
+  kanbanConditionGatePrompt: DEFAULT_CONDITION_GATE_PROMPT,
+  kanbanConditionGateAutoDone: false,
   kanbanTelegramNotifyEnabled: false,
   kanbanTelegramNotifyOnStart: true,
   kanbanTelegramNotifyOnQuestion: true,
@@ -562,6 +581,12 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanIterateLoopEnabled: state.kanbanIterateLoopEnabled,
     kanbanIterateLoopMaxIterations: state.kanbanIterateLoopMaxIterations,
     kanbanIterateLoopFixPromptTemplate: state.kanbanIterateLoopFixPromptTemplate,
+    kanbanConditionGateEnabled: state.kanbanConditionGateEnabled,
+    kanbanConditionGateMaxRounds: state.kanbanConditionGateMaxRounds,
+    kanbanConditionGateProvider: state.kanbanConditionGateProvider,
+    kanbanConditionGateModel: state.kanbanConditionGateModel,
+    kanbanConditionGatePrompt: state.kanbanConditionGatePrompt,
+    kanbanConditionGateAutoDone: state.kanbanConditionGateAutoDone,
     kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
     kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
     kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
@@ -967,6 +992,12 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanIterateLoopEnabled: state.kanbanIterateLoopEnabled,
         kanbanIterateLoopMaxIterations: state.kanbanIterateLoopMaxIterations,
         kanbanIterateLoopFixPromptTemplate: state.kanbanIterateLoopFixPromptTemplate,
+        kanbanConditionGateEnabled: state.kanbanConditionGateEnabled,
+        kanbanConditionGateMaxRounds: state.kanbanConditionGateMaxRounds,
+        kanbanConditionGateProvider: state.kanbanConditionGateProvider,
+        kanbanConditionGateModel: state.kanbanConditionGateModel,
+        kanbanConditionGatePrompt: state.kanbanConditionGatePrompt,
+        kanbanConditionGateAutoDone: state.kanbanConditionGateAutoDone,
         kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
         kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
         kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,

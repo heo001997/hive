@@ -1,9 +1,16 @@
 import { generateText } from './text-generation-router'
 import { createLogger } from './logger'
 import type { AgentSdkId } from './agent-sdk-types'
-import { DEFAULT_STRICT_VERIFY_PROMPT, type CompletionVerdict } from '@shared/types/completion'
+import {
+  CONDITION_GATE_VERDICTS,
+  DEFAULT_CONDITION_GATE_PROMPT,
+  DEFAULT_STRICT_VERIFY_PROMPT,
+  type ConditionGateVerdict,
+  type ConditionGateVerdictKind,
+  type CompletionVerdict
+} from '@shared/types/completion'
 
-export type { CompletionVerdict }
+export type { CompletionVerdict, ConditionGateVerdict }
 
 const log = createLogger({ component: 'CompletionDetector' })
 
@@ -26,6 +33,9 @@ const COMPLETION_PARSE_ATTEMPTS = 3
 /** Built-in Watcher system prompt; the user can override it per the settings. */
 const SYSTEM_PROMPT = DEFAULT_STRICT_VERIFY_PROMPT
 
+/** Built-in condition-gate (Stage 2) system prompt; overridable per the settings. */
+const CONDITION_GATE_SYSTEM_PROMPT = DEFAULT_CONDITION_GATE_PROMPT
+
 export const COMPLETION_JSON_SCHEMA = JSON.stringify({
   type: 'object',
   properties: {
@@ -35,6 +45,17 @@ export const COMPLETION_JSON_SCHEMA = JSON.stringify({
     reason: { type: 'string' }
   },
   required: ['complete', 'needsInput', 'confidence', 'reason'],
+  additionalProperties: false
+})
+
+export const CONDITION_GATE_JSON_SCHEMA = JSON.stringify({
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: [...CONDITION_GATE_VERDICTS] },
+    reason: { type: 'string' },
+    fixes: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['verdict', 'reason'],
   additionalProperties: false
 })
 
@@ -171,6 +192,67 @@ Respond now with ONLY the JSON verdict object describing the transcript above �
     : new Error('Could not parse AI completion verdict')
 }
 
+/**
+ * Stage 2 (condition gate): ask an LLM to ROUTE a completed review ticket's return
+ * into `pass` / `fix` / `needs-human`. Same transcript-trust model and retry/parse
+ * plumbing as {@link detectTicketCompletion}, but a different system prompt + schema.
+ *
+ * Throws on provider failure or an unparseable response — the engine treats a
+ * thrown error as "block for the human" (no fail-open).
+ */
+export async function detectTicketVerdict(
+  options: DetectCompletionOptions
+): Promise<ConditionGateVerdict> {
+  const { ticketTitle, ticketDescription, transcriptTail, provider, cwd, modelOverride } = options
+  const systemPrompt = options.systemPromptOverride?.trim() || CONDITION_GATE_SYSTEM_PROMPT
+
+  const tail = transcriptTail.trim()
+  if (!tail) {
+    // No transcript to route on — needs a human rather than a guessed route.
+    return {
+      verdict: 'needs-human',
+      reason: 'No review transcript available to route on.',
+      fixes: []
+    }
+  }
+
+  const prompt = `Ticket title: ${truncate(ticketTitle, MAX_TITLE_LENGTH)}
+
+Ticket description:
+${truncate((ticketDescription ?? '').trim() || '(none provided)', MAX_DESCRIPTION_LENGTH)}
+
+Review transcript tail (most recent agent output, oldest→newest):
+${tail}`
+
+  log.info('Routing ticket verdict (condition gate)', { provider, tailLength: tail.length, cwd })
+
+  let lastError: unknown
+  for (let attempt = 0; attempt < COMPLETION_PARSE_ATTEMPTS; attempt++) {
+    const response = await generateText(prompt, systemPrompt, provider, {
+      cwd,
+      outputSchema: CONDITION_GATE_JSON_SCHEMA,
+      modelOverride
+    })
+    if (!response) {
+      lastError = new Error('AI provider returned an empty response')
+      continue
+    }
+    try {
+      return parseConditionVerdict(response)
+    } catch (err) {
+      lastError = err
+      log.warn('Condition-gate verdict parse failed', {
+        attempt: attempt + 1,
+        attempts: COMPLETION_PARSE_ATTEMPTS,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('Could not parse AI condition-gate verdict')
+}
+
 /** Parse the LLM response (possibly fenced, possibly with extra prose) into a verdict. */
 function parseVerdict(response: string): CompletionVerdict {
   const parsed = extractVerdictObject(response)
@@ -197,6 +279,65 @@ function parseVerdict(response: string): CompletionVerdict {
   const needsInput = parsed.needsInput === true
 
   return { complete: parsed.complete, needsInput, confidence, reason }
+}
+
+/** Parse a condition-gate response into a `{ verdict, reason, fixes }`. */
+function parseConditionVerdict(response: string): ConditionGateVerdict {
+  const parsed = extractObjectWith(response, (obj) => isConditionGateKind(obj.verdict))
+  if (!parsed) {
+    log.warn('Could not extract a JSON verdict from condition-gate response', {
+      responsePrefix: response.slice(0, 200),
+      responseLength: response.length
+    })
+    throw new Error('Could not extract JSON from AI response')
+  }
+
+  if (!isConditionGateKind(parsed.verdict)) {
+    throw new Error('AI response missing a valid "verdict" (pass|fix|needs-human)')
+  }
+  const verdict = parsed.verdict
+  const reason =
+    typeof parsed.reason === 'string' && parsed.reason.trim()
+      ? sanitizeReason(parsed.reason)
+      : 'No reason provided.'
+  const fixes = Array.isArray(parsed.fixes)
+    ? parsed.fixes
+        .filter((f): f is string => typeof f === 'string' && f.trim().length > 0)
+        .map((f) => sanitizeReason(f))
+    : []
+
+  return { verdict, reason, fixes }
+}
+
+/** True when `v` is one of the allowed condition-gate verdict strings. */
+function isConditionGateKind(v: unknown): v is ConditionGateVerdictKind {
+  return typeof v === 'string' && (CONDITION_GATE_VERDICTS as readonly string[]).includes(v)
+}
+
+/**
+ * Generic sibling of {@link extractVerdictObject}: return the first candidate
+ * object that satisfies `accept`, else the first object that parses at all (so a
+ * "missing/invalid field" error fires for a malformed verdict rather than a
+ * generic "no JSON" error).
+ */
+function extractObjectWith(
+  text: string,
+  accept: (obj: Record<string, unknown>) => boolean
+): Record<string, unknown> | null {
+  let firstObject: Record<string, unknown> | null = null
+  for (const candidate of jsonCandidates(text)) {
+    let value: unknown
+    try {
+      value = JSON.parse(candidate)
+    } catch {
+      continue
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const obj = value as Record<string, unknown>
+    if (accept(obj)) return obj
+    if (!firstObject) firstObject = obj
+  }
+  return firstObject
 }
 
 /**

@@ -2,6 +2,7 @@ import { getRendererRpcClient } from './rpc-client'
 import type {
   CompletionCheckProvider,
   CompletionCheckResult,
+  ConditionGateCheckResult,
   SessionFingerprint
 } from '@shared/types/completion'
 
@@ -29,6 +30,25 @@ export const completionApi = {
   ): Promise<CompletionCheckResult> =>
     getRendererRpcClient().request<CompletionCheckResult>(
       'completionOps.detectTicketCompletion',
+      params
+    ),
+
+  /**
+   * Stage 2 — condition gate. Send the same transcript tail the Watcher judges to
+   * an AI provider and ask it to ROUTE the review's return into
+   * pass/fix/needs-human. Resolves to a result envelope — `{ success: false, error }`
+   * on provider/parse failure (the engine then blocks for the human, no fail-open).
+   */
+  detectTicketVerdict: async (params: {
+    sessionId: string
+    ticketId: string
+    maxChars?: number
+    provider?: CompletionCheckProvider
+    model?: string
+    systemPrompt?: string
+  }): Promise<ConditionGateCheckResult> =>
+    getRendererRpcClient().request<ConditionGateCheckResult>(
+      'completionOps.detectTicketVerdict',
       params
     ),
 

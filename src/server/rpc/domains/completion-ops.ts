@@ -12,6 +12,8 @@ import {
   type CompletionCheckProvider,
   type CompletionCheckResult,
   type CompletionVerdict,
+  type ConditionGateCheckResult,
+  type ConditionGateVerdict,
   type SessionFingerprint
 } from '@shared/types/completion'
 import { stripAnsi } from '../../../shared/lib/ansi'
@@ -49,6 +51,18 @@ export interface DetectTicketCompletionParams {
   systemPrompt?: string
 }
 
+/** Params for the Stage-2 condition gate — same resolution as completion, different verdict. */
+export interface DetectTicketVerdictParams {
+  sessionId: string
+  ticketId: string
+  maxChars?: number
+  provider?: CompletionCheckProvider
+  /** Optional model id forwarded to the provider as a model override. */
+  model?: string
+  /** Optional condition-gate system prompt override (blank → built-in default). */
+  systemPrompt?: string
+}
+
 export interface GetSessionFingerprintParams {
   sessionId: string
 }
@@ -71,6 +85,9 @@ export interface CompletionOpsRpcService {
   readonly detectTicketCompletion: (
     params: DetectTicketCompletionParams
   ) => Effect.Effect<CompletionCheckResult, unknown, never>
+  readonly detectTicketVerdict: (
+    params: DetectTicketVerdictParams
+  ) => Effect.Effect<ConditionGateCheckResult, unknown, never>
   readonly getSessionFingerprint: (
     params: GetSessionFingerprintParams
   ) => Effect.Effect<SessionFingerprint, unknown, never>
@@ -83,6 +100,7 @@ export interface CompletionOpsRpcService {
 export interface CompletionOpsRpcDependencies {
   loadDatabase?: () => Promise<CompletionOpsDatabase> | CompletionOpsDatabase
   detect?: (options: DetectCompletionOptions) => Promise<CompletionVerdict>
+  detectVerdict?: (options: DetectCompletionOptions) => Promise<ConditionGateVerdict>
   buildTail?: (messages: ReadonlyArray<TranscriptMessage>, maxChars?: number) => string
   /** Read a session's live PTY output snapshot (undefined → fall back to DB messages). */
   readLiveness?: (sessionId: string) => SessionLiveness | undefined
@@ -286,6 +304,17 @@ const fingerprintParamsSchema = z
   })
   .strict()
 
+const detectVerdictParamsSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    ticketId: z.string().min(1),
+    maxChars: z.number().int().positive().optional(),
+    provider: z.enum(COMPLETION_CHECK_PROVIDERS).optional(),
+    model: z.string().optional(),
+    systemPrompt: z.string().optional()
+  })
+  .strict()
+
 const testProviderParamsSchema = z
   .object({
     provider: z.enum(COMPLETION_CHECK_PROVIDERS).optional(),
@@ -377,6 +406,74 @@ export const makeLiveCompletionOpsRpcService = (
       catch: (cause) => cause
     }),
 
+  // Stage 2 — condition gate. Mirrors detectTicketCompletion's transcript
+  // resolution (db → session/worktree → resolveTranscriptMessages → tail) but
+  // routes the review's return into pass/fix/needs-human via the second prompt.
+  detectTicketVerdict: (params) =>
+    Effect.tryPromise({
+      try: async (): Promise<ConditionGateCheckResult> => {
+        try {
+          const loadDatabase =
+            deps.loadDatabase ?? (async () => (await import('../../../main/db')).getDatabase())
+          const buildTail =
+            deps.buildTail ??
+            (await import('../../../main/services/completion-detector')).buildTranscriptTail
+          const detectVerdict =
+            deps.detectVerdict ??
+            (await import('../../../main/services/completion-detector')).detectTicketVerdict
+
+          const db = await loadDatabase()
+
+          const ticket = db.getKanbanTicket(params.ticketId)
+          if (!ticket) {
+            return { success: false, error: `Ticket not found: ${params.ticketId}` }
+          }
+
+          const session = db.getSession(params.sessionId)
+          const worktree = session?.worktree_id ? db.getWorktree(session.worktree_id) : null
+          const cwd = worktree?.path ?? undefined
+
+          const messages = await resolveTranscriptMessages(db, session, worktree, params, deps)
+          const transcriptTail = buildTail(messages, params.maxChars)
+
+          log.info('[ConditionGate] REQUEST', {
+            ticketId: params.ticketId,
+            ticketTitle: ticket.title,
+            sessionId: params.sessionId,
+            provider: params.provider ?? 'claude-code',
+            model: params.model ?? '(provider default)',
+            customPrompt: !!params.systemPrompt,
+            tailChars: transcriptTail.length
+          })
+
+          const verdict = await detectVerdict({
+            ticketTitle: ticket.title,
+            ticketDescription: ticket.description,
+            transcriptTail,
+            provider: params.provider ?? 'claude-code',
+            cwd,
+            modelOverride: params.model,
+            systemPromptOverride: params.systemPrompt
+          })
+          log.info('[ConditionGate] VERDICT', {
+            ticketId: params.ticketId,
+            verdict: verdict.verdict,
+            reason: verdict.reason,
+            fixes: verdict.fixes?.length ?? 0
+          })
+          return { success: true, verdict }
+        } catch (err) {
+          log.error(
+            '[ConditionGate] detectVerdict failed',
+            err instanceof Error ? err : new Error(String(err)),
+            { ticketId: params.ticketId }
+          )
+          return { success: false, error: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      catch: (cause) => cause
+    }),
+
   getSessionFingerprint: (params) =>
     Effect.tryPromise({
       try: async (): Promise<SessionFingerprint> => {
@@ -450,6 +547,17 @@ export const makeCompletionOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.detectTicketCompletion(parsed)
+        })
+    ],
+    [
+      'completionOps.detectTicketVerdict',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => detectVerdictParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.detectTicketVerdict(parsed)
         })
     ],
     [

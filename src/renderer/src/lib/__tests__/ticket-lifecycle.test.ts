@@ -2,11 +2,20 @@ import { describe, expect, it } from 'vitest'
 import {
   actionsForSlot,
   branchesForState,
+  buildConditionGateConfig,
   buildDefaultLoopConfig,
+  buildFixRoundBatch,
+  buildFixRoundPrompt,
   combineVerdicts,
+  conditionGateConfigOf,
   decideBranch,
+  decideConditionGate,
   DEFAULT_FIX_PROMPT_TEMPLATE,
+  isConditionGate,
+  isGateTicket,
   isLifecycleEnabled,
+  isReviewGateDraft,
+  parseGateRound,
   renderTemplate,
   retryMaxForState,
   verdictToLifecycle
@@ -200,5 +209,249 @@ describe('renderTemplate', () => {
   })
   it('substitutes an empty string when reason is missing but a placeholder exists', () => {
     expect(renderTemplate('before {{reason}} after', {})).toBe('before  after')
+  })
+})
+
+describe('isReviewGateDraft', () => {
+  it('matches the base review key and round keys', () => {
+    expect(isReviewGateDraft({ draftKey: 'review' })).toBe(true)
+    expect(isReviewGateDraft({ draftKey: 'review-r1' })).toBe(true)
+    expect(isReviewGateDraft({ draftKey: 'REVIEW-R12' })).toBe(true)
+  })
+  it('does NOT match review-plan (anchored regex rejects it)', () => {
+    expect(isReviewGateDraft({ draftKey: 'review-plan' })).toBe(false)
+    expect(isReviewGateDraft({ draftKey: 'review-plan-r1' })).toBe(false)
+    expect(isReviewGateDraft({ draftKey: 'fix-r1' })).toBe(false)
+  })
+  it('falls back to a /speckit-review reference in the description when the key is generic', () => {
+    expect(
+      isReviewGateDraft({ draftKey: 'draft-3', description: 'Run /speckit-review on the work' })
+    ).toBe(true)
+    // /speckit-review-plan must NOT match the review-gate fallback
+    expect(
+      isReviewGateDraft({ draftKey: 'draft-2', description: 'Run /speckit-review-plan first' })
+    ).toBe(false)
+  })
+})
+
+describe('parseGateRound', () => {
+  it('is 0 for the base review (no round marker) and empty titles', () => {
+    expect(parseGateRound('Review — 2611')).toBe(0)
+    expect(parseGateRound('')).toBe(0)
+    expect(parseGateRound(null)).toBe(0)
+    expect(parseGateRound(undefined)).toBe(0)
+  })
+  it('parses (round R) and the (gate, round R) variant', () => {
+    expect(parseGateRound('Review (round 3) — 2611')).toBe(3)
+    expect(parseGateRound('Review (gate, round 12) — 2611')).toBe(12)
+    expect(parseGateRound('x (ROUND 2)')).toBe(2)
+  })
+})
+
+describe('buildConditionGateConfig', () => {
+  it('builds an enabled config whose only review action is an evaluate', () => {
+    const cfg = buildConditionGateConfig()
+    expect(cfg.enabled).toBe(true)
+    const during = actionsForSlot(cfg, 'review', 'during')
+    expect(during).toHaveLength(1)
+    expect(during[0].type).toBe('evaluate')
+  })
+
+  it('has NO review fail→in_progress branch (the internal bounce is disabled for gates)', () => {
+    expect(branchesForState(buildConditionGateConfig(), 'review')).toEqual([])
+  })
+
+  it('drops undefined/empty config keys but keeps set ones', () => {
+    const cfg = buildConditionGateConfig({
+      provider: 'claude-code',
+      model: '',
+      maxRounds: 5,
+      autoDone: true
+    })
+    const stored = actionsForSlot(cfg, 'review', 'during')[0].config
+    expect(stored).toEqual({ provider: 'claude-code', maxRounds: 5, autoDone: true })
+    expect('model' in stored).toBe(false)
+  })
+
+  it('survives a JSON round-trip unchanged', () => {
+    const cfg = buildConditionGateConfig({ maxRounds: 3 })
+    expect(JSON.parse(JSON.stringify(cfg))).toEqual(cfg)
+  })
+})
+
+describe('isConditionGate', () => {
+  it('is true for a built condition-gate config', () => {
+    expect(isConditionGate(buildConditionGateConfig())).toBe(true)
+  })
+  it('is false for null/undefined/disabled', () => {
+    expect(isConditionGate(null)).toBe(false)
+    expect(isConditionGate(undefined)).toBe(false)
+    expect(
+      isConditionGate({
+        enabled: false,
+        states: { review: { during: [{ id: 'e', type: 'evaluate', config: {} }] } }
+      })
+    ).toBe(false)
+  })
+  it('is false for the plain review↔fix loop', () => {
+    expect(
+      isConditionGate(buildDefaultLoopConfig({ maxIterations: 3, fixPromptTemplate: 'x' }))
+    ).toBe(false)
+  })
+})
+
+describe('conditionGateConfigOf', () => {
+  it('reads back typed fields from the stored evaluate action', () => {
+    const cfg = buildConditionGateConfig({
+      provider: 'codex',
+      model: 'gpt-x',
+      prompt: 'route it',
+      maxRounds: 7,
+      autoDone: true
+    })
+    expect(conditionGateConfigOf(cfg)).toEqual({
+      provider: 'codex',
+      model: 'gpt-x',
+      prompt: 'route it',
+      maxRounds: 7,
+      autoDone: true
+    })
+  })
+  it('returns undefined fields (autoDone false) for an empty gate', () => {
+    expect(conditionGateConfigOf(buildConditionGateConfig())).toEqual({
+      provider: undefined,
+      model: undefined,
+      prompt: undefined,
+      maxRounds: undefined,
+      autoDone: false
+    })
+  })
+  it('ignores a non-numeric maxRounds', () => {
+    const cfg = {
+      enabled: true,
+      states: {
+        review: { during: [{ id: 'e', type: 'evaluate' as const, config: { maxRounds: 'nope' } }] }
+      }
+    }
+    expect(conditionGateConfigOf(cfg).maxRounds).toBeUndefined()
+  })
+})
+
+describe('isGateTicket', () => {
+  it('is true for a condition gate, false otherwise', () => {
+    expect(isGateTicket(buildConditionGateConfig())).toBe(true)
+    expect(isGateTicket(buildDefaultLoopConfig({ maxIterations: 1, fixPromptTemplate: 'x' }))).toBe(
+      false
+    )
+    expect(isGateTicket(null)).toBe(false)
+  })
+})
+
+describe('decideConditionGate', () => {
+  it('passes on a pass verdict', () => {
+    expect(decideConditionGate({ verdict: 'pass' }, 0, 3)).toEqual({ kind: 'pass' })
+  })
+  it('opens the next round on fix under the cap', () => {
+    expect(decideConditionGate({ verdict: 'fix' }, 0, 3)).toEqual({ kind: 'fix', round: 1 })
+    expect(decideConditionGate({ verdict: 'fix' }, 2, 3)).toEqual({ kind: 'fix', round: 3 })
+  })
+  it('blocks on fix at/over the cap (loop ran too deep)', () => {
+    expect(decideConditionGate({ verdict: 'fix' }, 3, 3).kind).toBe('block')
+    expect(decideConditionGate({ verdict: 'fix' }, 5, 3).kind).toBe('block')
+  })
+  it('blocks on needs-human, carrying the reason', () => {
+    expect(decideConditionGate({ verdict: 'needs-human', reason: 'ambiguous' }, 0, 3)).toEqual({
+      kind: 'block',
+      reason: 'ambiguous'
+    })
+  })
+  it('blocks (never fails open) on an unknown verdict', () => {
+    expect(decideConditionGate({ verdict: 'garbage' }, 0, 3).kind).toBe('block')
+  })
+})
+
+describe('buildFixRoundBatch', () => {
+  const params = {
+    round: 2,
+    worktreeId: 'wt-abc',
+    reviewTitle: 'Review (gate, round 1) — Add login — 4210',
+    verdict: { reason: 'tests fail', fixes: ['fix the token check', 'add a test'] }
+  }
+
+  it('emits exactly three linked tickets: fix → review-plan → review', () => {
+    const batch = buildFixRoundBatch(params)
+    expect(batch.map((t) => t.draftKey)).toEqual(['fix-r2', 'review-plan-r2', 'review-r2'])
+    expect(batch[1].dependsOn).toEqual(['fix-r2'])
+    expect(batch[2].dependsOn).toEqual(['review-plan-r2'])
+    // Only the head has no blocker (so only it is launch-ready immediately).
+    expect(batch[0].dependsOn).toBeUndefined()
+  })
+
+  it('derives a clean base label (strips the round suffix, id tail, review words)', () => {
+    const batch = buildFixRoundBatch(params)
+    expect(batch[0].title).toBe('Fix (round 2) — Add login')
+    expect(batch[1].title).toBe('Review plan (round 2) — Add login')
+    expect(batch[2].title).toBe('Review (gate, round 2) — Add login')
+  })
+
+  it('seeds ONLY the new review as a condition gate so the loop re-enters', () => {
+    const batch = buildFixRoundBatch(params)
+    expect(batch[0].gate).toBeUndefined()
+    expect(batch[1].gate).toBeUndefined()
+    expect(batch[2].gate).toBe(true)
+  })
+
+  it('threads the shared worktree with NO reuseBranchBase (one branch = one PR)', () => {
+    for (const t of buildFixRoundBatch(params)) {
+      expect(t.worktreeId).toBe('wt-abc')
+      const launch = t.launchConfig as Record<string, unknown>
+      expect(launch.worktree).toEqual({ type: 'existing', worktreeId: 'wt-abc' })
+      expect(launch.sdk).toBe('claude-code-cli')
+      expect(launch.reuseBranchBase).toBeUndefined()
+      expect('reuseBranchBase' in launch).toBe(false)
+    }
+  })
+
+  it('folds the verdict reason + fixes into the fix ticket body', () => {
+    const fix = buildFixRoundBatch(params)[0]
+    expect(fix.description).toContain('tests fail')
+    expect(fix.description).toContain('fix the token check')
+    expect(fix.description).toContain('add a test')
+  })
+
+  it('every ticket is a build ticket that auto-approves review and starts in todo', () => {
+    for (const t of buildFixRoundBatch(params)) {
+      expect(t.mode).toBe('build')
+      expect(t.autoApproveReview).toBe(true)
+      expect(t.column).toBe('todo')
+    }
+  })
+
+  it('falls back to a "work" label when the title has nothing but review words', () => {
+    const batch = buildFixRoundBatch({ ...params, reviewTitle: 'review-plan' })
+    expect(batch[0].title).toBe('Fix (round 2) — work')
+  })
+})
+
+describe('buildFixRoundPrompt', () => {
+  const params = {
+    round: 1,
+    worktreeId: 'wt-1',
+    reviewTitle: 'Review — Build API',
+    verdict: { reason: 'missing error handling', fixes: ['wrap the handler'] }
+  }
+
+  it('embeds the exact batch JSON and the CLI batch command', () => {
+    const prompt = buildFixRoundPrompt(params)
+    expect(prompt).toContain('round-1.json')
+    expect(prompt).toContain('node "$HIVE_TICKET_CLI" batch round-1.json')
+    // The embedded JSON must be the same batch the store built (agent = dumb executor).
+    expect(prompt).toContain(JSON.stringify(buildFixRoundBatch(params), null, 2))
+  })
+
+  it('instructs the agent to STOP after creating tickets (do not implement fixes)', () => {
+    const prompt = buildFixRoundPrompt(params)
+    expect(prompt).toMatch(/do NOT (fix|edit|implement)/i)
+    expect(prompt).toContain('Created:')
   })
 })

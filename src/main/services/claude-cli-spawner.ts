@@ -1,11 +1,12 @@
 import type { Session } from '../db/types'
 import { getUserEnvironmentVariables } from './env-vars'
+import { buildHiveCliEnv } from './hive-cli-connection'
 import type { DatabaseService } from '../db/database'
 
 export interface ClaudeCliPtySpawnInput {
   session: Pick<
     Session,
-    'mode' | 'model_id' | 'model_variant' | 'claude_session_id'
+    'mode' | 'model_id' | 'model_variant' | 'claude_session_id' | 'project_id' | 'worktree_id'
   >
   worktreePath: string
   pendingPrompt?: string | null
@@ -73,10 +74,21 @@ export function buildClaudeCliPtySpawn(input: ClaudeCliPtySpawnInput): ClaudeCli
     args.push(prompt)
   }
 
+  // The user's own env vars first, then the HIVE_* injection (so the agent can
+  // drive the `hive-ticket` CLI with zero flags). HIVE_* wins on a key clash —
+  // the live connection is authoritative over a stale user override.
+  const env = {
+    ...getUserEnvironmentVariables(input.db ?? null),
+    ...buildHiveCliEnv({
+      projectId: input.session.project_id,
+      worktreeId: input.session.worktree_id
+    })
+  }
+
   return {
     command: input.claudeBinary || 'claude',
     args,
     cwd: input.worktreePath,
-    env: getUserEnvironmentVariables(input.db ?? null)
+    env
   }
 }

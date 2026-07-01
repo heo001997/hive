@@ -20,6 +20,7 @@ import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import type {
   CompletionCheckProvider,
   CompletionVerdict,
+  ConditionGateVerdict,
   SessionFingerprint,
   StoredCompletionVerdict,
   VerifyProgress
@@ -30,8 +31,12 @@ import {
   branchesForState,
   buildDefaultLoopConfig,
   combineVerdicts,
+  conditionGateConfigOf,
   decideBranch,
+  decideConditionGate,
+  isConditionGate,
   isLifecycleEnabled,
+  parseGateRound,
   renderTemplate,
   retryMaxForState,
   verdictToLifecycle
@@ -1150,6 +1155,16 @@ interface StrictVerifySettings {
   kanbanStrictVerifyDelaySeconds?: number
   /** In Progress rescue master switch (re-promote a frozen "Not done" ticket once). */
   kanbanInProgressRescueEnabled?: boolean
+  /** Condition gate (Stage 2): max fix-loop rounds before the gate blocks for Tu. */
+  kanbanConditionGateMaxRounds?: number
+  /** Condition gate: which AI provider runs the Stage-2 routing LLM. */
+  kanbanConditionGateProvider?: CompletionCheckProvider
+  /** Condition gate: optional model id forwarded to the Stage-2 provider (blank → provider default). */
+  kanbanConditionGateModel?: string
+  /** Condition gate: user-editable Stage-2 routing system prompt (blank → built-in default). */
+  kanbanConditionGatePrompt?: string
+  /** Condition gate: when a `pass` verdict lands, optionally auto-advance a chain ticket to Done. */
+  kanbanConditionGateAutoDone?: boolean
 }
 
 /**
@@ -1535,7 +1550,15 @@ async function runStrictVerify(
   ticketId: string,
   projectId: string,
   ticket: KanbanTicket,
-  settings: StrictVerifySettings
+  settings: StrictVerifySettings,
+  /**
+   * Stage-1 for a CONDITION GATE. When true, a `needsInput` verdict is NOT a
+   * bounce — the gate prompt says "report & stop", so a review agent that looks
+   * like it's "waiting on the user" is really just presenting findings; we treat
+   * that as a Stage-1 PASS and let Stage 2 route it. Only a genuine incomplete
+   * (not complete / low confidence, and not needsInput) still bounces to In Progress.
+   */
+  isGate = false
 ): Promise<StrictVerifyOutcome> {
   const sessionId = ticket.current_session_id
   if (!sessionId) return 'complete' // no transcript to judge → don't block
@@ -1598,7 +1621,9 @@ async function runStrictVerify(
   }
 
   const verdict = result.verdict
-  const incomplete = !verdict.complete || verdict.confidence < threshold || verdict.needsInput
+  const incomplete = isGate
+    ? !(verdict.needsInput || (verdict.complete && verdict.confidence >= threshold))
+    : !verdict.complete || verdict.confidence < threshold || verdict.needsInput
   console.log(
     `[StrictVerify] FRESH verdict for ticket ${ticketId} (session ${sessionId}): ` +
       `complete=${verdict.complete} conf=${verdict.confidence} needsInput=${verdict.needsInput} ` +
@@ -1713,6 +1738,233 @@ async function maybeDispatchClaudeCliQueue(
   return true
 }
 
+/** Outcome of the Stage-2 condition gate (terminal — the caller always returns after). */
+type ConditionGateOutcome = 'pass' | 'fix' | 'blocked'
+
+/**
+ * P3 — launch the agent-driven fix round. On a `fix` verdict, spawn a Claude Code
+ * CLI step IN THE REVIEWED TICKET'S OWN WORKTREE whose prompt instructs it to
+ * create the round's three tickets (`fix-r{R} → review-plan-r{R} → review-r{R}`,
+ * the new review seeded as a condition gate) via the `hive-ticket` CLI, threading
+ * this ticket's `worktree_id` so the whole chain shares one worktree = branch = one
+ * PR. The Stage-2 `fixes[]` are folded into the fix ticket's prompt. Returns
+ * `{ ok: false }` on any failure so the gate blocks for the human (no fail-open).
+ */
+async function launchConditionGateFixRound(
+  _get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  current: KanbanTicket,
+  _settings: StrictVerifySettings,
+  verdict: ConditionGateVerdict,
+  nextRound: number
+): Promise<{ ok: boolean; error?: string }> {
+  // The whole round must share ONE worktree (= branch = one PR). Without the
+  // reviewed ticket's worktree there is nothing to thread → block for the human.
+  const worktreeId = current.worktree_id
+  if (!worktreeId) {
+    return { ok: false, error: 'reviewed ticket has no worktree to thread the fix round into' }
+  }
+
+  // Confirm that worktree still EXISTS before spawning. `createSession` binds the
+  // session to the id verbatim (no validation) and only `createClaudeCli` fails
+  // later — resolving the path from the DB — if the worktree was pruned. Guard here
+  // so a stale/removed worktree surfaces a clear error and blocks for the human
+  // (never fails open, per the trust model), rather than a late opaque spawn failure.
+  const { useWorktreeStore } = await import('./useWorktreeStore')
+  const worktreeExists = Array.from(useWorktreeStore.getState().worktreesByProject.values())
+    .flat()
+    .some((w) => w.id === worktreeId)
+  if (!worktreeExists) {
+    return { ok: false, error: `reviewed ticket's worktree ${worktreeId} no longer exists` }
+  }
+
+  // The store owns the DECISION (exact tickets, deps, shared-worktree launch config,
+  // gate re-seed); the agent is a dumb CRUD executor that runs the CLI over this
+  // pre-built batch. `buildFixRoundPrompt` embeds the exact JSON so nothing is left
+  // to the agent to compose.
+  const { buildFixRoundPrompt } = await import('../lib/ticket-lifecycle')
+  const prompt = buildFixRoundPrompt({
+    round: nextRound,
+    worktreeId,
+    reviewTitle: current.title,
+    verdict: { reason: verdict.reason, fixes: verdict.fixes }
+  })
+
+  try {
+    // Spawn a throwaway orchestrator agent IN THE REVIEWED TICKET'S OWN WORKTREE.
+    // `skipKanbanAutoAttach` keeps it off any ticket (it only CRUDs the board), and
+    // its session carries this worktree + project so the spawner injects `HIVE_*`
+    // (the CLI then needs zero connection flags).
+    const { useSessionStore } = await import('./useSessionStore')
+    const created = await useSessionStore
+      .getState()
+      .createSession(worktreeId, projectId, 'claude-code-cli', 'build', {
+        autoFocus: false,
+        skipKanbanAutoAttach: true
+      })
+    if (!created.success || !created.session) {
+      return { ok: false, error: created.error ?? 'could not create orchestrator session' }
+    }
+
+    // Spawn the CLI PTY with the batch prompt pending. Pass it ONCE (as the spawn
+    // arg) — nothing was queued at createSession, so no double-entry.
+    const { terminalApi } = await import('@/api/terminal-api')
+    const { unwrapEnvelope } = await import('@/lib/ipc-envelope')
+    const res = unwrapEnvelope(
+      await terminalApi.createClaudeCli(created.session.id, { pendingPrompt: prompt })
+    )
+    if (!res.success) {
+      return { ok: false, error: res.error ?? 'could not spawn orchestrator CLI' }
+    }
+    console.log(
+      `[ConditionGate] ticket ${ticketId} launched fix round ${nextRound} orchestrator ` +
+        `(session ${created.session.id}, worktree ${worktreeId})`
+    )
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Stage 2 — the CONDITION GATE. Reached ONLY after
+ * a Stage-1 Strict-Verify pass on a gate ticket. Sends the review agent's return to
+ * a routing LLM (`completionApi.detectTicketVerdict`) that TRUSTS the transcript and
+ * classifies it into `pass | fix | needs-human`, then routes:
+ *
+ *  - **pass** → store a verified verdict, fire the review stability edge, LEAVE IN
+ *    REVIEW for the human. Only auto-advances to Done when the gate opted into
+ *    `autoDone`.
+ *  - **fix** (under the round cap) → launch the agent-driven fix round in this
+ *    ticket's own worktree/chain (P3), then commit + move this reviewed ticket to
+ *    Done (its job — produce a verdict + spawn the next round — is complete).
+ *  - **needs-human / cap reached / eval error / unreadable** → `blockForTu`
+ *    (`lifecycleStuck`, Telegram `question`, leave in Review). NEVER fails open
+ *    (per [[hive-strict-verify-trust-agent]]).
+ *
+ * TERMINAL: the caller always returns after this — a condition gate never falls
+ * through to the verified-complete tail / auto-bypass.
+ */
+async function runConditionGate(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  current: KanbanTicket,
+  settings: StrictVerifySettings
+): Promise<ConditionGateOutcome> {
+  const key = ticketKey(projectId, ticketId)
+  const sessionId = current.current_session_id
+  const gateCfg = conditionGateConfigOf(current.lifecycle_callbacks)
+
+  // needs-Tu: store a blocked marker, clear the badge, notify, leave in Review.
+  const blockForTu = (reason: string, base?: CompletionVerdict): ConditionGateOutcome => {
+    const prior = get().completionVerdicts.get(key)
+    const verdictBase: CompletionVerdict =
+      base ?? prior ?? { complete: false, needsInput: false, confidence: 0, reason }
+    get().setCompletionVerdict(key, {
+      ...verdictBase,
+      reason,
+      sessionId,
+      checkedAt: Date.now(),
+      movedBack: false,
+      lifecycleStuck: true
+    })
+    get().setVerifyProgress(key, null)
+    console.warn(`[ConditionGate] ticket ${ticketId} BLOCKED (needs Tu): ${reason}`)
+    void import('../lib/ticket-telegram-notify')
+      .then((m) =>
+        m.notifyTicketEvent('question', {
+          ticketId,
+          title: current.title,
+          dedupeKey: `condition_gate_block:${ticketId}:${sessionId ?? 'none'}`
+        })
+      )
+      .catch(() => {})
+    return 'blocked'
+  }
+
+  if (!sessionId) return blockForTu('condition-gate ticket has no session to evaluate')
+
+  // Stage-2 routing LLM. Config precedence: per-ticket gate config → global
+  // condition-gate settings → provider default (empty → provider picks).
+  let verdict: ConditionGateVerdict
+  try {
+    const { completionApi } = await import('@/api/completion-api')
+    const res = await completionApi.detectTicketVerdict({
+      sessionId,
+      ticketId,
+      maxChars: settings.kanbanStrictVerifyChars,
+      provider: (gateCfg.provider as CompletionCheckProvider) ?? settings.kanbanConditionGateProvider,
+      model: gateCfg.model || settings.kanbanConditionGateModel || undefined,
+      systemPrompt: gateCfg.prompt || settings.kanbanConditionGatePrompt || undefined
+    })
+    if (!res.success || !res.verdict) {
+      return blockForTu(`condition-gate eval failed: ${res.error ?? 'no verdict'}`)
+    }
+    verdict = res.verdict
+  } catch (err) {
+    return blockForTu(
+      `condition-gate eval threw: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+
+  const round = parseGateRound(current.title)
+  const maxRounds = gateCfg.maxRounds ?? settings.kanbanConditionGateMaxRounds ?? 3
+  const decision = decideConditionGate(verdict, round, maxRounds)
+  console.log(
+    `[ConditionGate] ticket ${ticketId} verdict=${verdict.verdict} round=${round} ` +
+      `max=${maxRounds} → ${decision.kind} reason="${verdict.reason}"`
+  )
+
+  if (decision.kind === 'block') {
+    return blockForTu(`condition gate → needs human: ${decision.reason}`)
+  }
+
+  if (decision.kind === 'fix') {
+    const launched = await launchConditionGateFixRound(
+      get,
+      ticketId,
+      projectId,
+      current,
+      settings,
+      verdict,
+      decision.round
+    )
+    if (!launched.ok) {
+      return blockForTu(`condition-gate fix round failed to launch: ${launched.error ?? 'unknown'}`)
+    }
+    // The reviewed ticket's job is done — it produced a verdict + spawned the next
+    // round in its own worktree/chain. Commit + move to Done; the freshly-created
+    // round re-enters this same gate.
+    await commitTicketWorktree(ticketId, current)
+    await moveReviewedTicketToDone(get, ticketId, projectId)
+    get().setVerifyProgress(key, null)
+    return 'fix'
+  }
+
+  // decision.kind === 'pass' — store a verified verdict + fire the stability edge.
+  get().setCompletionVerdict(key, {
+    complete: true,
+    needsInput: false,
+    confidence: 1,
+    reason: verdict.reason || 'condition gate: pass',
+    sessionId,
+    checkedAt: Date.now(),
+    movedBack: false
+  })
+  await transitionLifecycle(get, projectId, ticketId, 'review', 'initial')
+
+  // Default: leave in Review for Tu. Only auto-advance to Done on explicit opt-in.
+  const autoDone = gateCfg.autoDone ?? settings.kanbanConditionGateAutoDone ?? false
+  if (autoDone) {
+    await commitTicketWorktree(ticketId, current)
+    await moveReviewedTicketToDone(get, ticketId, projectId)
+  }
+  get().setVerifyProgress(key, null)
+  return 'pass'
+}
+
 /**
  * Feature A settle handler (D1). Runs the two-gate Strict Verify pipeline:
  *
@@ -1783,6 +2035,26 @@ async function onStrictVerifySettled(
     }
   } else {
     frozenSnapshots.delete(key)
+  }
+
+  // ── Condition GATE intercept (`evaluate` action) — two-stage ──────
+  // Stage 1 = the completion Watcher, run with `isGate` so `needsInput` is NOT a
+  // bounce (the gate prompt says "report & stop" — a review presenting findings
+  // reads as complete). Only a genuine incomplete still bounces to In Progress.
+  // Stage 2 = runConditionGate, which routes pass/fix/needs-human and is TERMINAL
+  // (never falls through to the verified-complete tail / auto-bypass).
+  const isCondGate = isConditionGate(current.lifecycle_callbacks)
+  if (isCondGate) {
+    if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
+      const outcome = await runStrictVerify(get, ticketId, projectId, current, settings, true)
+      if (outcome === 'bounced') return // genuine incomplete → bounced to In Progress
+      if (outcome === 'error') {
+        get().setVerifyProgress(key, null)
+        return
+      }
+    }
+    await runConditionGate(get, ticketId, projectId, current, settings)
+    return // terminal — the gate fully handled pass / fix / block
   }
 
   // ── Gate 2: Ticket Reviewer (the AI Watcher) ──────────────────────
