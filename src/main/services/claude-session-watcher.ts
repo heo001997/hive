@@ -34,10 +34,21 @@ export interface ClaudeSessionWatchHandle {
   close(): void
 }
 
+export interface WatchForClaudeSessionIdOptions {
+  /**
+   * Interval for the guaranteed poll fallback. Defaults to 1000ms; tests lower it.
+   */
+  pollMs?: number
+}
+
+const DEFAULT_POLL_MS = 1000
+
 export function watchForClaudeSessionId(
   worktreePath: string,
-  onSessionId: (sessionId: string) => void
+  onSessionId: (sessionId: string) => void,
+  options: WatchForClaudeSessionIdOptions = {}
 ): ClaudeSessionWatchHandle {
+  const pollMs = options.pollMs ?? DEFAULT_POLL_MS
   const dir = join(resolveProjectsDir(), encodePath(worktreePath))
   const existing = listJsonlFiles(dir)
   const startedAtMs = Date.now()
@@ -58,13 +69,9 @@ export function watchForClaudeSessionId(
     closed = true
     stopTimers()
     watcher?.close()
+    watcher = null
     log.info('Detected Claude CLI session id', { worktreePath, sessionId })
     onSessionId(sessionId)
-  }
-
-  const scan = (): void => {
-    const sessionId = newestJsonlCreatedAfter(dir, existing, startedAtMs)
-    if (sessionId) complete(sessionId)
   }
 
   // Coalesce bursts of fs events (the CLI appends many lines while a transcript
@@ -77,29 +84,40 @@ export function watchForClaudeSessionId(
     }, 50)
   }
 
-  try {
-    if (existsSync(dir)) {
+  // Attach fs.watch for low-latency detection. The transcript directory may not
+  // exist at spawn (brand-new worktree), so this is retried from the poll loop
+  // until it succeeds — after which fs events and the poll both feed detection.
+  const tryAttachWatcher = (): void => {
+    if (watcher || closed || !existsSync(dir)) return
+    try {
       watcher = watch(dir, (_eventType, filename) => {
         if (typeof filename === 'string' && filename.endsWith('.jsonl')) {
           requestScan()
         }
       })
-    } else {
-      log.info('Claude project transcript directory does not exist yet', { dir })
+    } catch (error) {
+      log.warn('Unable to watch Claude transcript directory', {
+        dir,
+        error: error instanceof Error ? error.message : String(error)
+      })
     }
-  } catch (error) {
-    log.warn('Unable to watch Claude transcript directory', {
-      dir,
-      error: error instanceof Error ? error.message : String(error)
-    })
   }
 
-  // Poll only as a fallback when fs.watch could not be attached (most commonly
-  // because the transcript directory does not exist yet). When the watcher is
-  // active its events drive detection, so the periodic full scan is redundant.
-  if (!watcher) {
-    interval = setInterval(scan, 1000)
+  const scan = (): void => {
+    if (closed) return
+    tryAttachWatcher()
+    const sessionId = newestJsonlCreatedAfter(dir, existing, startedAtMs)
+    if (sessionId) complete(sessionId)
   }
+
+  // Always poll as a guaranteed fallback. macOS fs.watch/FSEvents can silently
+  // drop or coalesce the transcript's create event under CPU/FS load, which
+  // would otherwise strand the session id permanently ("session lost connect to
+  // the right Claude Code CLI session"). fs.watch stays attached for low latency;
+  // the poll guarantees eventual capture. It self-terminates the instant the id
+  // is found, so it is short-lived in the common case and only lingers for
+  // sessions that have not yet produced a transcript.
+  interval = setInterval(scan, pollMs)
   scan()
 
   return {
@@ -108,6 +126,7 @@ export function watchForClaudeSessionId(
       closed = true
       stopTimers()
       watcher?.close()
+      watcher = null
     }
   }
 }
