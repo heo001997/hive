@@ -40,7 +40,19 @@ const hoisted = vi.hoisted(() => ({
   followUpQueue: new Map<string, string[]>(),
   detect: vi.fn<(...args: unknown[]) => Promise<CompletionCheckResult>>(),
   fingerprint: vi.fn<(...args: unknown[]) => Promise<SessionFingerprint>>(),
-  toastError: vi.fn()
+  toastError: vi.fn(),
+  notifyNeedsInput: vi.fn()
+}))
+
+// Stub the Telegram notify fan-out so the needsInput → "question" ping can be
+// asserted without a real bot. All symbols the store dynamic-imports must be exported.
+vi.mock('../lib/ticket-telegram-notify', () => ({
+  notifyTicketNeedsInput: (...args: unknown[]) => hoisted.notifyNeedsInput(...args),
+  notifyTicketEvent: vi.fn().mockResolvedValue(undefined),
+  notifyTicketQuestion: vi.fn().mockResolvedValue(undefined),
+  notifyTicketColumnChange: vi.fn(),
+  clearReviewNotifyOnResume: vi.fn(),
+  autoForwardTicketForUserAction: vi.fn().mockResolvedValue(undefined)
 }))
 
 vi.mock('./useSettingsStore', () => ({
@@ -304,13 +316,33 @@ describe('Strict Verify — Gate 2 (the Watcher)', () => {
       success: true,
       verdict: { complete: false, needsInput: true, confidence: 0.9, reason: 'Which DB?' }
     })
-    seed(makeTicket({ column: 'in_progress' }))
+    seed(makeTicket({ column: 'in_progress', worktree_id: 'wt-x' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
 
     expect(columnOf('ticket-1')).toBe('in_progress')
     expect(verdictOf('ticket-1')).toMatchObject({ movedBack: true, needsInput: true })
+    // The waiting-on-user verdict is the ONLY signal for plain-text question flows
+    // (e.g. speckit clarify-all) — it must fire the Telegram "question" fan-out.
+    expect(hoisted.notifyNeedsInput).toHaveBeenCalledTimes(1)
+    expect(hoisted.notifyNeedsInput).toHaveBeenCalledWith(
+      expect.objectContaining({ ticketId: 'ticket-1', sessionId: SESSION_ID, worktreeId: 'wt-x' })
+    )
+  })
+
+  it('does NOT fire the question notify for a plain incomplete verdict (not needsInput)', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: false, needsInput: false, confidence: 0.9, reason: 'tests failing' }
+    })
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(hoisted.notifyNeedsInput).not.toHaveBeenCalled()
   })
 
   it('leaves a genuinely complete ticket verified in Review', async () => {

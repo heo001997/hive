@@ -28,6 +28,7 @@ import {
   clearReviewNotifyOnResume,
   notifyTicketColumnChange,
   notifyTicketEvent,
+  notifyTicketNeedsInput,
   notifyTicketQuestion,
   resetTicketNotifyStateForTests
 } from '../ticket-telegram-notify'
@@ -207,6 +208,52 @@ describe('ticket-telegram-notify', () => {
     notifyTicketColumnChange({ ticketId: 't-c3', title: 'Loop', prevColumn: 'review', column: 'done' })
     await flush()
     expect(sendNotification).toHaveBeenCalledTimes(2)
+  })
+
+  describe('needs-input verdict (plain-text question flows, e.g. speckit clarify-all)', () => {
+    it('sends a "question" ping when Strict Verify reports needsInput', async () => {
+      await notifyTicketNeedsInput({
+        ticketId: 't-ni',
+        title: 'Clarify timezone',
+        sessionId: 'sess-ni'
+      })
+      expect(sendNotification).toHaveBeenCalledTimes(1)
+      expect(sendNotification.mock.calls[0][0]).toContain('Clarify timezone')
+      expect(sendNotification.mock.calls[0][0]).toContain('waiting for your input')
+    })
+
+    it('dedupes per (ticket, session) so one waiting-on-user verdict pings once', async () => {
+      await notifyTicketNeedsInput({ ticketId: 't-ni2', title: 'X', sessionId: 'sess-a' })
+      await notifyTicketNeedsInput({ ticketId: 't-ni2', title: 'X', sessionId: 'sess-a' })
+      expect(sendNotification).toHaveBeenCalledTimes(1)
+      // A later resume (new session) is a genuinely new question → pings again.
+      await notifyTicketNeedsInput({ ticketId: 't-ni2', title: 'X', sessionId: 'sess-b' })
+      expect(sendNotification).toHaveBeenCalledTimes(2)
+    })
+
+    it('no-ops when the question toggle is off', async () => {
+      getSettingsState.mockReturnValue({ ...allOn, kanbanTelegramNotifyOnQuestion: false })
+      await notifyTicketNeedsInput({ ticketId: 't-ni3', title: 'X', sessionId: 'sess-c' })
+      expect(sendNotification).not.toHaveBeenCalled()
+    })
+
+    it('auto-forwards the ticket worktree when auto-forward is enabled', async () => {
+      getSettingsState.mockReturnValue({ ...autoOn })
+      await notifyTicketNeedsInput({
+        ticketId: 't-ni4',
+        title: 'X',
+        sessionId: 'sess-d',
+        worktreeId: 'wt-ni'
+      })
+      expect(sendNotification).toHaveBeenCalledTimes(1)
+      expect(startForwarding).toHaveBeenCalledTimes(1)
+      expect(startForwarding.mock.calls[0][0]).toMatchObject({
+        sessionId: 'sess-d',
+        worktreeId: 'wt-ni',
+        connectionId: null,
+        mode: 'all'
+      })
+    })
   })
 
   describe('auto-forward on user action', () => {
