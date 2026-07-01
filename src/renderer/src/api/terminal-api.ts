@@ -135,6 +135,18 @@ export const terminalApi = {
     await getRendererRpcClient().request<void>('terminalOps.resize', { terminalId, cols, rows })
     return { success: true, value: undefined }
   },
+  /**
+   * Fire-and-forget hint telling the server whether this terminal is on-screen.
+   * The server uses it only to pick its output-coalescing cadence: a hidden
+   * terminal's PTY output is batched (~HIDDEN_TERMINAL_FLUSH_MS) so backgrounded
+   * agents don't flood the single WebSocket and starve the focused terminal's
+   * keystroke echo.
+   */
+  setVisible: (terminalId: string, visible: boolean): void => {
+    void getRendererRpcClient()
+      .request<void>('terminalOps.setVisible', { terminalId, visible })
+      .catch(() => undefined)
+  },
   onData: (terminalId: string, callback: (data: string) => void): (() => void) => {
     return getRendererRpcClient().subscribe(`terminal:data:${terminalId}`, (event: ServerEvent) => {
       if (typeof event.payload === 'string') callback(event.payload)
