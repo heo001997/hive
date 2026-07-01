@@ -300,7 +300,6 @@ const isTerminalCommandResult = (value: unknown): value is TerminalResizeResult 
 
 const isTerminalResizeResult = isTerminalCommandResult
 const isTerminalDestroyResult = isTerminalCommandResult
-const isTerminalWriteResult = isTerminalCommandResult
 const isTerminalCreateResult = isTerminalCommandResult
 const isTerminalGhosttyInitResult = (value: unknown): value is TerminalGhosttyInitResult =>
   typeof value === 'object' &&
@@ -1242,6 +1241,19 @@ const requestDesktopTerminalDestroy = (terminalId: string): Promise<TerminalDest
   })
 }
 
+const terminalWriteLog = createLogger({ component: 'TerminalWrite' })
+
+// Fire-and-forget. Every character a user types into a desktop-main claude-cli
+// terminal comes through here — it is the hottest path in the app. We do NOT
+// wait for main to ack the write: the previous implementation registered a fresh
+// `process.on('message')` listener + a 5 s timeout timer PER KEYSTROKE (removed
+// on ack), so fast typing stacked listeners past Node's default cap (hence the
+// raised BACKEND_PROCESS_MAX_LISTENERS) and made every inbound IPC message
+// O(pending). main writes the bytes straight to the PTY and the user sees the
+// echo return over the normal output stream, so a dropped write would surface
+// there — not through an ack nobody consumes (the renderer's terminalApi.write
+// is itself fire-and-forget). main still sends its reply; with no per-call
+// listener it is simply ignored. Only transport-level send failures are logged.
 const requestDesktopTerminalWrite = (
   terminalId: string,
   data: string
@@ -1250,46 +1262,10 @@ const requestDesktopTerminalWrite = (
   if (!send) return Promise.resolve({ success: true })
 
   const id = `terminal-write-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  const command = 'terminalWrite'
-
-  return new Promise<TerminalWriteResult>((resolve) => {
-    let settled = false
-    const cleanup = (): void => {
-      clearTimeout(timeout)
-      process.off('message', onMessage)
-    }
-    const finish = (value: TerminalWriteResult): void => {
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve(value)
-    }
-    const timeout = setTimeout(() => {
-      finish({
-        success: false,
-        error: `Timed out waiting for desktop command response: ${command}`
-      })
-    }, 5_000)
-
-    const onMessage = (message: unknown): void => {
-      if (!isDesktopCommandResult(message) || message.id !== id) return
-      if (!message.ok) {
-        finish({ success: false, error: message.error ?? `Desktop command failed: ${command}` })
-        return
-      }
-      if (isTerminalWriteResult(message.value)) {
-        finish(message.value)
-        return
-      }
-      finish({ success: false, error: `Invalid desktop command response for ${command}` })
-    }
-
-    process.on('message', onMessage)
-    send.call(process, makeDesktopCommandRequest(id, command, { terminalId, data }), (error) => {
-      if (!error) return
-      finish({ success: false, error: error.message })
-    })
+  send.call(process, makeDesktopCommandRequest(id, 'terminalWrite', { terminalId, data }), (error) => {
+    if (error) terminalWriteLog.warn('Failed to forward terminal write to desktop', { terminalId, error: error.message })
   })
+  return Promise.resolve({ success: true })
 }
 
 /**

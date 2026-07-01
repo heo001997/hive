@@ -8,6 +8,8 @@ import { hasFocusedEditableElement } from '@/lib/focus-utils'
 import { TerminalToolbar } from './TerminalToolbar'
 import { XtermBackend } from './backends/XtermBackend'
 import { GhosttyBackend } from './backends/GhosttyBackend'
+import { computeEffectiveVisible } from './terminal-visibility'
+import { useTerminalOnScreen } from './use-terminal-on-screen'
 import {
   clampTerminalFontSize,
   ensureTerminalFontsLoaded,
@@ -112,7 +114,21 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
   const ghosttyFontSize = useSettingsStore((s) => s.ghosttyFontSize)
   const ghosttyOverlaySuppressed = useLayoutStore((s) => s.ghosttyOverlaySuppressed)
 
-  const effectiveVisible = isVisible && !ghosttyOverlaySuppressed
+  // Ground-truth on-screen detection for xterm: observe the real container so a
+  // displayed terminal streams at native cadence and a hidden one is throttled,
+  // regardless of the inferred app-state flags that mislabeled the ticket-modal
+  // Claude CLI as hidden. Native ghostty surfaces can't be observed this way, so
+  // detection is disabled for them (computeEffectiveVisible drives them from app
+  // state instead). See computeEffectiveVisible / useTerminalOnScreen.
+  const isXtermBackend = effectiveBackendType !== 'ghostty'
+  const { onScreen, windowVisible } = useTerminalOnScreen(containerRef, isXtermBackend)
+  const effectiveVisible = computeEffectiveVisible({
+    backendType: effectiveBackendType,
+    isVisible,
+    ghosttyOverlaySuppressed,
+    onScreen,
+    windowVisible
+  })
 
   // Always-current ref so setupTerminal (a useCallback whose deps intentionally
   // do NOT include effectiveVisible) can read the latest value when it

@@ -36,11 +36,6 @@ const DEFAULT_TERMINAL_THEME: ITheme = {
   brightWhite: '#a6adc8'
 }
 
-/** While a terminal is hidden, coalesce its PTY output and flush on this cadence
- *  (ms) instead of once per animation frame. Keeps backgrounded agent terminals
- *  cheap while staying fresh enough for screen scrapes (see readScreen). */
-const HIDDEN_FLUSH_MS = 500
-
 /** Hard cap on buffered-but-unwritten output. A burst this large flushes
  *  immediately regardless of cadence, so memory can't grow unbounded (e.g. the
  *  app window is backgrounded — rAF paused — while an agent keeps streaming). */
@@ -182,22 +177,25 @@ export class XtermBackend implements TerminalBackend {
   private fullScrollback = DEFAULT_SCROLLBACK
 
   /**
-   * Visibility gate. When hidden, the terminal still parses its PTY stream (so
-   * scrollback + readScreen stay correct) but flushes on a slower cadence and
-   * stops the cursor-blink render timer. With many concurrent agents each
-   * streaming a TUI, parsing+rendering every backgrounded terminal at full rate
-   * is the dominant renderer-CPU cost — this removes it.
+   * Visibility gate. A hidden terminal does NOT parse its PTY stream at all: its
+   * output accumulates as raw chunks and is written to xterm only when the tab
+   * becomes visible, when its screen is scraped (readScreen), or when the burst
+   * guard trips. With many concurrent agents each streaming a TUI, parsing every
+   * backgrounded terminal on the single renderer thread — even coalesced to a
+   * slow cadence — is the dominant render-lag cost; deferring it keeps the thread
+   * free for the focused terminal's echo and repaint. Hidden terminals also stop
+   * the cursor-blink render timer and drop WebGL (see setVisible).
    */
   private visible = true
   /**
    * Coalesced PTY output. node-pty delivers many tiny chunks; writing each one
    * separately schedules a render per chunk. We batch the chunks that arrive
-   * within a frame (visible) or within HIDDEN_FLUSH_MS (hidden) into one write.
+   * within a frame (visible) into one write; while hidden we buffer them
+   * unparsed until the terminal is shown / scraped / the burst guard trips.
    */
   private pendingWrites: string[] = []
   private pendingBytes = 0
   private flushRaf: number | null = null
-  private flushTimer: ReturnType<typeof setTimeout> | null = null
 
   /** Callback for the host to wire Cmd+F search toggling */
   onSearchToggle?: () => void
@@ -536,21 +534,21 @@ export class XtermBackend implements TerminalBackend {
     this.scheduleFlush()
   }
 
-  /** Schedule a flush on the cadence appropriate to the current visibility. */
+  /**
+   * Schedule a flush. Visible terminals parse once per animation frame. Hidden
+   * terminals schedule NOTHING: their output stays buffered in pendingWrites and
+   * is written to xterm only when they become visible (setVisible), when their
+   * screen is scraped (readScreen), or when the burst guard trips (enqueueWrite).
+   * Parsing every backgrounded agent's TUI on the one renderer thread — even
+   * coalesced to a slow cadence — was the dominant render-lag cost under a fleet.
+   */
   private scheduleFlush(): void {
-    if (this.visible) {
-      if (this.flushRaf !== null) return
-      this.flushRaf = requestAnimationFrame(() => {
-        this.flushRaf = null
-        this.flush()
-      })
-    } else {
-      if (this.flushTimer !== null) return
-      this.flushTimer = setTimeout(() => {
-        this.flushTimer = null
-        this.flush()
-      }, HIDDEN_FLUSH_MS)
-    }
+    if (!this.visible) return
+    if (this.flushRaf !== null) return
+    this.flushRaf = requestAnimationFrame(() => {
+      this.flushRaf = null
+      this.flush()
+    })
   }
 
   /** Write all buffered PTY output to xterm in a single call. */
@@ -558,10 +556,6 @@ export class XtermBackend implements TerminalBackend {
     if (this.flushRaf !== null) {
       cancelAnimationFrame(this.flushRaf)
       this.flushRaf = null
-    }
-    if (this.flushTimer !== null) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
     }
     if (this.pendingWrites.length === 0) return
     const data = this.pendingWrites.join('')
@@ -621,13 +615,14 @@ export class XtermBackend implements TerminalBackend {
   }
 
   /**
-   * Visibility gate. Hidden terminals keep parsing their PTY stream (readScreen
-   * stays correct) but flush on a slower cadence, stop blinking the cursor, trim
-   * their scrollback, and drop the WebGL renderer — so backgrounded agent
-   * terminals burn neither renderer CPU nor the per-terminal GL context + glyph
-   * atlas (the dominant fixed memory cost). On becoming visible we restore WebGL
-   * + full scrollback and flush immediately so current output shows at once
-   * (TerminalView also re-fits/repaints right after).
+   * Visibility gate. Hidden terminals buffer their PTY output unparsed (written
+   * to xterm only on show / readScreen / burst — see scheduleFlush), stop
+   * blinking the cursor, trim their scrollback, and drop the WebGL renderer — so
+   * backgrounded agent terminals burn neither the renderer thread nor the
+   * per-terminal GL context + glyph atlas (the dominant fixed memory cost). On
+   * becoming visible we restore WebGL + full scrollback and flush immediately so
+   * the buffered output shows at once (TerminalView also re-fits/repaints right
+   * after).
    */
   setVisible(visible: boolean): void {
     if (visible === this.visible) return
@@ -653,10 +648,12 @@ export class XtermBackend implements TerminalBackend {
     }
     if (visible) this.flush()
     else if (this.flushRaf !== null) {
-      // Hand any frame-scheduled flush over to the slower hidden cadence.
+      // Becoming hidden: cancel the frame-scheduled parse and leave the output
+      // buffered. It is written when the terminal is shown again, scraped
+      // (readScreen), or the burst guard trips — we don't parse a backgrounded
+      // TUI on the shared renderer thread.
       cancelAnimationFrame(this.flushRaf)
       this.flushRaf = null
-      this.scheduleFlush()
     }
   }
 
@@ -684,10 +681,6 @@ export class XtermBackend implements TerminalBackend {
     if (this.flushRaf !== null) {
       cancelAnimationFrame(this.flushRaf)
       this.flushRaf = null
-    }
-    if (this.flushTimer !== null) {
-      clearTimeout(this.flushTimer)
-      this.flushTimer = null
     }
     this.pendingWrites = []
     this.pendingBytes = 0
