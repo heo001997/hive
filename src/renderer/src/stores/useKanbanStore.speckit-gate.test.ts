@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KanbanTicket, KanbanTicketColumn } from '../../../main/db/types'
 import type { CompletionCheckResult, SessionFingerprint } from '@shared/types/completion'
+import type { GetTicketReviewGateResult } from '@/api/completion-api'
 import { buildSpeckitGateConfig } from '../lib/ticket-lifecycle'
 
 // Mock the kanban RPC API. `createBatch` (the auto-spawn path) is reached through a
 // runtime `await import('@/lib/create-tickets-from-drafts')`, which vitest may load
 // in a SECOND module-graph instance of this mock — so the inline `vi.fn()` the test
 // captured wouldn't be the one the helper calls. Route every method through a single
-// `vi.hoisted` spy (the same trick `detect`/`transcript` use) so both instances
-// delegate to one shared spy and assertions see the call no matter which graph ran it.
+// `vi.hoisted` spy (the same trick `detect`/`gate` use) so both instances delegate
+// to one shared spy and assertions see the call no matter which graph ran it.
 vi.mock('@/api/kanban-api', () => ({
   kanbanApi: {
     ticket: {
@@ -70,8 +71,7 @@ const hoisted = vi.hoisted(() => ({
   kbAddTokens: vi.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue(null),
   kbGetBySession: vi.fn<(...args: unknown[]) => Promise<unknown>>().mockResolvedValue([]),
   detect: vi.fn<(...args: unknown[]) => Promise<CompletionCheckResult>>(),
-  transcript:
-    vi.fn<(...args: unknown[]) => Promise<{ success: boolean; text?: string; error?: string }>>(),
+  gate: vi.fn<(...args: unknown[]) => Promise<GetTicketReviewGateResult>>(),
   fingerprint: vi.fn<(...args: unknown[]) => Promise<SessionFingerprint>>(),
   toastError: vi.fn()
 }))
@@ -130,7 +130,7 @@ vi.mock('./useSessionStore', () => ({
 vi.mock('@/api/completion-api', () => ({
   completionApi: {
     detectTicketCompletion: (...args: unknown[]) => hoisted.detect(...args),
-    getTicketTranscript: (...args: unknown[]) => hoisted.transcript(...args),
+    getTicketReviewGate: (...args: unknown[]) => hoisted.gate(...args),
     getSessionFingerprint: (...args: unknown[]) => hoisted.fingerprint(...args)
   }
 }))
@@ -141,7 +141,6 @@ import { useKanbanStore, ticketKey } from './useKanbanStore'
 // they would be first-loaded inside the fire-and-forget gate chain — landing in a
 // second graph (a separate copy of the `@/api/kanban-api` mock the assertions can't
 // see) and not resolving via microtask flushing under fake timers.
-import '@/lib/board-assistant-drafts'
 import '@/lib/create-tickets-from-drafts'
 import '@/api/completion-api'
 
@@ -151,45 +150,11 @@ const SESSION_ID = 'sess-1'
 // must be the hoisted singleton and not `kanbanApi.ticket.createBatch` directly.
 const createBatch = hoisted.kbCreateBatch
 
-/** A complete loop-round drafts block: fix-r1 → review-plan-r1 → review-r1 (the gate). */
-function loopRoundDraftsBlock(round = 1): string {
-  return [
-    '```board-ticket-drafts',
-    JSON.stringify(
-      {
-        drafts: [
-          {
-            draftKey: `fix-r${round}`,
-            title: `Speckit fix (round ${round}) — 2611`,
-            projectId: PROJECT_ID,
-            dependsOn: []
-          },
-          {
-            draftKey: `review-plan-r${round}`,
-            title: `Speckit review-plan (round ${round}) — 2611`,
-            projectId: PROJECT_ID,
-            dependsOn: [`fix-r${round}`]
-          },
-          {
-            draftKey: `review-r${round}`,
-            title: `Speckit review (gate, round ${round}) — 2611`,
-            projectId: PROJECT_ID,
-            dependsOn: [`review-plan-r${round}`]
-          }
-        ]
-      },
-      null,
-      2
-    ),
-    '```'
-  ].join('\n')
-}
-
 function makeGateTicket(overrides: Partial<KanbanTicket> = {}): KanbanTicket {
   return {
     id: 'ticket-1',
     project_id: PROJECT_ID,
-    title: 'Speckit review — 2611',
+    title: 'Speckit review (gate) — 2611',
     description: null,
     attachments: [],
     column: 'in_progress',
@@ -240,10 +205,9 @@ const STABLE_FP: SessionFingerprint = { length: 100, hash: 'stable' }
 /**
  * The settle timer fires `void onStrictVerifySettled(...)` (fire-and-forget), so
  * `runAllTimersAsync` cannot await the gate's chain. The gate then spins up a deep
- * stack of dynamic `import()`s (completion-api → board-assistant-drafts →
- * create-tickets-from-drafts → the batch RPC + reloaders). Drain the microtask
- * queue between timer passes so that chain fully resolves WITHIN the test (else its
- * `createBatch` leaks into the next test).
+ * stack of dynamic `import()`s (completion-api → create-tickets-from-drafts → the
+ * batch RPC + reloaders). Drain the microtask queue between timer passes so that
+ * chain fully resolves WITHIN the test (else its `createBatch` leaks into the next).
  */
 async function settleGate(): Promise<void> {
   for (let pass = 0; pass < 5; pass += 1) {
@@ -273,7 +237,7 @@ beforeEach(() => {
   hoisted.sessionStatuses = { [SESSION_ID]: { status: 'completed', timestamp: -1_000_000 } }
   hoisted.followUpQueue = new Map()
   hoisted.detect.mockReset()
-  hoisted.transcript.mockReset()
+  hoisted.gate.mockReset()
   hoisted.fingerprint.mockReset()
   // Default: output is frozen (S0 === S1) so Gate 1 passes through to the gate.
   hoisted.fingerprint.mockResolvedValue(STABLE_FP)
@@ -299,37 +263,38 @@ afterEach(() => {
 })
 
 describe('Speckit review GATE — arming', () => {
-  it('(a) arms and runs the gate even when the global Strict Verify toggle is OFF', async () => {
+  it('(a) arms and reads the gate file even when the global Strict Verify toggle is OFF', async () => {
     hoisted.settings.kanbanStrictVerifyEnabled = false
-    // No drafts + a clean watcher verdict → PASS (proves the gate ran with SV off).
-    hoisted.transcript.mockResolvedValue({ success: true, text: 'Looks clean. No changes needed.' })
-    hoisted.detect.mockResolvedValue({
-      success: true,
-      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'clean' }
-    })
+    // A `pass` verdict proves the gate ran (read the file) with Strict Verify off.
+    hoisted.gate.mockResolvedValue({ success: true, found: true, verdict: 'pass', reason: 'clean' })
     seed(makeGateTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await settleGate()
 
-    // The gate fetched the transcript → it armed + ran despite SV being off.
-    expect(hoisted.transcript).toHaveBeenCalledTimes(1)
+    // The gate read `.hive/review-gate.json` → it armed + ran despite SV being off.
+    expect(hoisted.gate).toHaveBeenCalledTimes(1)
+    // No AI Watcher is ever consulted on the deterministic gate path.
+    expect(hoisted.detect).not.toHaveBeenCalled()
     expect(columnOf('ticket-1')).toBe('review')
   })
 })
 
-describe('Speckit review GATE — FAIL-auto-fixable (auto-spawn)', () => {
-  it('(b) creates the next loop round with the gate config on review-r{R} and moves itself to Done', async () => {
-    hoisted.transcript.mockResolvedValue({
+describe('Speckit review GATE — fix (auto-spawn)', () => {
+  it('(b) builds the next loop round with the gate config on review-r{R} and moves itself to Done', async () => {
+    hoisted.gate.mockResolvedValue({
       success: true,
-      text: `Found issues; spawning a fix round.\n\n${loopRoundDraftsBlock(1)}\n`
+      found: true,
+      verdict: 'fix',
+      reason: 'found issues',
+      fixes: ['null-check the handler', 'add a regression test']
     })
     seed(makeGateTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await settleGate()
 
-    // No watcher call on the auto-fixable path — drafts alone decide it.
+    // No AI Watcher on the fix path — the file verdict alone decides it.
     expect(hoisted.detect).not.toHaveBeenCalled()
     expect(createBatch).toHaveBeenCalledTimes(1)
 
@@ -338,7 +303,13 @@ describe('Speckit review GATE — FAIL-auto-fixable (auto-spawn)', () => {
       { drafts: Array<Record<string, unknown>> }
     ]
     expect(projectArg).toBe(PROJECT_ID)
+    // Hive BUILDS the batch itself (fix-r1 → review-plan-r1 → review-r1).
     expect(payload.drafts).toHaveLength(3)
+    expect(payload.drafts.map((d) => d.draft_key)).toEqual([
+      'fix-r1',
+      'review-plan-r1',
+      'review-r1'
+    ])
 
     const byKey = (k: string) => payload.drafts.find((d) => d.draft_key === k)
     // Only the review-r1 draft carries the gate config (+ todo anchor); the rest don't.
@@ -348,6 +319,8 @@ describe('Speckit review GATE — FAIL-auto-fixable (auto-spawn)', () => {
     expect(byKey('review-plan-r1')?.lifecycle_callbacks).toBeUndefined()
     // Speckit chains must launch in build mode so their gates can arm.
     expect(payload.drafts.every((d) => d.mode === 'build')).toBe(true)
+    // The review findings are folded into the fix ticket so the fix agent has them.
+    expect(String(byKey('fix-r1')?.description)).toContain('null-check the handler')
 
     // This review ticket is the chain tail → it goes to Done unconditionally.
     expect(columnOf('ticket-1')).toBe('done')
@@ -355,10 +328,7 @@ describe('Speckit review GATE — FAIL-auto-fixable (auto-spawn)', () => {
 
   it('(f) at the round cap, does NOT spawn — leaves the ticket blocked in Review for Tu', async () => {
     hoisted.settings.kanbanAutoSpawnMaxRounds = 20
-    hoisted.transcript.mockResolvedValue({
-      success: true,
-      text: `Another round needed.\n\n${loopRoundDraftsBlock(21)}\n`
-    })
+    hoisted.gate.mockResolvedValue({ success: true, found: true, verdict: 'fix', reason: 'again' })
     // The current ticket is already at round 20 → cap reached.
     seed(makeGateTicket({ column: 'in_progress', title: 'Speckit review (gate, round 20) — 2611' }))
 
@@ -375,18 +345,15 @@ describe('Speckit review GATE — FAIL-auto-fixable (auto-spawn)', () => {
   })
 })
 
-describe('Speckit review GATE — PASS', () => {
-  it('(c) no drafts + complete & confident → stays verified in Review, no spawn', async () => {
-    hoisted.transcript.mockResolvedValue({ success: true, text: 'All good, nothing to fix.' })
-    hoisted.detect.mockResolvedValue({
-      success: true,
-      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
-    })
+describe('Speckit review GATE — pass', () => {
+  it('(c) verdict pass → stays verified in Review, no spawn, no watcher', async () => {
+    hoisted.gate.mockResolvedValue({ success: true, found: true, verdict: 'pass', reason: 'done' })
     seed(makeGateTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await settleGate()
 
+    expect(hoisted.detect).not.toHaveBeenCalled()
     expect(createBatch).not.toHaveBeenCalled()
     expect(columnOf('ticket-1')).toBe('review')
     expect(verdictOf('ticket-1')).toMatchObject({ complete: true, movedBack: false })
@@ -395,12 +362,13 @@ describe('Speckit review GATE — PASS', () => {
   })
 })
 
-describe('Speckit review GATE — FAIL-needs-Tu', () => {
-  it('(d) no drafts + incomplete → blocked in Review (NEVER bounced to In Progress)', async () => {
-    hoisted.transcript.mockResolvedValue({ success: true, text: 'Still some TODOs left.' })
-    hoisted.detect.mockResolvedValue({
+describe('Speckit review GATE — needs-human / fail-safe', () => {
+  it('(d) verdict needs-human → blocked in Review (NEVER bounced to In Progress)', async () => {
+    hoisted.gate.mockResolvedValue({
       success: true,
-      verdict: { complete: false, needsInput: false, confidence: 0.9, reason: 'incomplete' }
+      found: true,
+      verdict: 'needs-human',
+      reason: 'scope is ambiguous'
     })
     seed(makeGateTicket({ column: 'in_progress' }))
 
@@ -417,8 +385,12 @@ describe('Speckit review GATE — FAIL-needs-Tu', () => {
     )
   })
 
-  it('(e) transcript fetch fails → blocked in Review, no watcher, no spawn', async () => {
-    hoisted.transcript.mockResolvedValue({ success: false, error: 'session gone' })
+  it('(e) gate file missing (found:false) → blocked in Review, no watcher, no spawn', async () => {
+    hoisted.gate.mockResolvedValue({
+      success: true,
+      found: false,
+      error: 'no .hive/review-gate.json'
+    })
     seed(makeGateTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
@@ -434,14 +406,8 @@ describe('Speckit review GATE — FAIL-needs-Tu', () => {
     )
   })
 
-  it('(g) drafts present but with validation errors → blocked in Review, no spawn', async () => {
-    // A draft missing its title is a validation error → never spawn a broken batch.
-    const badBlock = [
-      '```board-ticket-drafts',
-      JSON.stringify({ drafts: [{ draftKey: 'review-r1', projectId: PROJECT_ID, dependsOn: [] }] }),
-      '```'
-    ].join('\n')
-    hoisted.transcript.mockResolvedValue({ success: true, text: `Round?\n\n${badBlock}\n` })
+  it('(g) RPC read failure (success:false) → blocked in Review, no spawn', async () => {
+    hoisted.gate.mockResolvedValue({ success: false, found: false, error: 'session gone' })
     seed(makeGateTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)

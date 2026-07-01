@@ -26,6 +26,21 @@ export interface GetTicketTranscriptResult {
   error?: string
 }
 
+/** The three machine-readable verdicts a `/speckit-review` gate file may carry. */
+export type SpeckitGateVerdict = 'pass' | 'fix' | 'needs-human'
+
+/** Result envelope returned by {@link completionApi.getTicketReviewGate}. */
+export interface GetTicketReviewGateResult {
+  success: boolean
+  /** True when `.hive/review-gate.json` existed and parsed into a valid verdict. */
+  found: boolean
+  verdict?: SpeckitGateVerdict
+  reason?: string
+  /** Human-readable fix items (only meaningful for verdict `fix`). */
+  fixes?: string[]
+  error?: string
+}
+
 export const completionApi = {
   /**
    * Send the tail of a session's transcript to an AI provider and ask whether
@@ -79,6 +94,21 @@ export const completionApi = {
   }): Promise<GetTicketTranscriptResult> =>
     getRendererRpcClient().request<GetTicketTranscriptResult>(
       'completionOps.getTicketTranscript',
+      params
+    ),
+
+  /**
+   * Read the Speckit review-gate's deterministic verdict file
+   * (`<worktree>/.hive/review-gate.json`) written by `/speckit-review`. No model
+   * call, no transcript scrape. `found:false` (absent / unparseable / bad verdict)
+   * lets the gate fail safe to needs-Tu. Resolves to an envelope, never throws.
+   */
+  getTicketReviewGate: async (params: {
+    ticketId: string
+    sessionId?: string
+  }): Promise<GetTicketReviewGateResult> =>
+    getRendererRpcClient().request<GetTicketReviewGateResult>(
+      'completionOps.getTicketReviewGate',
       params
     )
 }

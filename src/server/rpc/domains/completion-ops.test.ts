@@ -16,6 +16,8 @@ const ticket = (over: Partial<KanbanTicket> = {}): KanbanTicket =>
     id: 't1',
     title: 'Add logout',
     description: 'desc',
+    // The gate resolves a worktree from the ticket when no sessionId is passed.
+    worktree_id: 'w1',
     ...over
   }) as KanbanTicket
 
@@ -25,8 +27,7 @@ const session = (over: Partial<Session> = {}): Session =>
 const worktree = (over: Partial<Worktree> = {}): Worktree =>
   ({ id: 'w1', path: '/repo/wt', ...over }) as Worktree
 
-const msg = (role: string, content: string): SessionMessage =>
-  ({ role, content }) as SessionMessage
+const msg = (role: string, content: string): SessionMessage => ({ role, content }) as SessionMessage
 
 function fakeDb(over: Partial<CompletionOpsDatabase> = {}): CompletionOpsDatabase {
   return {
@@ -522,7 +523,9 @@ describe('completionOps.testStrictVerifyProvider service', () => {
         throw new Error('claude: command not found')
       }
     })
-    const res = await Effect.runPromise(service.testStrictVerifyProvider({ provider: 'claude-code' }))
+    const res = await Effect.runPromise(
+      service.testStrictVerifyProvider({ provider: 'claude-code' })
+    )
     expect(res).toEqual({ success: false, error: 'claude: command not found' })
   })
 })
@@ -536,7 +539,9 @@ describe('completionOps handler param validation', () => {
       buildTail: () => 'tail',
       readLiveness: noLiveness
     })
-    const handler = makeCompletionOpsRpcHandlers(service).get('completionOps.detectTicketCompletion')!
+    const handler = makeCompletionOpsRpcHandlers(service).get(
+      'completionOps.detectTicketCompletion'
+    )!
     return Effect.runPromise(handler(params, {} as never))
   }
 
@@ -614,5 +619,126 @@ describe('completionOps.getSessionFingerprint service', () => {
     const fpA = await Effect.runPromise(a.getSessionFingerprint({ sessionId: 's1' }))
     const fpB = await Effect.runPromise(b.getSessionFingerprint({ sessionId: 's1' }))
     expect(fpA).not.toEqual(fpB)
+  })
+})
+
+describe('completionOps.getTicketReviewGate service', () => {
+  const gateService = (
+    readGateFile: (worktreePath: string) => Promise<string | null> | string | null,
+    dbOver: Partial<CompletionOpsDatabase> = {}
+  ) =>
+    makeLiveCompletionOpsRpcService({
+      loadDatabase: () => fakeDb(dbOver),
+      readGateFile
+    })
+
+  it('resolves the worktree and reads a pass verdict', async () => {
+    const readGateFile = vi.fn(async () => JSON.stringify({ verdict: 'pass', reason: 'clean' }))
+    const service = gateService(readGateFile)
+    const res = await Effect.runPromise(
+      service.getTicketReviewGate({ ticketId: 't1', sessionId: 's1' })
+    )
+    expect(readGateFile).toHaveBeenCalledWith('/repo/wt')
+    expect(res).toEqual({
+      success: true,
+      found: true,
+      verdict: 'pass',
+      reason: 'clean',
+      fixes: undefined
+    })
+  })
+
+  it('parses a fix verdict with its reason and string fixes', async () => {
+    const service = gateService(async () =>
+      JSON.stringify({ verdict: 'fix', reason: 'two issues', fixes: ['a', 'b', 7] })
+    )
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 't1' }))
+    // Non-string fix entries are dropped; strings kept.
+    expect(res).toEqual({
+      success: true,
+      found: true,
+      verdict: 'fix',
+      reason: 'two issues',
+      fixes: ['a', 'b']
+    })
+  })
+
+  it('parses a needs-human verdict', async () => {
+    const service = gateService(async () => JSON.stringify({ verdict: 'needs-human' }))
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 't1' }))
+    expect(res).toMatchObject({ success: true, found: true, verdict: 'needs-human' })
+  })
+
+  it('returns found:false (NOT an error) when the file is absent', async () => {
+    const service = gateService(async () => null)
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 't1' }))
+    expect(res).toEqual({ success: true, found: false })
+  })
+
+  it('returns found:false when the JSON is malformed', async () => {
+    const service = gateService(async () => '{ not json')
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 't1' }))
+    expect(res.success).toBe(true)
+    expect(res.found).toBe(false)
+    expect(res.error).toContain('not valid JSON')
+  })
+
+  it('returns found:false when the verdict value is not one of the three', async () => {
+    const service = gateService(async () => JSON.stringify({ verdict: 'maybe' }))
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 't1' }))
+    expect(res.success).toBe(true)
+    expect(res.found).toBe(false)
+    expect(res.error).toContain('invalid verdict')
+  })
+
+  it('returns success:false when the ticket is missing', async () => {
+    const service = gateService(async () => null, { getKanbanTicket: () => null })
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 'nope' }))
+    expect(res).toEqual({ success: false, found: false, error: 'Ticket not found: nope' })
+  })
+
+  it('returns success:false when there is no worktree path', async () => {
+    const service = gateService(async () => null, { getWorktree: () => null })
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 't1' }))
+    expect(res.success).toBe(false)
+    expect(res.error).toContain('no worktree path')
+  })
+
+  it('converts a reader throw into an error envelope', async () => {
+    const service = gateService(async () => {
+      throw new Error('disk on fire')
+    })
+    const res = await Effect.runPromise(service.getTicketReviewGate({ ticketId: 't1' }))
+    expect(res.success).toBe(false)
+    expect(res.error).toContain('disk on fire')
+  })
+})
+
+describe('completionOps.getTicketReviewGate handler param validation', () => {
+  const run = (params: unknown) => {
+    const service = makeLiveCompletionOpsRpcService({
+      loadDatabase: () => fakeDb(),
+      readGateFile: async () => JSON.stringify({ verdict: 'pass' })
+    })
+    const handler = makeCompletionOpsRpcHandlers(service).get('completionOps.getTicketReviewGate')!
+    return Effect.runPromise(handler(params, {} as never))
+  }
+
+  it('accepts a ticketId with an optional sessionId', async () => {
+    const res = (await run({ ticketId: 't1', sessionId: 's1' })) as { success: boolean }
+    expect(res.success).toBe(true)
+  })
+
+  it('accepts a bare ticketId', async () => {
+    const res = (await run({ ticketId: 't1' })) as { success: boolean }
+    expect(res.success).toBe(true)
+  })
+
+  it('rejects an empty ticketId', async () => {
+    await expect(run({ ticketId: '' })).rejects.toBeDefined()
+  })
+
+  it('rejects unknown keys (strict schema)', async () => {
+    await expect(run({ ticketId: 't1', extra: true })).rejects.toBeDefined()
   })
 })

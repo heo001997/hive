@@ -40,6 +40,8 @@ import {
   retryMaxForState,
   verdictToLifecycle
 } from '../lib/ticket-lifecycle'
+import { buildSpeckitLoopDrafts, parseSpeckitCardId } from '../lib/speckit-loop-drafts'
+import type { GetTicketReviewGateResult } from '@/api/completion-api'
 import type {
   LifecycleAction,
   LifecycleEntryContext,
@@ -1717,33 +1719,24 @@ async function maybeDispatchClaudeCliQueue(
   return true
 }
 
-/**
- * Char budget for the gate's transcript fetch. The `board-ticket-drafts` block is
- * the review agent's final output and its loop-batch descriptions are long, so we
- * request the server's max tail (24KB) to be sure the whole block is captured.
- */
-const SPECKIT_GATE_TRANSCRIPT_CHARS = 24 * 1024
-
 /** Outcome of the Speckit review GATE — only `'pass'` falls through to the verified-complete tail. */
 type SpeckitGateOutcome = 'pass' | 'spawned' | 'blocked'
 
 /**
  * The Speckit review GATE runner. Called when a build ticket marked as a gate
- * (`isSpeckitGate`) settles in Review, AFTER the frozen check. The gate
- * classification is AGENT-DRIVEN — the `/speckit-review` agent decides by WHAT it
- * emits; Hive only materializes the result and routes three outcomes:
+ * (`isSpeckitGate`) settles in Review, AFTER the frozen check. The verdict is
+ * MACHINE-READABLE: `/speckit-review` writes `<worktree>/.hive/review-gate.json`
+ * ({ verdict, reason, fixes }) and Hive reads it DETERMINISTICALLY — no transcript
+ * regex, no second AI Watcher. Three outcomes:
  *
- *  - **FAIL-auto-fixable** — the transcript carries a valid `board-ticket-drafts`
- *    block (≥1 draft, no validation errors) AND we're under the round cap →
- *    auto-create the next loop round (NO human confirm; the new `review-r{R}` is
- *    itself seeded as a gate), commit this ticket's worktree, move it to Done.
- *  - **PASS** — no drafts block + the Watcher judges the work genuinely complete
- *    → return `'pass'` so the caller's verified-complete tail runs (stays in
- *    Review / auto-approves as configured).
- *  - **FAIL-needs-Tu** — anything ambiguous (no drafts + not-complete; transcript
- *    fetch fails; drafts present-but-invalid; round cap hit; no session) → store a
- *    blocked verdict, fire the `question` notify, LEAVE IN REVIEW. Never bounce,
- *    never spawn an invalid batch. Fail-safe bias mirrors the no-fail-open rule.
+ *  - **fix** — under the round cap → build the next loop round HERE
+ *    (`buildSpeckitLoopDrafts`, NO human confirm; the new `review-r{R}` is itself
+ *    seeded as a gate), commit this ticket's worktree, move it to Done.
+ *  - **pass** — record a complete verdict and return `'pass'` so the caller's
+ *    verified-complete tail runs (stays in Review / auto-approves as configured).
+ *  - **needs-human** (or: file absent / unparseable / bad verdict / round cap hit /
+ *    no worktree) → store a blocked verdict, fire the `question` notify, LEAVE IN
+ *    REVIEW. Never bounce, never spawn an invalid batch. Fail-safe by default.
  */
 async function runSpeckitGate(
   get: () => KanbanState,
@@ -1783,124 +1776,89 @@ async function runSpeckitGate(
     return 'blocked'
   }
 
-  if (!sessionId) return blockForTu('gate ticket has no session to read a transcript from')
+  if (!sessionId) return blockForTu('gate ticket has no session to resolve a worktree from')
 
-  // 1. Fetch the review agent's transcript tail (no model call). On failure → needs-Tu.
-  let transcript: string
+  // 1. Read the machine-readable verdict file `<worktree>/.hive/review-gate.json`
+  //    written by `/speckit-review`. No model call, no transcript scrape. The RPC
+  //    returns an envelope (never throws); a thrown error here is the IPC failing.
+  let gate: GetTicketReviewGateResult
   try {
     const { completionApi } = await import('@/api/completion-api')
-    const res = await completionApi.getTicketTranscript({
-      sessionId,
-      ticketId,
-      maxChars: SPECKIT_GATE_TRANSCRIPT_CHARS
-    })
-    if (!res.success || typeof res.text !== 'string') {
-      return blockForTu(`transcript fetch failed: ${res.error ?? 'no text'}`)
-    }
-    transcript = res.text
+    gate = await completionApi.getTicketReviewGate({ ticketId, sessionId })
   } catch (err) {
-    return blockForTu(`transcript fetch threw: ${err instanceof Error ? err.message : String(err)}`)
+    return blockForTu(`review-gate read threw: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  if (!gate.success) {
+    return blockForTu(`review-gate read failed: ${gate.error ?? 'unknown error'}`)
+  }
+  // File absent / unparseable / bad verdict → fail-safe to needs-Tu.
+  if (!gate.found || !gate.verdict) {
+    return blockForTu(gate.error ?? 'no .hive/review-gate.json verdict written by /speckit-review')
   }
 
-  // 2. Parse a board-ticket-drafts block (the FAIL-auto-fixable signal).
-  const { parseBoardAssistantDraftSet } = await import('@/lib/board-assistant-drafts')
-  const draftSet = parseBoardAssistantDraftSet(transcript, { fallbackProjectId: projectId })
-
-  if (draftSet && draftSet.drafts.length > 0) {
-    // Drafts present-but-invalid → needs-Tu (never spawn a broken batch).
-    if (draftSet.hasValidationErrors) {
-      return blockForTu('review emitted a board-ticket-drafts block with validation errors')
-    }
-    // Round cap → needs-Tu (the loop ran too deep; surface for Tu).
-    const round = parseSpeckitRound(current.title)
-    const maxRounds = settings.kanbanAutoSpawnMaxRounds ?? 20
-    if (round >= maxRounds) {
-      return blockForTu(`auto-spawn round cap reached (round ${round} ≥ max ${maxRounds})`)
-    }
-
-    // FAIL-auto-fixable: create the next round (NO confirm), seeding the gate
-    // config onto the new review draft so it re-arms this same gate.
-    try {
-      const { createTicketsFromDrafts } = await import('@/lib/create-tickets-from-drafts')
-      const result = await createTicketsFromDrafts(
-        draftSet.drafts.map((d) => ({
-          id: d.draftKey,
-          draftKey: d.draftKey,
-          title: d.title,
-          description: d.description,
-          projectId: d.projectId,
-          dependsOn: d.dependsOn
-        })),
-        {
-          seedLifecycle: (d) => (isSpeckitReviewDraft(d) ? buildSpeckitGateConfig() : null),
-          mode: 'build'
-        }
-      )
-      if (result.ticketCount === 0 || result.failures.length > 0) {
-        // Nothing created / partial failure → don't strand a half batch silently.
-        return blockForTu(
-          `auto-spawn batch failed: ${result.failures.join('; ') || 'no tickets created'}`
-        )
-      }
-      console.log(
-        `[SpeckitGate] ticket ${ticketId} auto-spawned round ${round + 1} ` +
-          `(${result.ticketCount} tickets, ${result.dependencyCount} deps) → moving this gate to Done`
-      )
-    } catch (err) {
-      return blockForTu(`auto-spawn threw: ${err instanceof Error ? err.message : String(err)}`)
-    }
-
-    // Commit this review ticket's worktree, then move it to Done. Unconditional —
-    // the base review IS the chain tail (no dependent), so `finalizeReviewBypass`
-    // (which only advances a ticket with a dependent) would wrongly leave it in
-    // Review. The freshly-spawned round is an independent mini-chain.
-    await commitTicketWorktree(ticketId, current)
-    await moveReviewedTicketToDone(get, ticketId, projectId)
-    get().setVerifyProgress(key, null)
-    return 'spawned'
-  }
-
-  // 3. No drafts block → run the Watcher directly (NOT runStrictVerify, which would
-  //    bounce to In Progress — a gate has no fail→in_progress branch and must never
-  //    bounce). complete & confident → PASS; anything else → needs-Tu.
-  const threshold = settings.kanbanStrictVerifyConfidenceThreshold ?? 0.6
-  let verdict: CompletionVerdict
-  try {
-    const { completionApi } = await import('@/api/completion-api')
-    const res = await completionApi.detectTicketCompletion({
-      sessionId,
-      ticketId,
-      maxChars: settings.kanbanStrictVerifyChars,
-      provider: settings.kanbanStrictVerifyProvider,
-      model: settings.kanbanStrictVerifyModel || undefined,
-      systemPrompt: settings.kanbanStrictVerifyPrompt || undefined
-    })
-    if (!res.success || !res.verdict) {
-      return blockForTu(`watcher failed: ${res.error ?? 'no verdict'}`)
-    }
-    verdict = res.verdict
-  } catch (err) {
-    return blockForTu(`watcher threw: ${err instanceof Error ? err.message : String(err)}`)
-  }
-
-  const passed = verdict.complete && verdict.confidence >= threshold && !verdict.needsInput
-  console.log(
-    `[SpeckitGate] ticket ${ticketId} no-drafts watcher: complete=${verdict.complete} ` +
-      `conf=${verdict.confidence} needsInput=${verdict.needsInput} threshold=${threshold} → ` +
-      `${passed ? 'PASS' : 'needs-Tu'} reason="${verdict.reason}"`
-  )
-  if (passed) {
-    // Record the verified verdict so the caller's verified-complete tail (queue
-    // drain / auto-approve handoff) sees a fresh complete verdict for this session.
+  // 2. PASS → record a complete verdict so the caller's verified-complete tail runs.
+  if (gate.verdict === 'pass') {
+    console.log(`[SpeckitGate] ticket ${ticketId} verdict=pass: ${gate.reason ?? ''}`)
     get().setCompletionVerdict(key, {
-      ...verdict,
+      complete: true,
+      needsInput: false,
+      confidence: 1,
+      reason: gate.reason || 'speckit review gate: pass',
       sessionId,
       checkedAt: Date.now(),
       movedBack: false
     })
     return 'pass'
   }
-  return blockForTu(`review not complete and no fix batch emitted: ${verdict.reason}`, verdict)
+
+  // 3. needs-human → block for Tu (no spawn, no bounce).
+  if (gate.verdict === 'needs-human') {
+    return blockForTu(`review needs Tu's decision: ${gate.reason ?? 'no reason given'}`)
+  }
+
+  // 4. fix → build the next loop round HERE and create it directly (NO confirm).
+  //    Round cap → needs-Tu (the loop ran too deep; surface for Tu).
+  const round = parseSpeckitRound(current.title)
+  const maxRounds = settings.kanbanAutoSpawnMaxRounds ?? 20
+  if (round >= maxRounds) {
+    return blockForTu(`auto-spawn round cap reached (round ${round} ≥ max ${maxRounds})`)
+  }
+  // The chain id (`— {N}`) ties the next round's titles back to this Speckit card.
+  const cardId = parseSpeckitCardId(current.title)
+  if (!cardId) {
+    return blockForTu(`cannot parse the Speckit card id from title "${current.title}"`)
+  }
+  const nextRound = round + 1
+
+  try {
+    const { createTicketsFromDrafts } = await import('@/lib/create-tickets-from-drafts')
+    const drafts = buildSpeckitLoopDrafts(cardId, projectId, nextRound, gate.fixes ?? [])
+    const result = await createTicketsFromDrafts(drafts, {
+      seedLifecycle: (d) => (isSpeckitReviewDraft(d) ? buildSpeckitGateConfig() : null),
+      mode: 'build'
+    })
+    if (result.ticketCount === 0 || result.failures.length > 0) {
+      // Nothing created / partial failure → don't strand a half batch silently.
+      return blockForTu(
+        `auto-spawn batch failed: ${result.failures.join('; ') || 'no tickets created'}`
+      )
+    }
+    console.log(
+      `[SpeckitGate] ticket ${ticketId} verdict=fix → auto-spawned round ${nextRound} ` +
+        `(${result.ticketCount} tickets, ${result.dependencyCount} deps) → moving this gate to Done`
+    )
+  } catch (err) {
+    return blockForTu(`auto-spawn threw: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  // Commit this review ticket's worktree, then move it to Done. Unconditional —
+  // the base review IS the chain tail (no dependent), so `finalizeReviewBypass`
+  // (which only advances a ticket with a dependent) would wrongly leave it in
+  // Review. The freshly-spawned round is an independent mini-chain.
+  await commitTicketWorktree(ticketId, current)
+  await moveReviewedTicketToDone(get, ticketId, projectId)
+  get().setVerifyProgress(key, null)
+  return 'spawned'
 }
 
 /**
@@ -1976,11 +1934,11 @@ async function onStrictVerifySettled(
   }
 
   // ── Speckit review GATE intercept ─────────────────────────────────
-  // A gate ticket routes its OWN three outcomes (auto-spawn the next loop round /
-  // PASS / block for Tu) instead of the plain Reviewer bounce, and runs the Watcher
-  // itself for the no-drafts case — so the Gate 2 block below is skipped for it.
-  // Only a PASS falls through to the verified-complete tail (so a clean gate ticket
-  // still stays in Review / auto-approves exactly like any verified ticket).
+  // A gate ticket routes its OWN three outcomes (fix → auto-spawn the next loop
+  // round / pass / needs-human → block for Tu) by reading the deterministic
+  // `.hive/review-gate.json` verdict — so the Gate 2 AI Watcher below is skipped for
+  // it. Only a PASS falls through to the verified-complete tail (so a clean gate
+  // ticket still stays in Review / auto-approves exactly like any verified ticket).
   const isGate = isSpeckitGate(current.lifecycle_callbacks)
   if (isGate) {
     const gateOutcome = await runSpeckitGate(get, ticketId, projectId, current, settings)

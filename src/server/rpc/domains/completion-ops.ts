@@ -68,6 +68,32 @@ export interface GetTicketTranscriptResult {
   error?: string
 }
 
+/** The three machine-readable verdicts the `/speckit-review` gate file may carry. */
+export const SPECKIT_GATE_VERDICTS = ['pass', 'fix', 'needs-human'] as const
+export type SpeckitGateVerdict = (typeof SPECKIT_GATE_VERDICTS)[number]
+
+export interface GetTicketReviewGateParams {
+  ticketId: string
+  /** The session whose worktree holds `.hive/review-gate.json` (resolved via the ticket when omitted). */
+  sessionId?: string
+}
+
+/**
+ * Result envelope for {@link getTicketReviewGate} — the deterministic replacement
+ * for transcript-scraping. `found` distinguishes "ran, no file" (the review agent
+ * never wrote a verdict → the gate fails safe to needs-Tu) from a hard error.
+ */
+export interface GetTicketReviewGateResult {
+  success: boolean
+  /** True when `.hive/review-gate.json` existed and parsed into a valid verdict. */
+  found: boolean
+  verdict?: SpeckitGateVerdict
+  reason?: string
+  /** Human-readable fix items (only meaningful for verdict `fix`). */
+  fixes?: string[]
+  error?: string
+}
+
 export interface TestStrictVerifyProviderParams {
   provider?: CompletionCheckProvider
   /** Optional model id forwarded to the provider as an override. */
@@ -95,6 +121,9 @@ export interface CompletionOpsRpcService {
   readonly getTicketTranscript: (
     params: GetTicketTranscriptParams
   ) => Effect.Effect<GetTicketTranscriptResult, unknown, never>
+  readonly getTicketReviewGate: (
+    params: GetTicketReviewGateParams
+  ) => Effect.Effect<GetTicketReviewGateResult, unknown, never>
 }
 
 /** Injectable dependencies — default to the real DB + detector via dynamic import. */
@@ -106,6 +135,8 @@ export interface CompletionOpsRpcDependencies {
   readLiveness?: (sessionId: string) => SessionLiveness | undefined
   /** Read a Claude Agent SDK JSONL transcript (the `claude-code` provider). */
   readClaudeTranscript?: (worktreePath: string, claudeSessionId: string) => Promise<unknown[]>
+  /** Read the raw `.hive/review-gate.json` text for a worktree (null when absent). For tests. */
+  readGateFile?: (worktreePath: string) => Promise<string | null> | string | null
 }
 
 const sha256 = (input: string): string => createHash('sha256').update(input).digest('hex')
@@ -320,6 +351,46 @@ const getTicketTranscriptParamsSchema = z
   })
   .strict()
 
+const getTicketReviewGateParamsSchema = z
+  .object({
+    ticketId: z.string().min(1),
+    sessionId: z.string().min(1).optional()
+  })
+  .strict()
+
+/** Hard cap on the gate file we'll read — a verdict file is tiny; anything huge is bogus. */
+const MAX_GATE_FILE_BYTES = 64 * 1024
+
+/** Parse + validate raw `.hive/review-gate.json` text into a result envelope. */
+function parseReviewGate(raw: string): GetTicketReviewGateResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { success: true, found: false, error: 'review-gate.json is not valid JSON' }
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { success: true, found: false, error: 'review-gate.json is not an object' }
+  }
+  const obj = parsed as Record<string, unknown>
+  const verdict = obj.verdict
+  if (
+    typeof verdict !== 'string' ||
+    !SPECKIT_GATE_VERDICTS.includes(verdict as SpeckitGateVerdict)
+  ) {
+    return {
+      success: true,
+      found: false,
+      error: `review-gate.json has an invalid verdict: ${JSON.stringify(verdict)}`
+    }
+  }
+  const reason = typeof obj.reason === 'string' ? obj.reason : undefined
+  const fixes = Array.isArray(obj.fixes)
+    ? obj.fixes.filter((f): f is string => typeof f === 'string')
+    : undefined
+  return { success: true, found: true, verdict: verdict as SpeckitGateVerdict, reason, fixes }
+}
+
 /** A trivial, obviously-complete transcript used only to prove the provider answers. */
 const TEST_PROVIDER_TRANSCRIPT =
   'Assistant: I have finished the task. All requirements are implemented and verified. Done.'
@@ -513,6 +584,80 @@ export const makeLiveCompletionOpsRpcService = (
         }
       },
       catch: (cause) => cause
+    }),
+
+  // The Speckit review-GATE's deterministic verdict source. `/speckit-review`
+  // writes `<worktree>/.hive/review-gate.json` ({ verdict, reason, fixes }); the
+  // renderer gate reads it here — NO model call, NO transcript regex. `found:false`
+  // (file absent / unparseable / bad verdict) makes the gate fail safe to needs-Tu.
+  getTicketReviewGate: (params) =>
+    Effect.tryPromise({
+      try: async (): Promise<GetTicketReviewGateResult> => {
+        try {
+          const loadDatabase =
+            deps.loadDatabase ?? (async () => (await import('../../../main/db')).getDatabase())
+          const db = await loadDatabase()
+
+          const ticket = db.getKanbanTicket(params.ticketId)
+          if (!ticket) {
+            return { success: false, found: false, error: `Ticket not found: ${params.ticketId}` }
+          }
+
+          // Resolve the worktree: prefer the passed session, else the ticket's own.
+          const sessionId = params.sessionId ?? ticket.current_session_id ?? undefined
+          const session = sessionId ? db.getSession(sessionId) : null
+          const worktreeId = session?.worktree_id ?? ticket.worktree_id ?? null
+          const worktree = worktreeId ? db.getWorktree(worktreeId) : null
+          if (!worktree?.path) {
+            return { success: false, found: false, error: 'no worktree path for the gate ticket' }
+          }
+
+          const readGateFile =
+            deps.readGateFile ??
+            (async (worktreePath: string): Promise<string | null> => {
+              const { join } = await import('node:path')
+              const { readFile, stat } = await import('node:fs/promises')
+              const filePath = join(worktreePath, '.hive', 'review-gate.json')
+              try {
+                const info = await stat(filePath)
+                if (!info.isFile() || info.size > MAX_GATE_FILE_BYTES) return null
+                return await readFile(filePath, 'utf8')
+              } catch {
+                return null // ENOENT and friends → "no verdict written"
+              }
+            })
+
+          const raw = await readGateFile(worktree.path)
+          if (raw == null) {
+            log.info('[SpeckitGate] no review-gate.json', {
+              ticketId: params.ticketId,
+              worktreePath: worktree.path
+            })
+            return { success: true, found: false }
+          }
+          const result = parseReviewGate(raw)
+          log.info('[SpeckitGate] review-gate.json', {
+            ticketId: params.ticketId,
+            worktreePath: worktree.path,
+            found: result.found,
+            verdict: result.verdict ?? null,
+            error: result.error ?? null
+          })
+          return result
+        } catch (err) {
+          log.error(
+            '[SpeckitGate] getTicketReviewGate failed',
+            err instanceof Error ? err : new Error(String(err)),
+            { ticketId: params.ticketId }
+          )
+          return {
+            success: false,
+            found: false,
+            error: err instanceof Error ? err.message : String(err)
+          }
+        }
+      },
+      catch: (cause) => cause
     })
 })
 
@@ -562,6 +707,17 @@ export const makeCompletionOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.getTicketTranscript(parsed)
+        })
+    ],
+    [
+      'completionOps.getTicketReviewGate',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => getTicketReviewGateParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.getTicketReviewGate(parsed)
         })
     ]
   ])
