@@ -257,11 +257,13 @@ export function notifyTicketColumnChange(args: {
   // Leaving a previously-notified state re-opens its dedupe slot.
   if (prevColumn === 'in_progress' && column !== 'in_progress') clearDelivered(`started:${ticketId}`)
   if (prevColumn === 'done' && column !== 'done') clearDelivered(`done:${ticketId}`)
-  // The Review dedupe slot is NOT freed when leaving Review — the review↔fix iterate
-  // loop bounces a ticket Review → In Progress → Review repeatedly, and we want exactly
-  // ONE "review" ping per review cycle, not one per bounce. The slot is reset only when
-  // the ticket lands back at a genuine cycle boundary (Todo) or finishes (Done), so a
-  // later re-review notifies again.
+  // The Review dedupe slot is NOT freed here when leaving Review — the review↔fix
+  // iterate loop bounces a ticket Review → In Progress → Review repeatedly (Strict
+  // Verify / lifecycle callbacks re-promote it, no user involved), and we want exactly
+  // ONE "review" ping per automated cycle, not one per bounce. The slot is reset only
+  // when the ticket lands back at a genuine cycle boundary (Todo) or finishes (Done) —
+  // or when the USER resumes it (see clearReviewNotifyOnResume) — so a later, genuinely
+  // new re-review notifies again.
   if (column === 'todo' || column === 'done') clearDelivered(`review:${ticketId}`)
 
   if (prevColumn === 'todo' && column === 'in_progress') {
@@ -278,6 +280,23 @@ export function notifyTicketColumnChange(args: {
   if (column === 'done' && prevColumn !== undefined && prevColumn !== 'done') {
     void notifyTicketEvent('done', { ticketId, title }).catch(() => {})
   }
+}
+
+/**
+ * Free the "review" dedupe slot for a ticket on a GENUINE user resume out of Review —
+ * the user typed into the session again (directly in the CLI terminal, or via the
+ * ticket followup input) and sent the ticket back to In Progress for fresh work. That
+ * closes the current review cycle, so the NEXT time the ticket genuinely reaches Review
+ * it is a new "ready for your review" event and notifies again.
+ *
+ * This is deliberately NOT done in notifyTicketColumnChange's leave-Review branch: the
+ * review↔fix iterate loop's internal Review → In Progress → Review bounces (driven by
+ * Strict Verify / lifecycle callbacks, no user involved) must still ping exactly once
+ * per automated cycle. Only a real user resume — the caller's responsibility to detect —
+ * reopens the slot.
+ */
+export function clearReviewNotifyOnResume(ticketId: string): void {
+  clearDelivered(`review:${ticketId}`)
 }
 
 /** Test-only: clear module-level dedupe state so tests don't leak into each other. */

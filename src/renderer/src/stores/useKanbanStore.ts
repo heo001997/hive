@@ -3219,6 +3219,18 @@ export const useKanbanStore = create<KanbanState>()(
                     .catch(() => {})
                 }
                 if (ticket.column === 'todo' || ticket.column === 'review') {
+                  // A genuine resume out of Review (the user typed into the CLI again)
+                  // closes the current review cycle — free the "review" Telegram dedupe
+                  // slot so the NEXT time this ticket reaches Review it notifies again.
+                  // Auto review↔fix loop bounces don't reach here: they re-promote via
+                  // moveTicketBackToInProgress (a pure column move, no session_working),
+                  // and their re-prompt's session_working arrives after the ticket is
+                  // already in In Progress — so those still ping once per cycle.
+                  if (ticket.column === 'review') {
+                    void import('../lib/ticket-telegram-notify')
+                      .then((m) => m.clearReviewNotifyOnResume(ticket.id))
+                      .catch(() => {})
+                  }
                   get()
                     .moveTicket(
                       ticket.id,
@@ -3992,6 +4004,15 @@ export const useKanbanStore = create<KanbanState>()(
         // Move to In Progress (top) immediately for responsive UI; the resulting
         // `session_working` event would do this too, but only after the async send.
         if (current.column !== 'in_progress') {
+          // A user followup from Review is a genuinely new work cycle — free the
+          // "review" Telegram dedupe slot so the ticket's next Review notifies again.
+          // The pre-move below means the eventual session_working sees the ticket
+          // already in In Progress, so its resume-reset would miss it; clear here.
+          if (current.column === 'review') {
+            void import('../lib/ticket-telegram-notify')
+              .then((m) => m.clearReviewNotifyOnResume(ticketId))
+              .catch(() => {})
+          }
           const inProgress = get().getTicketsByColumn(projectId, 'in_progress')
           const sortOrder = get().computeSortOrder(inProgress, 0)
           await get()

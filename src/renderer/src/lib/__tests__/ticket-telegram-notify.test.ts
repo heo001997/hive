@@ -25,6 +25,7 @@ vi.mock('@/stores/useTelegramStore', () => ({
 
 import {
   autoForwardTicketForUserAction,
+  clearReviewNotifyOnResume,
   notifyTicketColumnChange,
   notifyTicketEvent,
   notifyTicketQuestion,
@@ -143,6 +144,38 @@ describe('ticket-telegram-notify', () => {
     notifyTicketColumnChange({ ticketId: 't-loop', title: 'Loop', prevColumn: 'in_progress', column: 'review' })
     await flush()
     expect(sendNotification).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-notifies "review" after a user resume sends it back to In Progress', async () => {
+    // Reaches Review → notifies once (Real after Strict Verify passed).
+    notifyTicketColumnChange({ ticketId: 't-resume', title: 'Redo', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    expect(sendNotification).toHaveBeenCalledTimes(1)
+    // User types into the CLI again → genuine resume frees the Review dedupe slot,
+    // then the ticket bounces back to In Progress.
+    clearReviewNotifyOnResume('t-resume')
+    notifyTicketColumnChange({ ticketId: 't-resume', title: 'Redo', prevColumn: 'review', column: 'in_progress' })
+    // Genuinely ready again → must notify a second time.
+    notifyTicketColumnChange({ ticketId: 't-resume', title: 'Redo', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    expect(sendNotification).toHaveBeenCalledTimes(2)
+  })
+
+  it('a resume reset does NOT re-notify a later automated iterate-loop bounce', async () => {
+    // Reaches Review → notifies once, then a user resume reopens the slot and re-review
+    // notifies again (as above). The following purely-automated bounce must NOT ping.
+    notifyTicketColumnChange({ ticketId: 't-mix', title: 'Mix', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    clearReviewNotifyOnResume('t-mix')
+    notifyTicketColumnChange({ ticketId: 't-mix', title: 'Mix', prevColumn: 'review', column: 'in_progress' })
+    notifyTicketColumnChange({ ticketId: 't-mix', title: 'Mix', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    expect(sendNotification).toHaveBeenCalledTimes(2)
+    // Strict Verify bounces it (no resume reset) and it re-enters Review — still 2.
+    notifyTicketColumnChange({ ticketId: 't-mix', title: 'Mix', prevColumn: 'review', column: 'in_progress' })
+    notifyTicketColumnChange({ ticketId: 't-mix', title: 'Mix', prevColumn: 'in_progress', column: 'review' })
+    await flush()
+    expect(sendNotification).toHaveBeenCalledTimes(2)
   })
 
   it('re-notifies "review" after a ticket finishes and is reopened', async () => {
