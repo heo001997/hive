@@ -42,7 +42,7 @@ const dataBuffers = new Map<string, string>()
  * is a capped, ANSI-stripped rolling window of the most recent output. Used by
  * `getTerminalLiveness` to fingerprint whether a session is still emitting.
  */
-const terminalLiveness = new Map<string, { bytes: number; raw: string }>()
+const terminalLiveness = new Map<string, { bytes: number; raw: string; lastOutputAt: number }>()
 
 /**
  * Append `data` to a terminal's liveness accumulator (never cleared on flush).
@@ -50,14 +50,17 @@ const terminalLiveness = new Map<string, { bytes: number; raw: string }>()
  * PTY `onData` chunks split on arbitrary byte boundaries, so an escape sequence
  * can straddle two chunks; stripping per chunk would leave the split fragment
  * behind. `bytes` is the uncapped running total (the frozen check only needs it
- * to move when output is still being emitted).
+ * to move when output is still being emitted). `lastOutputAt` is the wall-clock
+ * ms of THIS emit — the ground-truth "when did the terminal last move a byte"
+ * signal the frozen check reads: it ticks on spinner/clock/token bytes too, so
+ * ANY change counts as alive (the user's rule: total stillness ⟺ frozen).
  */
 function recordTerminalLiveness(terminalId: string, data: string): void {
   const prev = terminalLiveness.get(terminalId)
   const bytes = (prev?.bytes ?? 0) + data.length
   const combined = (prev?.raw ?? '') + data
   const raw = combined.length > LIVENESS_TAIL_CAP ? combined.slice(-LIVENESS_TAIL_CAP) : combined
-  terminalLiveness.set(terminalId, { bytes, raw })
+  terminalLiveness.set(terminalId, { bytes, raw, lastOutputAt: Date.now() })
 }
 
 /**
@@ -69,10 +72,10 @@ function recordTerminalLiveness(terminalId: string, data: string): void {
  */
 export function getTerminalLiveness(
   terminalId: string
-): { bytes: number; tail: string } | undefined {
+): { bytes: number; tail: string; lastOutputAt: number } | undefined {
   const live = terminalLiveness.get(terminalId)
   if (!live) return undefined
-  return { bytes: live.bytes, tail: stripAnsi(live.raw) }
+  return { bytes: live.bytes, tail: stripAnsi(live.raw), lastOutputAt: live.lastOutputAt }
 }
 const flushScheduled = new Set<string>()
 const claudeWatchers = new Map<string, ClaudeSessionWatchHandle>()

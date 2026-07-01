@@ -127,6 +127,21 @@ export interface SessionFingerprint {
   length: number
   /** sha256 of the (ANSI-stripped) output tail. */
   hash: string
+  /**
+   * Wall-clock ms (main-process `Date.now`) of the session's most recent live-PTY
+   * emit — the ground-truth "when did the terminal last move a byte" signal. Set
+   * only for `source: 'pty'`; `0` for `source: 'db'`. Optional so legacy payloads
+   * (and callers that only need `length`/`hash`) remain valid; a fingerprint
+   * lacking `source: 'pty'` is treated as the two-sample (db) path.
+   */
+  lastOutputAt?: number
+  /**
+   * Which source produced this fingerprint: the live PTY accumulator (`'pty'`,
+   * which carries a trustable `lastOutputAt`) or the DB message fallback (`'db'`,
+   * a non-PTY / already-exited session with no live emit stream). Absent → treat
+   * as `'db'` (fall back to the two-sample stability comparison).
+   */
+  source?: 'pty' | 'db'
 }
 
 /**
