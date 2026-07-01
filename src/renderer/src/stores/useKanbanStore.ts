@@ -1955,9 +1955,13 @@ async function runConditionGate(
   })
   await transitionLifecycle(get, projectId, ticketId, 'review', 'initial')
 
-  // Default: leave in Review for Tu. Only auto-advance to Done on explicit opt-in.
+  // Mirror the normal review-bypass rule (`finalizeReviewBypass`): a NON-terminal
+  // review (one a later ticket depends on) advances to Done so its dependents can
+  // launch — leaving it in Review would STALL the chain. A TERMINAL review (last of
+  // its chain, or standalone) stays in Review for Tu — unless the gate opted into
+  // `autoDone` (auto-close even the terminal review).
   const autoDone = gateCfg.autoDone ?? settings.kanbanConditionGateAutoDone ?? false
-  if (autoDone) {
+  if (ticketHasDependent(get, projectId, ticketId) || autoDone) {
     await commitTicketWorktree(ticketId, current)
     await moveReviewedTicketToDone(get, ticketId, projectId)
   }
