@@ -403,7 +403,7 @@ export async function createClaudeCliTerminal(
   }
 }
 
-export function cleanupTerminals(): void {
+export async function cleanupTerminals(): Promise<void> {
   log.info('Cleaning up all terminals')
   for (const [, cleanup] of listenerCleanups) {
     cleanup.removeData()
@@ -428,6 +428,8 @@ export function cleanupTerminals(): void {
   unsubscribeClaudeCliStatus?.()
   unsubscribeClaudeCliStatus = null
   resetAllClaudeCliTitleState()
-  ptyService.destroyAll()
+  // Awaited group teardown (SIGTERM → grace → SIGKILL) so PTY leaders are gone
+  // before the app exits, instead of reparenting to PID 1 en masse on quit/relaunch.
+  await ptyService.destroyAllGraceful()
   ghosttyService.shutdown()
 }

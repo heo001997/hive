@@ -1,6 +1,7 @@
 import { exec } from 'node:child_process'
 import * as pty from 'node-pty'
 import { createLogger } from './logger'
+import { HIVE_MANAGED_PTY_ENV } from './orphan-mcp-reaper'
 
 const log = createLogger({ component: 'PtyService' })
 
@@ -134,7 +135,12 @@ class PtyService {
     const env: Record<string, string> = {
       ...process.env,
       TERM: 'xterm-256color',
-      COLORTERM: 'truecolor'
+      COLORTERM: 'truecolor',
+      // Stamp every PTY we spawn so a leaked one (e.g. an agent CLI reparented to
+      // PID 1 after the main process died) can be positively attributed to us and
+      // safely reaped, without ever touching a user's own detached session. Read
+      // back from the environment by the orphan reaper. See HIVE_MANAGED_PTY_ENV.
+      [HIVE_MANAGED_PTY_ENV]: '1'
     } as Record<string, string>
     // COLUMNS/LINES leak in from the interactive login shell that
     // loadShellEnv() captures at startup. TUI programs prefer them over the
@@ -337,6 +343,45 @@ class PtyService {
     log.info('Destroying all PTYs', { count: this.ptys.size })
     for (const [id] of this.ptys) {
       this.destroy(id)
+    }
+  }
+
+  /**
+   * Fell every PTY group and *wait* for the hard kill — the correct teardown for
+   * app quit/relaunch. `destroy()`'s SIGKILL backstop is `.unref()`'d, so on quit
+   * the main process exits before it can fire: any agent CLI that doesn't die on
+   * the synchronous SIGTERM instantly (e.g. 50 busy `claude` sessions) reparents
+   * to PID 1 all at once — the exact "orphaned Claude CLI reparented to PID 1"
+   * storm this fixes. Here the SIGKILL is awaited inside the quit-cleanup chain
+   * (bounded by its own global timeout), so the groups are gone before we exit.
+   * The env marker + orphan reaper remain the backstop for the crash path, which
+   * never runs any cleanup at all.
+   */
+  async destroyAllGraceful(graceMs = 600): Promise<void> {
+    const pids = Array.from(this.ptys.values())
+      .map((i) => i.pty.pid)
+      .filter((p): p is number => typeof p === 'number' && p > 0)
+    log.info('Gracefully destroying all PTYs', { count: this.ptys.size })
+    for (const [, instance] of this.ptys) {
+      this.killProcessGroup(instance.pty.pid, 'SIGTERM')
+      this.killSubtreeStragglers(instance.pty.pid)
+      try {
+        instance.pty.kill()
+      } catch (err) {
+        log.error('Error killing PTY', err instanceof Error ? err : new Error(String(err)))
+      }
+    }
+    this.ptys.clear()
+    if (pids.length === 0) return
+    // Awaited grace (not `.unref()`'d) so leaders get a beat to exit cleanly on
+    // SIGTERM before we escalate — unlike destroy()'s fire-and-forget backstop.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, graceMs)
+    })
+    // Hard-kill any group still standing so nothing survives to reparent to PID 1
+    // when the app exits a moment later.
+    for (const pid of pids) {
+      this.killProcessGroup(pid, 'SIGKILL')
     }
   }
 

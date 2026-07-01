@@ -57,6 +57,13 @@ export const main = (): Promise<void> =>
 
     process.on('SIGINT', shutdown)
     process.on('SIGTERM', shutdown)
+    // When launched as an Electron child over IPC, 'disconnect' fires the moment
+    // the parent (the app's main process) closes the channel — i.e. when the app
+    // dies, crashes, or relaunches. Without this the server child outlives its
+    // parent as an orphan, keeping the HTTP/WS server and its ports bound (and its
+    // own system-monitor sampler running) with no app to serve. No-op when run
+    // standalone (no IPC channel, so the event never fires).
+    process.on('disconnect', shutdown)
   })
 
 const entryArg = process.argv[1] ?? ''

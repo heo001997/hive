@@ -6,7 +6,16 @@ import { existsSync, mkdirSync, appendFileSync, statSync, renameSync, readFileSy
 import { createLogger } from './logger'
 import { getHiveLogsDir } from './hive-paths'
 import { perfDiagnostics } from './perf-diagnostics'
-import { reapOrphans, reapOrphanedMcpServers, MCP_COMMAND_PATTERN } from './orphan-mcp-reaper'
+import {
+  reapOrphans,
+  reapOrphanedMcpServers,
+  reapOrphanedManagedAgentClis,
+  isProcessHiveManaged,
+  MCP_COMMAND_PATTERN,
+  CLAUDE_COMMAND_PATTERN as CLAUDE_PATTERN,
+  CODEX_COMMAND_PATTERN as CODEX_PATTERN,
+  OPENCODE_COMMAND_PATTERN as OPENCODE_PATTERN
+} from './orphan-mcp-reaper'
 import {
   SYSTEM_MONITOR_SNAPSHOT_CHANNEL,
   SYSTEM_MONITOR_ALERT_CHANNEL,
@@ -69,12 +78,9 @@ const ALERT_COOLDOWN_MS = 60_000
 // itself, the dev electron/node launcher, and the macOS app bundle path.
 const APP_ANCESTOR_PATTERN = /[Ee]lectron|\.app\/Contents\/MacOS\/|(^|\/)node(\s|$)/
 
-// Agent-CLI command matchers. Single source of truth, shared by classifyProcess
-// and the orphan filter so the two can never drift: a CLI we classify as
-// claude/codex/opencode is exactly one we'll recognise (and reap) as an orphan.
-const CLAUDE_PATTERN = /(^|[/\s])claude(-code|_code)?([/\s-]|$)/i
-const CODEX_PATTERN = /(^|[/\s])codex([/\s-]|$)/i
-const OPENCODE_PATTERN = /(^|[/\s])opencode([/\s-]|$)/i
+// Agent-CLI command matchers (CLAUDE_PATTERN / CODEX_PATTERN / OPENCODE_PATTERN)
+// are imported from the reaper — single source of truth, so classifyProcess here
+// and the reaper's orphan-matching can never drift.
 
 // Orphan (ppid===1) commands worth monitoring: MCP servers plus the agent CLIs.
 const APP_ORPHAN_PATTERN = new RegExp(
@@ -105,11 +111,13 @@ export function isBreakoutAlertable(type: MonitorProcessType): boolean {
 }
 
 /**
- * Orphans (ppid===1) we may auto-reap the instant we detect them. Only MCP
- * servers qualify: they are never an intentionally-detached session, so killing
- * a leaked one (e.g. trello's un-`unref()`'d `setInterval`) is always safe.
- * Agent-CLI orphans MAY be a user's deliberately detached session, so those stay
- * manual — the `orphan-detected` critical alert plus the panel's force-cleanup.
+ * Orphans (ppid===1) we may auto-reap the instant we detect them, with no further
+ * checks. Only MCP servers qualify: they are never an intentionally-detached
+ * session, so killing a leaked one (e.g. trello's un-`unref()`'d `setInterval`)
+ * is always safe. Agent-CLI orphans MAY be a user's deliberately detached
+ * session, so they are NOT unconditionally reapable — instead they take the
+ * marker-gated path (`handleAgentOrphans`): auto-reaped only if they carry our
+ * managed-PTY env marker, otherwise surfaced as a critical alert for manual review.
  */
 export function isAutoReapableOrphan(type: MonitorProcessType): boolean {
   return type === 'mcp-server'
@@ -545,6 +553,58 @@ class SystemMonitorService {
     }
   }
 
+  /**
+   * Triage freshly-detected agent-CLI orphans (claude/codex/opencode reparented to
+   * PID 1). Each is probed for our managed-PTY env marker:
+   *   • marked  → a session we spawned whose owning app instance died — a leak.
+   *     Auto-reaped (via `reapOrphanedManagedAgentClis`, which re-scans and only
+   *     signals still-orphaned marked processes) and reported as one info alert.
+   *   • unmarked → possibly a user's deliberately detached `claude`. Never killed;
+   *     surfaced as the existing critical alert so a human decides.
+   * This is why the "50 orphaned Claude CLIs at once" no longer needs manual
+   * cleanup: the app-spawned ones all carry the marker and self-heal on detection.
+   */
+  private async handleAgentOrphans(detected: Array<{ pid: number; label: string }>): Promise<void> {
+    const unmanaged: Array<{ pid: number; label: string }> = []
+    let anyManaged = false
+    for (const o of detected) {
+      let managed = false
+      try {
+        managed = await isProcessHiveManaged(o.pid)
+      } catch (err) {
+        // Can't attribute it → treat as not-ours and surface for manual review.
+        log.warn('Agent-orphan marker probe failed', { pid: o.pid, err: String(err) })
+      }
+      if (managed) anyManaged = true
+      else unmanaged.push(o)
+    }
+
+    if (anyManaged) {
+      try {
+        const killed = await reapOrphanedManagedAgentClis()
+        log.info('Auto-reaped orphaned managed agent CLIs on detection', { killed })
+        if (killed > 0) {
+          this.emitAlert({
+            severity: 'info',
+            kind: 'orphan-detected',
+            message: `Auto-reaped ${killed} orphaned Hive agent CLI${killed === 1 ? '' : 's'} reparented to PID 1`
+          })
+        }
+      } catch (err) {
+        log.warn('Auto-reap of orphaned managed agent CLIs failed', { err: String(err) })
+      }
+    }
+
+    for (const o of unmanaged) {
+      this.emitAlert({
+        severity: 'critical',
+        kind: 'orphan-detected',
+        message: `Orphaned ${o.label} (pid ${o.pid}) reparented to PID 1`,
+        pid: o.pid
+      })
+    }
+  }
+
   async cleanupOrphans(): Promise<number> {
     // Reap the *full* set of app orphans the monitor flags (MCP servers + agent
     // CLIs), not just MCP — otherwise the button reports "nothing found" while
@@ -780,6 +840,7 @@ class SystemMonitorService {
     const seen = new Set<number>()
     const orphanPids = new Set<number>()
     let newMcpOrphans = 0
+    const newAgentOrphans: Array<{ pid: number; label: string }> = []
     for (const p of s.processes) {
       seen.add(p.pid)
       // Skip transient CPU-bound tools (grep, git, build steps, shells): a full
@@ -837,14 +898,11 @@ class SystemMonitorService {
             // a single non-intrusive info alert happen once, after the loop.
             newMcpOrphans++
           } else {
-            // Agent-CLI orphan: may be a deliberately detached session, so never
-            // auto-kill it — surface it for manual cleanup instead.
-            this.emitAlert({
-              severity: 'critical',
-              kind: 'orphan-detected',
-              message: `Orphaned ${p.label} (pid ${p.pid}) reparented to PID 1`,
-              pid: p.pid
-            })
+            // Agent-CLI orphan. Two cases, resolved async after the loop: one we
+            // spawned (carries the managed-PTY marker) — a leak, auto-reaped; or a
+            // user's deliberately detached session (no marker) — left alone, only
+            // surfaced as a critical alert for manual cleanup.
+            newAgentOrphans.push({ pid: p.pid, label: p.label })
           }
         }
       }
@@ -870,6 +928,9 @@ class SystemMonitorService {
     // Self-heal leaked MCP servers the moment we see them, rather than leaving
     // them to pile up until the 10-min periodic reaper runs.
     if (newMcpOrphans > 0) void this.autoReapMcpOrphans(newMcpOrphans)
+    // Same for agent CLIs — but each must first be attributed (marker probe) to
+    // separate our leaked sessions from a user's intentional detach.
+    if (newAgentOrphans.length > 0) void this.handleAgentOrphans(newAgentOrphans)
 
     if (s.main && s.main.eventLoopLagMs >= EVENT_LOOP_LAG_MS) {
       this.emitAlert({
