@@ -16,6 +16,12 @@ import {
   type TerminalGhosttyInitResult
 } from '../../../shared/desktop-command'
 import type { GhosttyTerminalConfig } from '../../../shared/types/terminal'
+import {
+  disposeTerminalOutput,
+  flushTerminalOutput,
+  publishTerminalOutput,
+  setTerminalOutputVisible
+} from './terminal-output-coalescer'
 import type { RpcHandler } from '../router'
 
 export interface TerminalOpsRpcService {
@@ -81,6 +87,7 @@ export interface TerminalOpsRpcService {
   readonly ghosttyShutdown?: () => Effect.Effect<void, unknown>
   readonly write: (terminalId: string, data: string) => Effect.Effect<void, unknown>
   readonly resize: (terminalId: string, cols: number, rows: number) => Effect.Effect<void, unknown>
+  readonly setVisible: (terminalId: string, visible: boolean) => Effect.Effect<void, unknown>
   readonly destroy: (terminalId: string) => Effect.Effect<void, unknown>
 }
 
@@ -221,6 +228,12 @@ const writeParamsSchema = z
     data: z.string()
   })
   .strict()
+const setVisibleParamsSchema = z
+  .object({
+    terminalId: z.string().min(1),
+    visible: z.boolean()
+  })
+  .strict()
 
 interface TerminalResizeResult {
   readonly success: boolean
@@ -238,8 +251,6 @@ type TerminalDestroyResult = TerminalResizeResult
 type TerminalWriteResult = TerminalResizeResult
 
 const listenerCleanups = new Map<string, { removeData: () => void; removeExit: () => void }>()
-const dataBuffers = new Map<string, string>()
-const flushScheduled = new Set<string>()
 
 const publishTerminalEvent = (
   eventBus: EventBus | undefined,
@@ -257,29 +268,22 @@ const detachBackendPtyListeners = (terminalId: string): void => {
     cleanup.removeExit()
     listenerCleanups.delete(terminalId)
   }
-  dataBuffers.delete(terminalId)
-  flushScheduled.delete(terminalId)
+  disposeTerminalOutput(terminalId)
 }
 
 const attachBackendPtyListeners = (eventBus: EventBus | undefined, terminalId: string): void => {
   detachBackendPtyListeners(terminalId)
 
+  // Route PTY output through the visibility-aware coalescer (see
+  // terminal-output-coalescer) so backgrounded terminals don't flood the
+  // renderer's single-socket parse loop.
   const removeData = ptyService.onData(terminalId, (data) => {
-    const existing = dataBuffers.get(terminalId)
-    dataBuffers.set(terminalId, existing ? existing + data : data)
-
-    if (!flushScheduled.has(terminalId)) {
-      flushScheduled.add(terminalId)
-      setImmediate(() => {
-        flushScheduled.delete(terminalId)
-        const buffered = dataBuffers.get(terminalId)
-        dataBuffers.delete(terminalId)
-        if (buffered) publishTerminalEvent(eventBus, `terminal:data:${terminalId}`, buffered)
-      })
-    }
+    publishTerminalOutput(eventBus, terminalId, data)
   })
 
   const removeExit = ptyService.onExit(terminalId, (code) => {
+    // Drain any buffered output before the exit notice so ordering holds.
+    flushTerminalOutput(eventBus, terminalId)
     publishTerminalEvent(eventBus, `terminal:exit:${terminalId}`, code)
     detachBackendPtyListeners(terminalId)
   })
@@ -1427,6 +1431,13 @@ export const makeLiveTerminalOpsRpcService = (eventBus?: EventBus): TerminalOpsR
       },
       catch: (cause) => cause
     }),
+  setVisible: (terminalId, visible) =>
+    // Renderer-driven hint used only to pick the coalescer's flush cadence.
+    // Covers both server-owned shell PTYs and the desktop-main claude-cli PTYs
+    // (whose output the server.ts forwarder pushes through the same coalescer).
+    Effect.sync(() => {
+      setTerminalOutputVisible(eventBus, terminalId, visible)
+    }),
   destroy: (terminalId) =>
     Effect.tryPromise({
       try: async () => {
@@ -1436,6 +1447,7 @@ export const makeLiveTerminalOpsRpcService = (eventBus?: EventBus): TerminalOpsR
           return
         }
 
+        disposeTerminalOutput(terminalId)
         const result = await requestDesktopTerminalDestroy(terminalId)
         if (!result.success) throw new Error(result.error ?? 'Failed to destroy terminal')
       },
@@ -1690,6 +1702,17 @@ export const makeTerminalOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.resize(parsed.terminalId, parsed.cols, parsed.rows)
+        })
+    ],
+    [
+      'terminalOps.setVisible',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => setVisibleParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.setVisible(parsed.terminalId, parsed.visible)
         })
     ],
     [

@@ -347,6 +347,12 @@ export class XtermBackend implements TerminalBackend {
       this.enqueueWrite(data)
     })
 
+    // Seed the server's coalescing cadence with our starting visibility.
+    // setVisible() only fires on a *change*, so a terminal mounted hidden
+    // (TerminalManager keeps every tab mounted) would otherwise stream at full
+    // rate until its first visibility toggle.
+    terminalApi.setVisible(this.terminalId, this.visible)
+
     // Wire PTY exit -> status change
     this.removeExitListener = terminalApi.onExit(this.terminalId, (code) => {
       // Flush through the queue so the exit notice lands after any pending output.
@@ -626,6 +632,11 @@ export class XtermBackend implements TerminalBackend {
   setVisible(visible: boolean): void {
     if (visible === this.visible) return
     this.visible = visible
+    // Tell the server so it can pick its output-coalescing cadence: hidden
+    // terminals' PTY output is batched instead of streamed chunk-per-message,
+    // which is what keeps a fleet of backgrounded agents from flooding the
+    // single WebSocket and lagging the focused terminal's input echo.
+    terminalApi.setVisible(this.terminalId, visible)
     if (this.terminal) {
       this.terminal.options.cursorBlink = visible
       // Trim scrollback when hidden / restore it when shown. Lowering

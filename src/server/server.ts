@@ -9,6 +9,11 @@ import { makeRpcRouter } from './rpc/router'
 import { attachWebSocketRpcServer } from './rpc/ws-server'
 import { resolveStaticFile, serveStaticFile } from './static'
 import { isDesktopBackendEventMessage } from '../shared/desktop-command'
+import {
+  disposeTerminalOutput,
+  flushTerminalOutput,
+  publishTerminalOutput
+} from './rpc/domains/terminal-output-coalescer'
 import { cleanupBranchWatchers } from '../main/services/branch-watcher'
 import { setGitEventPublisher } from '../main/services/git-events'
 import { systemMonitor } from '../main/services/system-monitor'
@@ -67,9 +72,24 @@ export const startHiveServer = (
     }
     desktopBackendEventForwarder = (message: unknown): void => {
       if (!isDesktopBackendEventMessage(message)) return
-      void Effect.runPromise(
-        eventBus.publish({ channel: message.channel, payload: message.payload })
-      ).catch(() => undefined)
+      const { channel, payload } = message
+      // The desktop-main claude-cli PTYs forward their output here as raw
+      // per-chunk events. Route it through the same visibility-aware coalescer
+      // the server-owned shell PTYs use (see terminal-output-coalescer) so a
+      // fleet of backgrounded agents doesn't flood the renderer's single
+      // WebSocket parse loop. Non-terminal events publish straight through.
+      if (channel.startsWith('terminal:data:') && typeof payload === 'string') {
+        publishTerminalOutput(eventBus, channel.slice('terminal:data:'.length), payload)
+        return
+      }
+      if (channel.startsWith('terminal:exit:')) {
+        // Drain buffered output before the exit notice so ordering holds.
+        flushTerminalOutput(eventBus, channel.slice('terminal:exit:'.length))
+        void Effect.runPromise(eventBus.publish({ channel, payload })).catch(() => undefined)
+        disposeTerminalOutput(channel.slice('terminal:exit:'.length))
+        return
+      }
+      void Effect.runPromise(eventBus.publish({ channel, payload })).catch(() => undefined)
     }
     process.on('message', desktopBackendEventForwarder)
 
