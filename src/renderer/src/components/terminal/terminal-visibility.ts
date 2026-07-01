@@ -1,25 +1,57 @@
 import type { TerminalBackendType } from './backends/types'
 
+export interface EffectiveVisibleInput {
+  backendType: TerminalBackendType
+  /**
+   * App-state visibility hint (active tab / reparented into a modal). This is the
+   * ground truth for native ghostty surfaces, but for xterm it is only a
+   * pre-measurement fallback used until the IntersectionObserver reports.
+   */
+  isVisible: boolean
+  /**
+   * Global flag raised while a modal/menu overlay is open. It exists to hide
+   * native ghostty NSViews, which paint on top of everything and punch through
+   * DOM z-index. It MUST NOT hide DOM/xterm terminals — doing so is exactly the
+   * bug where the Claude CLI reparented into the ticket-detail modal was
+   * mislabeled hidden and throttled.
+   */
+  ghosttyOverlaySuppressed: boolean
+  /**
+   * IntersectionObserver ground truth for xterm: is the container actually on
+   * screen? `null` until the first observation. Ignored for ghostty (a native
+   * surface an IntersectionObserver cannot measure).
+   */
+  onScreen: boolean | null
+  /** Whether the app window itself is visible (not minimized / OS-hidden). */
+  windowVisible: boolean
+}
+
 /**
  * Resolve whether a terminal should be treated as visible — i.e. stream PTY
  * output at full cadence, keep WebGL loaded, and hold full scrollback.
  *
- * Ghostty-overlay suppression exists to hide native Ghostty surfaces (macOS
- * NSViews) that paint on top of everything and would punch through a modal or
- * menu — they ignore DOM z-index and portals. xterm is plain DOM/WebGL: it sits
- * inside the React tree, respects z-index, and can be portaled directly into the
- * modal, so suppression must NOT hide it. Marking a foreground xterm terminal
- * hidden — e.g. the Claude CLI reparented into the ticket-detail modal, where
- * opening the Dialog itself raises the global suppression flag — mis-classifies
- * it as backgrounded: the server throttles its output (including keystroke echo)
- * to the hidden coalescer cadence (HIDDEN_TERMINAL_FLUSH_MS = 500ms), drops its
- * WebGL, and trims scrollback, which is exactly the "typing feels delayed" lag
- * inside the modal. Only ghostty backends are hidden by suppression.
+ * Two regimes, split by what can actually be measured:
+ *
+ * - **ghostty** is a native macOS NSView, not part of the DOM. An
+ *   IntersectionObserver can't see it and it ignores z-index / portals, so its
+ *   visibility is driven purely by app state and it is hidden whenever an overlay
+ *   is suppressing native surfaces.
+ * - **xterm** is plain DOM/WebGL living inside the React tree. Its visibility is
+ *   driven by real on-screen state from an IntersectionObserver — the container
+ *   is `display:none` when its tab/pane is hidden and genuinely on screen when
+ *   reparented into the modal — so it is immune to the inferred-flag mislabeling
+ *   (active tab / modal target / overlay-suppressed) that throttled a displayed
+ *   terminal. Before the observer's first report (`onScreen === null`) it falls
+ *   back to the app-state hint so a foreground terminal is never briefly
+ *   throttled on mount.
  */
-export function computeEffectiveVisible(
-  isVisible: boolean,
-  backendType: TerminalBackendType,
-  ghosttyOverlaySuppressed: boolean
-): boolean {
-  return isVisible && (backendType !== 'ghostty' || !ghosttyOverlaySuppressed)
+export function computeEffectiveVisible(input: EffectiveVisibleInput): boolean {
+  const { backendType, isVisible, ghosttyOverlaySuppressed, onScreen, windowVisible } = input
+
+  if (backendType === 'ghostty') {
+    return isVisible && !ghosttyOverlaySuppressed
+  }
+
+  if (!windowVisible) return false
+  return onScreen ?? isVisible
 }
