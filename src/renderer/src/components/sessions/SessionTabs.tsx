@@ -85,6 +85,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { opencodeApi } from '@/api/opencode-api'
 import { kanbanApi } from '@/api/kanban-api'
+import { worktreeApi } from '@/api/worktree-api'
+import { connectionApi } from '@/api/connection-api'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
 import { getRendererRpcClient } from '@/api/rpc-client'
 import { systemApi } from '@/api/system-api'
@@ -120,6 +122,7 @@ interface SessionTabProps {
   onRefreshFromFile?: () => void
   onTeleport?: () => void
   canTeleport?: boolean
+  onOpenInTerminal?: () => void
   hintCode?: string
 }
 
@@ -144,6 +147,7 @@ const SessionTab = memo(function SessionTab({
   onRefreshFromFile,
   onTeleport,
   canTeleport,
+  onOpenInTerminal,
   hintCode
 }: SessionTabProps): React.JSX.Element {
   const [isEditing, setIsEditing] = useState(false)
@@ -317,6 +321,15 @@ const SessionTab = memo(function SessionTab({
             <ContextMenuItem disabled={isSessionBusy} onSelect={() => onTeleport?.()}>
               <RadioTower className="h-4 w-4 mr-2" />
               Teleport session
+            </ContextMenuItem>
+          </>
+        )}
+        {onOpenInTerminal && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => onOpenInTerminal()}>
+              <TerminalSquare className="h-4 w-4 mr-2" />
+              Open in External Terminal
             </ContextMenuItem>
           </>
         )}
@@ -983,6 +996,50 @@ export function SessionTabs(): React.JSX.Element | null {
     }
   }
 
+  const handleOpenInTerminal = async (sessionId: string) => {
+    const targetSession = allSessions.find((session) => session.id === sessionId)
+
+    const worktreePath = (() => {
+      if (targetSession?.worktree_id) {
+        for (const worktrees of useWorktreeStore.getState().worktreesByProject.values()) {
+          const worktree = worktrees.find((item) => item.id === targetSession.worktree_id)
+          if (worktree?.path) return worktree.path
+        }
+      }
+      return selectedWorktree?.path ?? null
+    })()
+
+    if (worktreePath) {
+      const result = await worktreeApi.openInTerminal(worktreePath)
+      if (result.success) {
+        toast.success('Opened in terminal')
+      } else {
+        toast.error(result.error || 'Failed to open in terminal', {
+          description: 'Make sure the worktree directory exists'
+        })
+      }
+      return
+    }
+
+    const connectionPath = targetSession?.connection_id
+      ? connections.find((c) => c.id === targetSession.connection_id)?.path
+      : undefined
+
+    if (connectionPath) {
+      const result = await connectionApi.openInTerminal(connectionPath)
+      if (result.success) {
+        toast.success('Opened in terminal')
+      } else {
+        toast.error(result.error || 'Failed to open in terminal', {
+          description: 'Make sure the connection directory exists'
+        })
+      }
+      return
+    }
+
+    toast.error('Could not resolve a directory for this session')
+  }
+
   const handleTeleportSession = async (sessionId: string) => {
     const toastId = toast.loading('Teleporting session...')
     try {
@@ -1292,6 +1349,7 @@ export function SessionTabs(): React.JSX.Element | null {
             }
             canTeleport={session.agent_sdk === 'claude-code-cli'}
             onTeleport={() => void handleTeleportSession(session.id)}
+            onOpenInTerminal={() => void handleOpenInTerminal(session.id)}
             hintCode={sessionHints.sessionHintMap.get(session.id)}
           />
         )
