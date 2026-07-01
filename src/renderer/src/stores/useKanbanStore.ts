@@ -858,13 +858,18 @@ async function armSettleTimers(
   }
   const { useSettingsStore } = await import('./useSettingsStore')
   const settings = useSettingsStore.getState()
-  // A ticket whose lifecycle enables a DURING(review) reviewer arms the settle
-  // pipeline even when the GLOBAL Strict-Verify toggle is off (per-ticket opt-in).
-  // The Reviewer sub-gate defaults on, so onStrictVerifySettled still judges it.
+  // A ticket whose lifecycle enables a DURING(review) reviewer OR a condition gate
+  // (`evaluate`) arms the settle pipeline even when the GLOBAL Strict-Verify toggle
+  // is off (per-ticket opt-in). The Reviewer sub-gate defaults on, so
+  // onStrictVerifySettled still judges it and — for a gate — runs runConditionGate.
+  // Without the `evaluate` clause a gate ticket with the global toggle off would fall
+  // to scheduleAutoBypass (auto_approve chains) and auto-Done, skipping the gate.
   const cfg = ticket.lifecycle_callbacks
   const lifecycleArmsReview =
     isLifecycleEnabled(cfg) &&
-    actionsForSlot(cfg, 'review', 'during').some((a) => a.type === 'review')
+    actionsForSlot(cfg, 'review', 'during').some(
+      (a) => a.type === 'review' || a.type === 'evaluate'
+    )
   if (settings.kanbanStrictVerifyEnabled || lifecycleArmsReview) {
     scheduleStrictVerify(
       get,
