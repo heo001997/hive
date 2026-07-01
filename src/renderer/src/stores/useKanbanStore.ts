@@ -623,8 +623,19 @@ const frozenSnapshots = new Map<
 /**
  * Window (ms) used to confirm a session is frozen when there is no pre-armed S0
  * baseline to compare against: two fingerprints taken this far apart must match.
+ * Only the non-PTY / exited (`source: 'db'`) path uses this.
  */
 const FROZEN_STABILITY_MS = 1200
+
+/**
+ * Window (ms) of total terminal silence that confirms a live-PTY session is frozen.
+ * The ground truth is the terminal's last-emit timestamp: ANY byte — spinner,
+ * elapsed clock, token counter, prose — restamps it, so "no byte for FROZEN_IDLE_MS"
+ * is the only trustable "nothing is moving" signal (the user's rule). Must exceed
+ * the Claude CLI's slowest animation cadence (the 1s elapsed-clock tick) with
+ * margin; the spinner ticks ~80ms, so 2.5s of silence reliably means not animating.
+ */
+const FROZEN_IDLE_MS = 2500
 
 /**
  * Strict Review rule: the AI Watcher must NEVER judge a ticket until its session
@@ -632,15 +643,23 @@ const FROZEN_STABILITY_MS = 1200
  * still In Progress, not finished. Every path that would judge with AI calls this
  * first and bounces a non-frozen ticket back to In Progress without a model call.
  *
- * "Frozen" requires BOTH:
- *   (a) liveness  — the session's status is not actively `working`; and
- *   (b) stability — its output fingerprint isn't changing.
+ * Authoritative signal (the user's rule): total terminal stillness. A live-PTY
+ * session is frozen ⟺ it has emitted NOTHING for `FROZEN_IDLE_MS`. ANY byte within
+ * that window — spinner, elapsed clock, token counter, text — means "still running".
+ * We read the ground-truth last-emit timestamp off a single fresh fingerprint, so
+ * this needs no wait window and works on EVERY caller — including the manual recheck,
+ * which has no pre-armed baseline (it used to be declared frozen from the hook status
+ * alone, without ever reading the terminal; that misfire is what this closes).
  *
- * Stability comes either from the pre-armed S0 baseline captured when the settle
- * timer armed (`opts.baseline`, spanning the whole settle window — the cheapest,
- * most accurate signal), or, lacking one, by sampling a fresh pair of fingerprints
- * `FROZEN_STABILITY_MS` apart when `opts.sample` is set. With neither (the manual
- * recheck — no settle window exists) the liveness check alone decides.
+ * For a non-PTY / already-exited session (`source: 'db'`, or a legacy fingerprint
+ * lacking a source) there is no live emit stream to timestamp, so it falls back to
+ * the two-sample `length`+`hash` stability comparison: the pre-armed S0 baseline
+ * (`opts.baseline`) against a fresh fingerprint, or a fresh pair sampled
+ * `FROZEN_STABILITY_MS` apart (`opts.sample`).
+ *
+ * A still-`working` hook status short-circuits to `'active'` (cheap fast-path; it
+ * can only ever yield `'active'`, never `'frozen'` — the terminal read is what
+ * actually confirms frozen).
  *
  * Returns:
  *   'frozen'  — idle + stable → safe to hand to the Watcher.
@@ -656,17 +675,29 @@ async function confirmSessionFrozen(
   const statusEntry = useWorktreeStatusStore.getState().sessionStatuses[sessionId]
   if (statusEntry?.status === 'working') return 'active'
 
-  // (b) Stability — compare the armed S0 baseline (if any) against a fresh
-  // fingerprint, or sample a fresh pair a short window apart. With neither signal
-  // the liveness verdict above stands (status already says idle → treat as frozen).
-  const s0 = opts.baseline ? await opts.baseline.catch(() => null) : null
-  if (!s0 && !opts.sample) return 'frozen'
-
   try {
     const { completionApi } = await import('@/api/completion-api')
-    const a = s0 ?? (await completionApi.getSessionFingerprint(sessionId))
-    if (!s0) await new Promise<void>((resolve) => setTimeout(resolve, FROZEN_STABILITY_MS))
-    const b = await completionApi.getSessionFingerprint(sessionId)
+    const fp = await completionApi.getSessionFingerprint(sessionId)
+
+    // (b) Live PTY — the ground truth is the last-emit timestamp. Any byte within
+    // the idle window (spinner/clock/token counter included) → still alive. A single
+    // read, no wait; this is the path the manual recheck also takes.
+    if (fp.source === 'pty') {
+      const lastOutputAt = fp.lastOutputAt ?? Date.now()
+      return Date.now() - lastOutputAt >= FROZEN_IDLE_MS ? 'frozen' : 'active'
+    }
+
+    // (c) Non-PTY / exited session — no live emit stream to timestamp, so confirm
+    // stability by comparing two fingerprints: the armed S0 baseline vs the fresh
+    // one, or (no baseline) a fresh pair a short window apart. A change means it's
+    // still emitting.
+    const s0 = opts.baseline ? await opts.baseline.catch(() => null) : null
+    const a = s0 ?? fp
+    let b = fp
+    if (!s0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, FROZEN_STABILITY_MS))
+      b = await completionApi.getSessionFingerprint(sessionId)
+    }
     return a.length === b.length && a.hash === b.hash ? 'frozen' : 'active'
   } catch (err) {
     console.warn('[StrictVerify] frozen check: fingerprint round-trip failed', err)
@@ -3886,9 +3917,10 @@ export const useKanbanStore = create<KanbanState>()(
         cancelAll(ticketKey(projectId, ticketId))
 
         // Strict Review rule: confirm the session is frozen BEFORE judging with AI.
-        // No settle window exists here, so liveness (session status) is the signal:
-        // a session still actively working is still In Progress — bounce it there
-        // (when in Review) without spending a model call.
+        // No settle window exists here, so `confirmSessionFrozen` reads the terminal's
+        // last-emit timestamp directly — a session still emitting (spinner/clock/token
+        // counter included) or still working is In Progress, so bounce it there (when
+        // in Review) without spending a model call.
         if ((await confirmSessionFrozen(sessionId)) === 'active') {
           if (ticket.column === 'review') {
             await moveTicketBackToInProgress(get, ticketId, projectId)

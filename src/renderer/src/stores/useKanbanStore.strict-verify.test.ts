@@ -173,7 +173,11 @@ function verdictOf(ticketId: string) {
   return useKanbanStore.getState().completionVerdicts.get(ticketKey(PROJECT_ID, ticketId))
 }
 
-const STABLE_FP: SessionFingerprint = { length: 100, hash: 'stable' }
+// Default: a live-PTY fingerprint whose last emit is ancient (lastOutputAt: 0 ≪
+// Date.now() - FROZEN_IDLE_MS) → the terminal has been still → 'frozen', so Gate 1
+// passes through to the Watcher. Fingerprints lacking `source: 'pty'` fall to the
+// two-sample (db) path instead — that's what the streaming/re-sample tests use.
+const STABLE_FP: SessionFingerprint = { length: 100, hash: 'stable', source: 'pty', lastOutputAt: 0 }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -255,6 +259,45 @@ describe('Strict Verify — Gate 1 (frozen check)', () => {
     expect(hoisted.detect).not.toHaveBeenCalled()
     expect(columnOf('ticket-1')).toBe('review')
     expect(verdictOf('ticket-1')).toBeUndefined()
+  })
+
+  it('bounces back on a live-PTY fingerprint whose terminal emitted within the idle window', async () => {
+    // The user's rule: ANY recent terminal byte (spinner/clock/token counter) = alive.
+    // A pty fingerprint stamped ~now → still moving → 'active' → bounce, no model call.
+    hoisted.fingerprint.mockResolvedValue({
+      length: 100,
+      hash: 'x',
+      source: 'pty',
+      lastOutputAt: Date.now()
+    })
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('in_progress')
+  })
+
+  it('runs the Watcher on a live-PTY fingerprint whose terminal has been silent past the idle window', async () => {
+    // lastOutputAt long before now → terminal fully still → 'frozen' → Watcher runs.
+    hoisted.fingerprint.mockResolvedValue({
+      length: 100,
+      hash: 'x',
+      source: 'pty',
+      lastOutputAt: Date.now() - 10_000
+    })
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).toHaveBeenCalledTimes(1)
+    expect(columnOf('ticket-1')).toBe('review')
   })
 })
 
@@ -459,7 +502,10 @@ describe('Strict Verify — independent sub-gate toggles', () => {
 
   it('snapshot off: a stable fresh re-sample is frozen → the Watcher runs', async () => {
     hoisted.settings.kanbanStrictVerifySnapshotEnabled = false
-    // Default fingerprint is STABLE_FP for every call → the fresh pair matches → frozen.
+    // A non-PTY (db) source has no last-emit timestamp, so the frozen check samples a
+    // fresh pair; identical fingerprints → stable → frozen. (The re-sample path is the
+    // db fallback — a live-PTY session instead uses the single-read timestamp branch.)
+    hoisted.fingerprint.mockResolvedValue({ length: 100, hash: 'stable', source: 'db', lastOutputAt: 0 })
     hoisted.detect.mockResolvedValue({
       success: true,
       verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
@@ -503,7 +549,8 @@ describe('Strict Verify — independent sub-gate toggles', () => {
   it('both sub-gates off: the frozen check still runs, then verifies with no model call', async () => {
     hoisted.settings.kanbanStrictVerifySnapshotEnabled = false
     hoisted.settings.kanbanStrictVerifyReviewerEnabled = false
-    // STABLE_FP default → the fresh re-sample pair matches → frozen; Reviewer off → verified.
+    // db source → the fresh re-sample pair matches → frozen; Reviewer off → verified.
+    hoisted.fingerprint.mockResolvedValue({ length: 100, hash: 'stable', source: 'db', lastOutputAt: 0 })
     seed(makeTicket({ column: 'in_progress' }))
 
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
@@ -650,14 +697,36 @@ describe('completion verdict actions', () => {
     expect(verdict?.movedBack).toBe(true)
     expect(columnOf('ticket-1')).toBe('in_progress')
     expect(verdictOf('ticket-1')?.reason).toBe('todos remain')
-    // Manual recheck confirms frozen via session status (no fingerprint round-trip).
-    expect(hoisted.fingerprint).not.toHaveBeenCalled()
+    // Manual recheck now confirms frozen by reading the terminal's last-emit
+    // timestamp (default STABLE_FP is a stale-PTY fingerprint → frozen) — a single
+    // fingerprint round-trip, not the old hook-status-only shortcut.
+    expect(hoisted.fingerprint).toHaveBeenCalledTimes(1)
   })
 
   it('recheckTicketCompletion bounces a still-working ticket to In Progress without judging', async () => {
     // Strict Review rule: a session still actively working is not frozen → it's In
     // Progress, so the manual recheck must bounce it there WITHOUT calling the Watcher.
     hoisted.sessionStatuses = { [SESSION_ID]: { status: 'working', timestamp: 0 } }
+    seed(makeTicket({ column: 'review' }))
+
+    const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
+
+    expect(verdict).toBeNull()
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('in_progress')
+  })
+
+  it('recheckTicketCompletion bounces to In Progress when the terminal emitted recently, even with a stale completed status', async () => {
+    // The reported misfire: the hook status is a stale 'completed' (default in
+    // beforeEach) while the terminal is still moving (spinner/clock/token counter).
+    // Reading the last-emit timestamp catches it — the manual recheck must bounce,
+    // NOT be declared frozen from the hook status alone and handed to the Watcher.
+    hoisted.fingerprint.mockResolvedValue({
+      length: 100,
+      hash: 'x',
+      source: 'pty',
+      lastOutputAt: Date.now()
+    })
     seed(makeTicket({ column: 'review' }))
 
     const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)

@@ -179,7 +179,7 @@ describe('completionOps transcript source resolution', () => {
       loadDatabase: () => fakeDb({ getSessionMessages: () => [] }),
       detect,
       buildTail,
-      readLiveness: () => ({ bytes: 12, tail: '\x1b[1mSpec done. Report.\x1b[0m' })
+      readLiveness: () => ({ bytes: 12, tail: '\x1b[1mSpec done. Report.\x1b[0m', lastOutputAt: 1000 })
     })
 
     await Effect.runPromise(service.detectTicketCompletion({ sessionId: 's1', ticketId: 't1' }))
@@ -201,7 +201,8 @@ describe('completionOps transcript source resolution', () => {
     ])
     const readLiveness = vi.fn(() => ({
       bytes: 99,
-      tail: ')▌  bypass permissions on (shift+tab to cycle)'
+      tail: ')▌  bypass permissions on (shift+tab to cycle)',
+      lastOutputAt: 1000
     }))
     const service = makeLiveCompletionOpsRpcService({
       loadDatabase: () =>
@@ -247,7 +248,7 @@ describe('completionOps transcript source resolution', () => {
         }),
       detect: async () => goodVerdict,
       buildTail,
-      readLiveness: () => ({ bytes: 5, tail: '\x1b[1mlive tail\x1b[0m' }),
+      readLiveness: () => ({ bytes: 5, tail: '\x1b[1mlive tail\x1b[0m', lastOutputAt: 1000 }),
       readClaudeTranscript
     })
 
@@ -577,16 +578,27 @@ describe('completionOps handler param validation', () => {
 describe('completionOps.getSessionFingerprint service', () => {
   const sha256 = (input: string) => createHash('sha256').update(input).digest('hex')
 
-  it('fingerprints the live PTY accumulator when present (ANSI stripped)', async () => {
-    const readLiveness = vi.fn(() => ({ bytes: 4096, tail: '\x1b[31mhello\x1b[0m world' }))
+  it('fingerprints the live PTY accumulator when present (ANSI stripped) with source:pty + lastOutputAt', async () => {
+    const readLiveness = vi.fn(() => ({
+      bytes: 4096,
+      tail: '\x1b[31mhello\x1b[0m world',
+      lastOutputAt: 1_720_000_000_000
+    }))
     const service = makeLiveCompletionOpsRpcService({ readLiveness })
 
     const fp = await Effect.runPromise(service.getSessionFingerprint({ sessionId: 's1' }))
     expect(readLiveness).toHaveBeenCalledWith('s1')
-    expect(fp).toEqual({ length: 4096, hash: sha256('hello world') })
+    // The last-emit timestamp is surfaced verbatim so the renderer can ground the
+    // frozen check in real terminal output; source flags the PTY (timestamp) path.
+    expect(fp).toEqual({
+      length: 4096,
+      hash: sha256('hello world'),
+      lastOutputAt: 1_720_000_000_000,
+      source: 'pty'
+    })
   })
 
-  it('falls back to a DB message fingerprint when no PTY liveness exists', async () => {
+  it('falls back to a DB message fingerprint (source:db, lastOutputAt:0) when no PTY liveness exists', async () => {
     const messages: SessionMessage[] = [
       { role: 'user', content: 'do it', created_at: '2026-01-01T00:00:00Z' } as SessionMessage,
       { role: 'assistant', content: 'done', created_at: '2026-01-02T00:00:00Z' } as SessionMessage
@@ -598,18 +610,22 @@ describe('completionOps.getSessionFingerprint service', () => {
 
     const fp = await Effect.runPromise(service.getSessionFingerprint({ sessionId: 's1' }))
     const concat = 'do itdone'
+    // No live emit stream to timestamp → source:db + lastOutputAt:0 routes the
+    // renderer to the two-sample stability comparison instead of the timestamp read.
     expect(fp).toEqual({
       length: concat.length,
-      hash: sha256(`${concat} 2 2026-01-02T00:00:00Z`)
+      hash: sha256(`${concat} 2 2026-01-02T00:00:00Z`),
+      lastOutputAt: 0,
+      source: 'db'
     })
   })
 
   it('changes the fingerprint when live output grows', async () => {
     const a = makeLiveCompletionOpsRpcService({
-      readLiveness: () => ({ bytes: 100, tail: 'abc' })
+      readLiveness: () => ({ bytes: 100, tail: 'abc', lastOutputAt: 1000 })
     })
     const b = makeLiveCompletionOpsRpcService({
-      readLiveness: () => ({ bytes: 200, tail: 'abcdef' })
+      readLiveness: () => ({ bytes: 200, tail: 'abcdef', lastOutputAt: 2000 })
     })
     const fpA = await Effect.runPromise(a.getSessionFingerprint({ sessionId: 's1' }))
     const fpB = await Effect.runPromise(b.getSessionFingerprint({ sessionId: 's1' }))

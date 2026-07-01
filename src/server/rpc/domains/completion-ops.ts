@@ -79,6 +79,8 @@ export interface TestStrictVerifyProviderParams {
 export interface SessionLiveness {
   bytes: number
   tail: string
+  /** Wall-clock ms of the terminal's most recent emit (any byte — spinner/clock/tokens included). */
+  lastOutputAt: number
 }
 
 export interface CompletionOpsRpcService {
@@ -484,7 +486,14 @@ export const makeLiveCompletionOpsRpcService = (
           (await import('../../../main/services/terminal-pty-bridge')).getTerminalLiveness
         const live = readLiveness(params.sessionId)
         if (live) {
-          return { length: live.bytes, hash: sha256(stripAnsi(live.tail)) }
+          // Live PTY: carry the ground-truth last-emit timestamp so the renderer's
+          // frozen check can decide "still moving" from real terminal output.
+          return {
+            length: live.bytes,
+            hash: sha256(stripAnsi(live.tail)),
+            lastOutputAt: live.lastOutputAt,
+            source: 'pty'
+          }
         }
 
         // Coarse fallback for non-PTY providers: fingerprint the persisted
@@ -499,7 +508,9 @@ export const makeLiveCompletionOpsRpcService = (
           if (m.created_at && m.created_at > maxCreatedAt) maxCreatedAt = m.created_at
         }
         const hash = sha256(`${concat} ${messages.length} ${maxCreatedAt}`)
-        return { length: concat.length, hash }
+        // No live PTY (non-PTY provider, or an exited session) → no emit stream to
+        // timestamp; `source: 'db'` routes the renderer to the two-sample path.
+        return { length: concat.length, hash, lastOutputAt: 0, source: 'db' }
       },
       catch: (cause) => cause
     }),
