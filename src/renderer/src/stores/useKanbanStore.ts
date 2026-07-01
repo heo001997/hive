@@ -3544,7 +3544,12 @@ export const useKanbanStore = create<KanbanState>()(
         const ticket = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
         if (!ticket) return null
         const sessionId = ticket.current_session_id
-        if (!sessionId) return null
+        if (!sessionId) {
+          // Manual path only: own the messaging here so the modal never has to
+          // guess why a null came back (it used to show a misleading catch-all).
+          toast.warning('No agent session for this ticket yet — nothing to verify.')
+          return null
+        }
 
         // A manual recheck supersedes any in-flight automatic countdown — cancel
         // pending timers so the auto pass can't fire a redundant judge after this
@@ -3558,6 +3563,9 @@ export const useKanbanStore = create<KanbanState>()(
         if ((await confirmSessionFrozen(sessionId)) === 'active') {
           if (ticket.column === 'review') {
             await moveTicketBackToInProgress(get, ticketId, projectId)
+            toast.warning('Agent is still working — moved back to In Progress. Verify again once it settles.')
+          } else {
+            toast.warning('Agent is still working — verify again once it settles.')
           }
           return null
         }
