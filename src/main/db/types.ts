@@ -655,8 +655,6 @@ export interface KanbanTicketBatchCreateItem {
   mark?: TicketMark | null
   auto_approve_review?: boolean
   lifecycle_callbacks?: TicketLifecycleConfig | null
-  lifecycle_state?: LifecycleState | null
-  lifecycle_iteration?: number
   depends_on?: string[]
 }
 

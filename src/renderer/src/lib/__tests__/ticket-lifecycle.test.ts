@@ -3,14 +3,10 @@ import {
   actionsForSlot,
   branchesForState,
   buildDefaultLoopConfig,
-  buildSpeckitGateConfig,
   combineVerdicts,
   decideBranch,
   DEFAULT_FIX_PROMPT_TEMPLATE,
   isLifecycleEnabled,
-  isSpeckitGate,
-  isSpeckitReviewDraft,
-  parseSpeckitRound,
   renderTemplate,
   retryMaxForState,
   verdictToLifecycle
@@ -204,81 +200,5 @@ describe('renderTemplate', () => {
   })
   it('substitutes an empty string when reason is missing but a placeholder exists', () => {
     expect(renderTemplate('before {{reason}} after', {})).toBe('before  after')
-  })
-})
-
-describe('buildSpeckitGateConfig', () => {
-  it('builds an enabled config whose only review action is a spawn', () => {
-    const cfg = buildSpeckitGateConfig()
-    expect(cfg.enabled).toBe(true)
-    const during = actionsForSlot(cfg, 'review', 'during')
-    expect(during).toHaveLength(1)
-    expect(during[0].type).toBe('spawn')
-  })
-
-  it('has NO review fail→in_progress branch (the #110 internal bounce is disabled)', () => {
-    expect(branchesForState(buildSpeckitGateConfig(), 'review')).toEqual([])
-  })
-
-  it('survives a JSON round-trip unchanged', () => {
-    const cfg = buildSpeckitGateConfig()
-    expect(JSON.parse(JSON.stringify(cfg))).toEqual(cfg)
-  })
-})
-
-describe('isSpeckitGate', () => {
-  it('is true for a built gate config', () => {
-    expect(isSpeckitGate(buildSpeckitGateConfig())).toBe(true)
-  })
-  it('is false for null/undefined/disabled', () => {
-    expect(isSpeckitGate(null)).toBe(false)
-    expect(isSpeckitGate(undefined)).toBe(false)
-    expect(
-      isSpeckitGate({
-        enabled: false,
-        states: { review: { during: [{ id: 's', type: 'spawn', config: {} }] } }
-      })
-    ).toBe(false)
-  })
-  it('is false for the review↔fix loop (review action is type review, not spawn)', () => {
-    expect(
-      isSpeckitGate(buildDefaultLoopConfig({ maxIterations: 3, fixPromptTemplate: 'x' }))
-    ).toBe(false)
-  })
-})
-
-describe('isSpeckitReviewDraft', () => {
-  it('matches the base review key and round keys', () => {
-    expect(isSpeckitReviewDraft({ draftKey: 'review' })).toBe(true)
-    expect(isSpeckitReviewDraft({ draftKey: 'review-r1' })).toBe(true)
-    expect(isSpeckitReviewDraft({ draftKey: 'REVIEW-R12' })).toBe(true)
-  })
-  it('does NOT match review-plan (anchored regex rejects it)', () => {
-    expect(isSpeckitReviewDraft({ draftKey: 'review-plan' })).toBe(false)
-    expect(isSpeckitReviewDraft({ draftKey: 'review-plan-r1' })).toBe(false)
-    expect(isSpeckitReviewDraft({ draftKey: 'fix-r1' })).toBe(false)
-  })
-  it('falls back to a /speckit-review reference in the description when the key is generic', () => {
-    expect(
-      isSpeckitReviewDraft({ draftKey: 'draft-3', description: 'Run /speckit-review on the work' })
-    ).toBe(true)
-    // /speckit-review-plan must NOT match the review-gate fallback
-    expect(
-      isSpeckitReviewDraft({ draftKey: 'draft-2', description: 'Run /speckit-review-plan first' })
-    ).toBe(false)
-  })
-})
-
-describe('parseSpeckitRound', () => {
-  it('is 0 for the base review (no round marker) and empty titles', () => {
-    expect(parseSpeckitRound('Speckit review — 2611')).toBe(0)
-    expect(parseSpeckitRound('')).toBe(0)
-    expect(parseSpeckitRound(null)).toBe(0)
-    expect(parseSpeckitRound(undefined)).toBe(0)
-  })
-  it('parses (round R) and the (gate, round R) variant', () => {
-    expect(parseSpeckitRound('Speckit review (round 3) — 2611')).toBe(3)
-    expect(parseSpeckitRound('Speckit review (gate, round 12) — 2611')).toBe(12)
-    expect(parseSpeckitRound('x (ROUND 2)')).toBe(2)
   })
 })

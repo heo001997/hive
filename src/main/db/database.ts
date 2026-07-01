@@ -2633,13 +2633,7 @@ export class DatabaseService {
           github_pr_number: draft.github_pr_number,
           github_pr_url: draft.github_pr_url,
           mark: draft.mark,
-          auto_approve_review: draft.auto_approve_review,
-          // Forward the lifecycle fields so a batch-created ticket can carry a
-          // seeded config (the Speckit review GATE / Iterate Loop). Omitting these
-          // silently dropped them — the seeding gap the auto-spawn feature needs.
-          lifecycle_callbacks: draft.lifecycle_callbacks,
-          lifecycle_state: draft.lifecycle_state,
-          lifecycle_iteration: draft.lifecycle_iteration
+          auto_approve_review: draft.auto_approve_review
         })
         createdTickets.push(ticket)
         createdByDraftKey.set(draft.draft_key, ticket)

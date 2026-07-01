@@ -170,8 +170,6 @@ export function SettingsGeneral(): React.JSX.Element {
     kanbanIterateLoopEnabled,
     kanbanIterateLoopMaxIterations,
     kanbanIterateLoopFixPromptTemplate,
-    kanbanAutoSpawnDraftsEnabled,
-    kanbanAutoSpawnMaxRounds,
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
@@ -560,9 +558,9 @@ export function SettingsGeneral(): React.JSX.Element {
                   <p className="text-xs text-muted-foreground">
                     Deterministic, no model call. The frozen check <strong>always</strong> runs
                     before the Reviewer: if the session is <em>still emitting output</em> the agent
-                    hasn&apos;t really stopped, so the ticket goes back to{' '}
-                    <strong>In Progress</strong> and the Reviewer never runs. On: fingerprint at arm
-                    vs. at fire (spans the whole wait). Off: a quick fresh re-sample at fire time.
+                    hasn&apos;t really stopped, so the ticket goes back to <strong>In Progress</strong>{' '}
+                    and the Reviewer never runs. On: fingerprint at arm vs. at fire (spans the whole
+                    wait). Off: a quick fresh re-sample at fire time.
                   </p>
                 </div>
                 <button
@@ -749,8 +747,8 @@ export function SettingsGeneral(): React.JSX.Element {
                       data-testid="strict-verify-prompt"
                     />
                     <p className="text-xs text-muted-foreground">
-                      The system prompt injected ahead of the transcript. Edit to tune what counts
-                      as done. It <strong>must</strong> still ask for the JSON verdict (
+                      The system prompt injected ahead of the transcript. Edit to tune what counts as
+                      done. It <strong>must</strong> still ask for the JSON verdict (
                       <code>complete</code>, <code>needsInput</code>, <code>confidence</code>,{' '}
                       <code>reason</code>) or the Reviewer can&apos;t be parsed.
                     </p>
@@ -792,8 +790,8 @@ export function SettingsGeneral(): React.JSX.Element {
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Runs the Reviewer against a sample transcript using the provider, model, and
-                      prompt above. Confirms the CLI is installed, the model id is valid, and the
-                      call succeeds — no ticket is touched.
+                      prompt above. Confirms the CLI is installed, the model id is valid, and the call
+                      succeeds — no ticket is touched.
                     </p>
                   </div>
 
@@ -801,16 +799,14 @@ export function SettingsGeneral(): React.JSX.Element {
                   <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
                     <div className="flex items-center justify-between gap-4">
                       <div>
-                        <label className="text-sm font-medium">
-                          Recover stuck In Progress tickets
-                        </label>
+                        <label className="text-sm font-medium">Recover stuck In Progress tickets</label>
                         <p className="text-xs text-muted-foreground">
                           The reverse of the frozen check. After a ticket is bounced back to{' '}
-                          <strong>In Progress</strong> as &quot;Not done&quot;, watch its session:
-                          if it goes <em>frozen</em> (stopped emitting) while still stuck, the
-                          bounce was likely premature, so re-promote it to <strong>Review</strong>{' '}
-                          once for a fresh judgment. If it still isn&apos;t done it&apos;s left in
-                          In Progress with a &quot;Re-checked&quot; label (max 1 retry, so no loop).
+                          <strong>In Progress</strong> as &quot;Not done&quot;, watch its session: if it
+                          goes <em>frozen</em> (stopped emitting) while still stuck, the bounce was
+                          likely premature, so re-promote it to <strong>Review</strong> once for a fresh
+                          judgment. If it still isn&apos;t done it&apos;s left in In Progress with a
+                          &quot;Re-checked&quot; label (max 1 retry, so no loop).
                         </p>
                       </div>
                       <button
@@ -847,11 +843,10 @@ export function SettingsGeneral(): React.JSX.Element {
                           <strong>Claude Code CLI tickets only.</strong> Follow-ups you send while a
                           ticket is still working are <em>queued</em> instead of racing the running
                           turn. The next queued prompt is entered automatically only once the ticket
-                          reaches <strong>Review</strong> and is <strong>verified complete</strong>{' '}
-                          by the gates above — so each prompt runs in order, one
-                          finished-and-verified step at a time. Manage the queue (count + remove)
-                          from the ticket&apos;s detail view. Auto-disabled while Strict Verify is
-                          off.
+                          reaches <strong>Review</strong> and is <strong>verified complete</strong> by
+                          the gates above — so each prompt runs in order, one finished-and-verified
+                          step at a time. Manage the queue (count + remove) from the ticket&apos;s
+                          detail view. Auto-disabled while Strict Verify is off.
                         </p>
                       </div>
                       <button
@@ -975,75 +970,6 @@ export function SettingsGeneral(): React.JSX.Element {
               <p className="text-xs text-muted-foreground">
                 Sent to the agent on each bounce. Use <code>{'{{reason}}'}</code> where the
                 reviewer&apos;s reason should go — if you omit it the reason is appended.
-              </p>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Kanban — Speckit review-gate auto-spawn (engine creates the next loop round, no confirm) */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <label className="text-sm font-medium">Auto-spawn Speckit loop rounds</label>
-            <p className="text-xs text-muted-foreground">
-              Make the Speckit <strong>review</strong> ticket a real gate. When a review ticket
-              settles and its agent emits a <code>board-ticket-drafts</code> block (a fresh
-              <code> fix → review-plan → review </code> round), Hive creates those tickets
-              <strong> automatically — no confirm dialog</strong>, seeds the gate onto the new
-              <code> review-r&#123;R&#125;</code>, and moves the current review ticket to Done. A
-              clean review (no drafts) passes through; an ambiguous one (no drafts + incomplete, bad
-              drafts, transcript unreadable, or the round cap below) is left{' '}
-              <strong>blocked in Review</strong> for you with a <code>question</code> notification.
-              Requires <strong>Build</strong> mode.
-            </p>
-          </div>
-          <button
-            role="switch"
-            aria-checked={kanbanAutoSpawnDraftsEnabled}
-            onClick={() =>
-              updateSetting('kanbanAutoSpawnDraftsEnabled', !kanbanAutoSpawnDraftsEnabled)
-            }
-            className={cn(
-              'relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
-              kanbanAutoSpawnDraftsEnabled ? 'bg-primary' : 'bg-muted'
-            )}
-            data-testid="auto-spawn-toggle"
-          >
-            <span
-              className={cn(
-                'pointer-events-none block h-4 w-4 rounded-full bg-background shadow-lg ring-0 transition-transform',
-                kanbanAutoSpawnDraftsEnabled ? 'translate-x-4' : 'translate-x-0'
-              )}
-            />
-          </button>
-        </div>
-
-        {kanbanAutoSpawnDraftsEnabled && (
-          <div className="ml-2 space-y-5 border-l-2 border-border pl-4">
-            {/* Max rounds — the loop-breaker for the auto-spawn gate. */}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Max rounds</label>
-              <div className="flex items-center gap-3">
-                <Input
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={kanbanAutoSpawnMaxRounds}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value, 10)
-                    if (!isNaN(val) && val >= 1 && val <= 100) {
-                      updateSetting('kanbanAutoSpawnMaxRounds', val)
-                    }
-                  }}
-                  className="w-20 font-mono text-sm"
-                  data-testid="auto-spawn-max"
-                />
-                <span className="text-xs text-muted-foreground">rounds (1-100)</span>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                How many loop rounds may auto-spawn before a review is left blocked in Review for
-                you. The round is read from the ticket title (<code>(round &#123;R&#125;)</code>).
               </p>
             </div>
           </div>
@@ -1367,9 +1293,7 @@ export function SettingsGeneral(): React.JSX.Element {
               <ul className="space-y-0.5">
                 <li>
                   Yes, clear context … →{' '}
-                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">
-                    clear context
-                  </code>
+                  <code className="rounded bg-muted px-1 py-0.5 text-foreground">clear context</code>
                 </li>
                 <li>
                   Yes, and bypass permissions →{' '}
@@ -1465,18 +1389,12 @@ export function SettingsGeneral(): React.JSX.Element {
             <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{PORT}}'}</code>{' '}
             <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{DEV_URL}}'}</code>{' '}
             <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{BRANCH}}'}</code>{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-foreground">
-              {'{{BASE_BRANCH}}'}
-            </code>{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-foreground">
-              {'{{WORKTREE_PATH}}'}
-            </code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{BASE_BRANCH}}'}</code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{WORKTREE_PATH}}'}</code>{' '}
             <code className="rounded bg-muted px-1 py-0.5 text-foreground">
               {'{{WORKTREE_CONTEXT}}'}
             </code>{' '}
-            <code className="rounded bg-muted px-1 py-0.5 text-foreground">
-              {'{{SETUP_OUTPUT}}'}
-            </code>{' '}
+            <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{SETUP_OUTPUT}}'}</code>{' '}
             <code className="rounded bg-muted px-1 py-0.5 text-foreground">{'{{ENV}}'}</code>{' '}
             <code className="rounded bg-muted px-1 py-0.5 text-foreground">
               {'{{WORKTREE_SUMMARY}}'}
