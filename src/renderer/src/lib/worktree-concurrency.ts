@@ -75,6 +75,60 @@ export async function launchNextQueuedTickets(projectId: string): Promise<void> 
   }
 }
 
+/**
+ * Launch every ready ticket a project just gained OUT OF BAND — i.e. tickets that
+ * appeared straight in the DB (the agent-driven condition-gate fix loop CRUDs the
+ * next round via the `hive-ticket` CLI) rather than through a store mutation. Such
+ * creates never hit the launch triggers baked into {@link launchNextQueuedTickets}
+ * (cap>0) or the uncapped dependency-unblock path in `moveTicket`, so a fresh chain
+ * HEAD (no blockers) would otherwise never start.
+ *
+ *   • Capped project → defer to the serialized queue drainer (honors the cap +
+ *     chain affinity; it already picks up ready no-blocker heads).
+ *   • Uncapped project → the queue drainer is a no-op, so directly launch each
+ *     ready ticket (pending config + all blockers satisfied), mirroring the uncapped
+ *     dependency launch. Blocked chain members start later as their blockers land.
+ *
+ * `autoLaunchTicket`'s in-flight guard + cap check make this safe to call even if it
+ * races an overlapping trigger.
+ */
+export async function launchReadyCreatedTickets(projectId: string): Promise<void> {
+  if (getMaxParallelWorktrees(projectId) > 0) {
+    await launchNextQueuedTickets(projectId)
+    return
+  }
+
+  const [{ autoLaunchTicket }, { isBlockerSatisfied }, { useSettingsStore }] = await Promise.all([
+    import('./auto-launch'),
+    import('./blocker-utils'),
+    import('@/stores/useSettingsStore')
+  ])
+  const triggerColumn = useSettingsStore.getState().followUpTriggerColumn
+  const kanban = useKanbanStore.getState()
+  const all = kanban.tickets.get(projectId) ?? []
+  const dependencyMap = kanban.dependencyMap
+
+  for (const t of all) {
+    if (!t.pending_launch_config || t.archived_at || t.column === 'done') continue
+    const blockers = dependencyMap.get(ticketKey(projectId, t.id))
+    let ready = true
+    if (blockers && blockers.size > 0) {
+      for (const blockerKey of blockers) {
+        const ref = parseTicketKey(blockerKey)
+        const blocker = all.find((b) => b.id === ref.ticketId)
+        if (blocker && !isBlockerSatisfied(blocker.column, blocker.mode, triggerColumn)) {
+          ready = false
+          break
+        }
+      }
+    }
+    if (!ready) continue
+    await autoLaunchTicket(t).catch((err) => {
+      console.error('Auto-launch failed for out-of-band created ticket:', t.id, err)
+    })
+  }
+}
+
 /** A ticket has "started" once a step has actually run for it — i.e. it launched
  *  (In Progress without a pending config), or has progressed to Review/Done. A
  *  still-queued ticket (pending config in Todo or In Progress) has NOT started. */

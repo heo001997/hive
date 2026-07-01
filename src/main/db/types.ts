@@ -595,6 +595,7 @@ export interface KanbanTicketCreate {
   mark?: TicketMark | null
   created_from_session?: boolean
   auto_approve_review?: boolean
+  pending_launch_config?: string | null
   lifecycle_callbacks?: TicketLifecycleConfig | null
   lifecycle_state?: LifecycleState | null
   lifecycle_iteration?: number
@@ -654,7 +655,12 @@ export interface KanbanTicketBatchCreateItem {
   github_pr_url?: string | null
   mark?: TicketMark | null
   auto_approve_review?: boolean
+  pending_launch_config?: string | null
   lifecycle_callbacks?: TicketLifecycleConfig | null
+  /** Seed a confirmed lifecycle state (e.g. `'todo'` for a condition-gate review). */
+  lifecycle_state?: LifecycleState | null
+  /** Seed the iterate-loop counter (fix rounds carry the round index). */
+  lifecycle_iteration?: number
   depends_on?: string[]
 }
 

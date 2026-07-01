@@ -1,6 +1,7 @@
 import { Effect } from 'effect'
 import { z } from 'zod'
 import { isDesktopCommandResult, makeDesktopCommandRequest } from '../../../shared/desktop-command'
+import { KANBAN_TICKETS_CREATED_CHANNEL } from '../../../shared/kanban-events'
 import type {
   KanbanColumnPages,
   KanbanMarkdownConfig,
@@ -259,6 +260,7 @@ const kanbanTicketCreateSchema = z
     mark: ticketMarkSchema.nullable().optional(),
     created_from_session: z.boolean().optional(),
     auto_approve_review: z.boolean().optional(),
+    pending_launch_config: z.string().nullable().optional(),
     lifecycle_callbacks: ticketLifecycleConfigSchema.nullable().optional(),
     lifecycle_state: ticketColumnSchema.nullable().optional(),
     lifecycle_iteration: z.number().optional()
@@ -1138,13 +1140,24 @@ export const makeKanbanRpcHandlers = (
     ],
     [
       'kanban.ticket.createBatch',
-      (params) =>
+      (params, context) =>
         Effect.gen(function* () {
           const { projectId, data } = yield* Effect.try({
             try: () => kanbanTicketBatchCreateParamsSchema.parse(params),
             catch: (cause) => cause
           })
-          return yield* service.createTicketBatch(projectId, data)
+          const result = yield* service.createTicketBatch(projectId, data)
+          // Tell the renderer a batch landed so it reloads the board AND re-drives
+          // the auto-launch queue. Batch creates arriving over the wire (agent-driven
+          // condition-gate fix rounds via the `hive-ticket` CLI) never touch the
+          // renderer's store, so its queue would otherwise never launch them.
+          if (result.tickets.length > 0) {
+            yield* context.eventBus.publish({
+              channel: KANBAN_TICKETS_CREATED_CHANNEL,
+              payload: { projectId, ticketIds: result.tickets.map((t) => t.id) }
+            })
+          }
+          return result
         })
     ],
     [

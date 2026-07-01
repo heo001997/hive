@@ -87,6 +87,7 @@ import {
 } from './backend-config'
 import { getCurrentBackend, setCurrentBackend } from './backend-event-publisher'
 import { removeCliConnectionFile, writeCliConnectionFile } from './cli-connection-file'
+import { setHiveCliConnection } from '../services/hive-cli-connection'
 
 export interface DesktopBackendBootstrap {
   readonly httpBaseUrl: string
@@ -648,6 +649,14 @@ export const startDesktopBackend = async (
   } catch (error) {
     log.warn('Failed to write CLI connection file', { error })
   }
+  // Hand the same connection details to the in-process Claude CLI spawner so every
+  // agent it launches gets HIVE_* injected (right instance, pre-authed).
+  setHiveCliConnection({
+    host: config.host,
+    port: config.port,
+    bootstrapToken: config.bootstrapToken,
+    baseDir
+  })
 
   const started: StartedDesktopBackend = {
     config,
@@ -660,6 +669,7 @@ export const startDesktopBackend = async (
     stop: async () => {
       stopping = true
       removeCliConnectionFile(baseDir)
+      setHiveCliConnection(null)
       const child = processRef
       processRef = null
       if (!child || child.killed) return

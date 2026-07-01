@@ -46,6 +46,60 @@ Rules:
 - Set needsInput=true ONLY when the agent is genuinely waiting on a human reply (a question, a selection prompt, a fill-in request). An agent that simply stopped is not waiting on input (needsInput=false).
 - Output the JSON object and nothing else.`
 
+/**
+ * The three routes a condition gate (Stage 2) can take on a review ticket's
+ * return. Stage 1 (Strict-Verify) has already confirmed the review agent finished
+ * its job; Stage 2 reads WHAT it found and decides what happens next:
+ *   - `pass`        — the review is clean; stop and wait for the human.
+ *   - `fix`         — the review found fixable issues; open a fix loop round.
+ *   - `needs-human` — ambiguous / genuinely needs a person; leave in Review + notify.
+ */
+export const CONDITION_GATE_VERDICTS = ['pass', 'fix', 'needs-human'] as const
+export type ConditionGateVerdictKind = (typeof CONDITION_GATE_VERDICTS)[number]
+
+export interface ConditionGateVerdict {
+  verdict: ConditionGateVerdictKind
+  /** One-sentence justification (no newlines). */
+  reason: string
+  /**
+   * On a `fix` verdict, the concrete issues the fix round must address (folded
+   * into the fix ticket's prompt). Empty/omitted for pass / needs-human.
+   */
+  fixes?: string[]
+}
+
+/** Result envelope returned by the `completionOps.detectTicketVerdict` RPC. */
+export interface ConditionGateCheckResult {
+  success: boolean
+  verdict?: ConditionGateVerdict
+  error?: string
+}
+
+/**
+ * Default system prompt for the condition gate (Stage 2). The gate TRUSTS the
+ * review agent's transcript (same trust model as Strict-Verify) and does
+ * condition-branch routing over what the review reported. A custom prompt MUST
+ * still instruct the model to return the JSON object with keys verdict/reason/fixes
+ * or the verdict can't be parsed (the engine then blocks for the human — no fail-open).
+ */
+export const DEFAULT_CONDITION_GATE_PROMPT = `You are a routing gate. A code-review agent has just finished reviewing a body of work and reported its findings. Stage 1 has ALREADY confirmed the review agent completed its job — do NOT re-judge whether the review ran. Your ONLY job is to read what the review FOUND and decide what happens next.
+
+You are given the ticket (the review's goal) and the TAIL END of the review agent's transcript (its findings/return). TRUST THE TRANSCRIPT: route based on what the agent actually reports.
+
+Return ONLY a JSON object with keys:
+- "verdict": one of "pass", "fix", "needs-human"
+    - "pass": the review reports the work is good — no blocking issues, nothing to fix. Stop and wait for the human.
+    - "fix": the review found concrete, fixable problems (bugs, failing tests, missing requirements, review comments to address) that an agent can resolve in another round.
+    - "needs-human": the situation is ambiguous, the review is blocked on a human decision, a question is being asked, or the findings can't be safely auto-routed.
+- "reason": a single short sentence (no newlines) justifying the route.
+- "fixes": an array of short strings — ONLY on a "fix" verdict, the concrete issues the next round must address. Empty array otherwise.
+
+Rules:
+- Prefer "fix" over "needs-human" when the findings are concrete and actionable by a coding agent.
+- Use "needs-human" only for genuine ambiguity or a decision that requires a person.
+- "pass" means the review is clean; do not invent work.
+- Output the JSON object and nothing else.`
+
 export interface CompletionVerdict {
   /** True only if the ticket's goal is convincingly satisfied. */
   complete: boolean

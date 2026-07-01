@@ -2548,10 +2548,11 @@ export class DatabaseService {
       : null
     const lifecycleState = data.lifecycle_state ?? null
     const lifecycleIteration = data.lifecycle_iteration ?? 0
+    const pendingLaunchConfig = data.pending_launch_config ?? null
 
     db.prepare(
-      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_from_session, auto_approve_review, lifecycle_callbacks, lifecycle_state, lifecycle_iteration, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO kanban_tickets (id, project_id, title, description, attachments, "column", sort_order, current_session_id, worktree_id, mode, plan_ready, external_provider, external_id, external_url, github_pr_number, github_pr_url, mark, created_from_session, auto_approve_review, pending_launch_config, lifecycle_callbacks, lifecycle_state, lifecycle_iteration, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.project_id,
@@ -2572,6 +2573,7 @@ export class DatabaseService {
       mark,
       createdFromSession,
       autoApproveReview,
+      pendingLaunchConfig,
       lifecycleCallbacks,
       lifecycleState,
       lifecycleIteration,
@@ -2599,6 +2601,7 @@ export class DatabaseService {
       mark,
       created_from_session: createdFromSession,
       auto_approve_review: autoApproveReview,
+      pending_launch_config: pendingLaunchConfig,
       lifecycle_callbacks: lifecycleCallbacks,
       lifecycle_state: lifecycleState,
       lifecycle_iteration: lifecycleIteration,
@@ -2633,7 +2636,17 @@ export class DatabaseService {
           github_pr_number: draft.github_pr_number,
           github_pr_url: draft.github_pr_url,
           mark: draft.mark,
-          auto_approve_review: draft.auto_approve_review
+          auto_approve_review: draft.auto_approve_review,
+          // Forward the launch config so a batch-created ticket can auto-launch
+          // into a shared worktree (the agent-driven condition-gate fix round threads
+          // one worktree across `fix → review-plan → review` = one branch = one PR).
+          pending_launch_config: draft.pending_launch_config,
+          // Forward the lifecycle fields so a batch-created ticket can carry a
+          // seeded config (e.g. the condition-gate review). Omitting these
+          // silently dropped them.
+          lifecycle_callbacks: draft.lifecycle_callbacks,
+          lifecycle_state: draft.lifecycle_state,
+          lifecycle_iteration: draft.lifecycle_iteration
         })
         createdTickets.push(ticket)
         createdByDraftKey.set(draft.draft_key, ticket)

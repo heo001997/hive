@@ -34,6 +34,7 @@ export type LifecycleActionType =
   | 'notify'
   | 'goto'
   | 'wait'
+  | 'evaluate'
 
 /** The slots a state's actions can live in. */
 export type LifecycleSlot = 'before' | 'retry' | 'during' | 'after'
@@ -56,6 +57,11 @@ export type LifecycleEntryContext = 'initial' | 'retry'
  *  - notify → { event: string; message?: string }
  *  - goto   → { state: LifecycleState }
  *  - wait   → { seconds: number }
+ *  - evaluate → { provider?; model?; prompt?; maxRounds?; autoDone? }
+ *               — marks a review ticket as a CONDITION GATE (Stage 2). After
+ *               Stage-1 Strict-Verify passes, an LLM reads the review's return and
+ *               routes pass/fix/needs-human (see `lib/ticket-lifecycle`
+ *               `buildConditionGateConfig` / `useKanbanStore.runConditionGate`).
  *
  * `runOn` (before/retry only) filters by entry context: a value of `['retry']`
  * runs the action only on a loop re-entry, `['initial']` only on a first entry.
