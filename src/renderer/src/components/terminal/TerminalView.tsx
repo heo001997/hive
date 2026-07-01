@@ -8,6 +8,7 @@ import { hasFocusedEditableElement } from '@/lib/focus-utils'
 import { TerminalToolbar } from './TerminalToolbar'
 import { XtermBackend } from './backends/XtermBackend'
 import { GhosttyBackend } from './backends/GhosttyBackend'
+import { computeEffectiveVisible } from './terminal-visibility'
 import {
   clampTerminalFontSize,
   ensureTerminalFontsLoaded,
@@ -112,7 +113,13 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
   const ghosttyFontSize = useSettingsStore((s) => s.ghosttyFontSize)
   const ghosttyOverlaySuppressed = useLayoutStore((s) => s.ghosttyOverlaySuppressed)
 
-  const effectiveVisible = isVisible && !ghosttyOverlaySuppressed
+  // Ghostty-overlay suppression must not hide an xterm terminal (e.g. the Claude
+  // CLI reparented into the ticket-detail modal) — see computeEffectiveVisible.
+  const effectiveVisible = computeEffectiveVisible(
+    isVisible,
+    effectiveBackendType,
+    ghosttyOverlaySuppressed
+  )
 
   // Always-current ref so setupTerminal (a useCallback whose deps intentionally
   // do NOT include effectiveVisible) can read the latest value when it
