@@ -24,6 +24,7 @@ import {
   type LifecycleSlot
 } from '@/lib/ticket-lifecycle'
 import { COMPLETION_CHECK_PROVIDERS, COMPLETION_PROVIDER_LABELS } from '@shared/types/completion'
+import { LIFECYCLE_ACTION_TYPES } from '@shared/types/ticket-lifecycle'
 import type {
   LifecycleAction,
   LifecycleActionType,
@@ -60,16 +61,9 @@ const SLOTS: { slot: LifecycleSlot; label: string; hint: string; entry: boolean 
   { slot: 'during', label: 'During', hint: 'while working', entry: false },
   { slot: 'after', label: 'After', hint: 'stable exit', entry: false }
 ]
-const ACTION_TYPES: LifecycleActionType[] = [
-  'prompt',
-  'agent',
-  'check',
-  'review',
-  'evaluate',
-  'notify',
-  'goto',
-  'wait'
-]
+// Derived from the shared source of truth so the dropdown can never drift from the
+// type/validator (see LIFECYCLE_ACTION_TYPES).
+const ACTION_TYPES: readonly LifecycleActionType[] = LIFECYCLE_ACTION_TYPES
 const VERDICTS: LifecycleVerdict[] = ['pass', 'fail', 'needsInput']
 const GOTOS: (LifecycleState | 'end')[] = ['todo', 'in_progress', 'review', 'done', 'end']
 const NOTIFY_EVENTS = ['started', 'question', 'review', 'stuck_review', 'done'] as const
