@@ -540,6 +540,18 @@ interface KanbanState {
     projectId: string
   ) => Promise<StoredCompletionVerdict | null>
   /**
+   * Re-run the two-stage Condition Gate for a review ticket on demand (Part D —
+   * "Re-run gate now"). Re-reads Stage-2 (file-first verdict) → `decideConditionGate`
+   * → same routing as the automatic settle path (pass advances / fix launches a
+   * round / block leaves it in Review + notifies). Lets a manual fix continue the
+   * loop without waiting for a session re-settle. No-op (returns null) when the
+   * ticket is unknown or not a gate.
+   */
+  rerunConditionGate: (
+    ticketId: string,
+    projectId: string
+  ) => Promise<ConditionGateOutcome | null>
+  /**
    * Queue prompts (claude-code-cli only). Immediately enter `prompt` into the
    * ticket's CLI session and move it to In Progress — the "send now" path used
    * for the first prompt when the session is idle and nothing is queued.
@@ -1986,7 +1998,8 @@ async function runConditionGate(
   const maxRounds = gateCfg.maxRounds ?? settings.kanbanConditionGateMaxRounds ?? 3
   const decision = decideConditionGate(verdict, round, maxRounds)
   console.log(
-    `[ConditionGate] ticket ${ticketId} verdict=${verdict.verdict} round=${round} ` +
+    `[ConditionGate] ticket ${ticketId} verdict=${verdict.verdict} ` +
+      `source=${verdict.source ?? 'unknown'} round=${round} ` +
       `max=${maxRounds} → ${decision.kind} reason="${verdict.reason}"`
   )
 
@@ -2122,6 +2135,8 @@ async function onStrictVerifySettled(
   // (never falls through to the verified-complete tail / auto-bypass).
   const isCondGate = isConditionGate(current.lifecycle_callbacks)
   if (isCondGate) {
+    // Part C — trace the ARM branch (the trace gap that made 2822 undiagnosable).
+    console.info(`[ConditionGate] ticket ${ticketId} ARMED — running two-stage gate`)
     if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
       const outcome = await runStrictVerify(get, ticketId, projectId, current, settings, true)
       if (outcome === 'bounced') return // genuine incomplete → bounced to In Progress
@@ -2133,6 +2148,14 @@ async function onStrictVerifySettled(
     await runConditionGate(get, ticketId, projectId, current, settings)
     return // terminal — the gate fully handled pass / fix / block
   }
+  // Part C — trace the SKIP branch + its reason, so a review ticket that never armed
+  // (the exact 2822 failure class: `lifecycle_callbacks` NULL) is diagnosable.
+  console.info(
+    `[ConditionGate] ticket ${ticketId} skipped:` +
+      (current.lifecycle_callbacks
+        ? 'no review.during evaluate action'
+        : 'lifecycle_callbacks null (no gate seeded)')
+  )
 
   // ── Gate 2: Ticket Reviewer (the AI Watcher) ──────────────────────
   // Skipped when the Reviewer sub-gate is off — a ticket that cleared the
@@ -3995,6 +4018,33 @@ export const useKanbanStore = create<KanbanState>()(
           }
         }
         return stored
+      },
+
+      // Manual "Re-run gate now" (Part D). Re-runs the Stage-2 Condition Gate on a
+      // review ticket without waiting for a session re-settle — the continuation path
+      // after a human fix ("I rolled back schema.db, it should continue"). Routes
+      // exactly like the automatic settle: pass advances, fix launches the next round,
+      // block leaves it in Review + notifies. Verdict is file-first (review-gate.json).
+      rerunConditionGate: async (ticketId: string, projectId: string) => {
+        const current = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+        if (!current) {
+          console.warn(`[ConditionGate] re-run requested for unknown ticket ${ticketId}`)
+          return null
+        }
+        if (!isConditionGate(current.lifecycle_callbacks)) {
+          console.warn(
+            `[ConditionGate] re-run requested but ticket ${ticketId} is not a gate — ignoring`
+          )
+          toast.warning('This ticket is not a Condition Gate. Enable it in the ticket first.')
+          return null
+        }
+        // A manual re-run supersedes any in-flight automatic countdown for this ticket.
+        cancelAll(ticketKey(projectId, ticketId))
+        const { useSettingsStore } = await import('./useSettingsStore')
+        const settings = useSettingsStore.getState()
+        console.info(`[ConditionGate] ticket ${ticketId} manual re-run requested`)
+        get().setVerifyProgress(ticketKey(projectId, ticketId), { phase: 'checking' })
+        return runConditionGate(get, ticketId, projectId, current, settings)
       },
 
       addQueuedPrompt: (

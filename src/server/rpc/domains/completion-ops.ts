@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Effect } from 'effect'
 import { z } from 'zod'
 
@@ -9,6 +11,7 @@ import type {
 } from '../../../main/services/completion-detector'
 import {
   COMPLETION_CHECK_PROVIDERS,
+  CONDITION_GATE_VERDICTS,
   type CompletionCheckProvider,
   type CompletionCheckResult,
   type CompletionVerdict,
@@ -27,6 +30,54 @@ import type { RpcHandler } from '../router'
  * source was used, the head/end of the tail we sent, and the verdict we got back.
  */
 const log = createLogger({ component: 'StrictVerify' })
+
+/**
+ * Shape of the deterministic verdict file the review agent writes to
+ * `<worktree>/.hive/review-gate.json`. `verdict` is required + constrained to the
+ * canonical kinds; `reason` / `fixes[]` are optional. `.passthrough()` tolerates any
+ * extra keys the agent adds. A file that fails this schema falls back to the LLM.
+ */
+const reviewGateFileSchema = z
+  .object({
+    verdict: z.enum(CONDITION_GATE_VERDICTS),
+    reason: z.string().optional(),
+    fixes: z.array(z.string()).optional()
+  })
+  .passthrough()
+
+/**
+ * Part E — file-first verdict. Read `<cwd>/.hive/review-gate.json`; when present and
+ * valid, return it as a {@link ConditionGateVerdict} (source `review-gate.json`),
+ * carrying the agent's own `reason` + concrete `fixes[]`. Returns `null` on a missing
+ * cwd, a missing/unreadable file, invalid JSON, or a schema mismatch — the caller
+ * then falls back to the LLM read over the transcript (source `llm-transcript`).
+ */
+export function readReviewGateFile(cwd: string | undefined): ConditionGateVerdict | null {
+  if (!cwd) return null
+  const path = join(cwd, '.hive', 'review-gate.json')
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf-8')
+  } catch {
+    // No file (the common case) — silently fall back to the LLM.
+    return null
+  }
+  try {
+    const parsed = reviewGateFileSchema.parse(JSON.parse(raw))
+    return {
+      verdict: parsed.verdict,
+      reason: parsed.reason?.trim() || `review-gate.json: ${parsed.verdict}`,
+      fixes: (parsed.fixes ?? []).map((f) => f.trim()).filter((f) => f.length > 0),
+      source: 'review-gate.json'
+    }
+  } catch (err) {
+    log.warn('[ConditionGate] review-gate.json present but invalid — falling back to LLM', {
+      path,
+      error: err instanceof Error ? err.message : String(err)
+    })
+    return null
+  }
+}
 
 /** Single-line, length-capped preview of a blob for logging. */
 const preview = (s: string, n = 240): string =>
@@ -435,6 +486,20 @@ export const makeLiveCompletionOpsRpcService = (
           const worktree = session?.worktree_id ? db.getWorktree(session.worktree_id) : null
           const cwd = worktree?.path ?? undefined
 
+          // Part E — file-first: the review agent's own `<cwd>/.hive/review-gate.json`
+          // wins over re-deriving the verdict via the LLM (which discarded it).
+          const fileVerdict = readReviewGateFile(cwd)
+          if (fileVerdict) {
+            log.info('[ConditionGate] VERDICT', {
+              ticketId: params.ticketId,
+              verdict: fileVerdict.verdict,
+              reason: fileVerdict.reason,
+              fixes: fileVerdict.fixes?.length ?? 0,
+              source: fileVerdict.source
+            })
+            return { success: true, verdict: fileVerdict }
+          }
+
           const messages = await resolveTranscriptMessages(db, session, worktree, params, deps)
           const transcriptTail = buildTail(messages, params.maxChars)
 
@@ -448,7 +513,7 @@ export const makeLiveCompletionOpsRpcService = (
             tailChars: transcriptTail.length
           })
 
-          const verdict = await detectVerdict({
+          const llmVerdict = await detectVerdict({
             ticketTitle: ticket.title,
             ticketDescription: ticket.description,
             transcriptTail,
@@ -457,11 +522,14 @@ export const makeLiveCompletionOpsRpcService = (
             modelOverride: params.model,
             systemPromptOverride: params.systemPrompt
           })
+          // Tag the fallback verdict so the store logs its provenance (Part C).
+          const verdict: ConditionGateVerdict = { ...llmVerdict, source: 'llm-transcript' }
           log.info('[ConditionGate] VERDICT', {
             ticketId: params.ticketId,
             verdict: verdict.verdict,
             reason: verdict.reason,
-            fixes: verdict.fixes?.length ?? 0
+            fixes: verdict.fixes?.length ?? 0,
+            source: verdict.source
           })
           return { success: true, verdict }
         } catch (err) {

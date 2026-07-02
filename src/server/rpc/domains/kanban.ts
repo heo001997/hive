@@ -1,5 +1,6 @@
 import { Effect } from 'effect'
 import { z } from 'zod'
+import { seedConditionGateOnTarget } from '../../../shared/lib/condition-gate'
 import { isDesktopCommandResult, makeDesktopCommandRequest } from '../../../shared/desktop-command'
 import { KANBAN_TICKETS_CREATED_CHANNEL } from '../../../shared/kanban-events'
 import type {
@@ -15,7 +16,39 @@ import type {
   MarkdownCardDiagnostic,
   TicketDependency
 } from '../../../main/db'
+import {
+  readConditionGateSettings,
+  type ConditionGateSettings
+} from '../../../main/services/condition-gate-settings'
+import { createLogger } from '../../../main/services/logger'
 import type { RpcHandler } from '../router'
+
+const gateLog = createLogger({ component: 'kanban-condition-gate' })
+
+/**
+ * Server-side Condition-Gate auto-arm (Part A). The one choke point every creation
+ * path hits — Board Chat, the Speckit `hive-ticket` CLI, any future caller — is this
+ * create RPC. Before a row is inserted we inspect the incoming ticket/draft and, when
+ * it matches the review pattern AND the gate is enabled in Settings, stamp a gate
+ * config into `lifecycle_callbacks` ourselves. Callers send nothing gate-related.
+ *
+ * Mutates `target` in place. NEVER clobbers a caller-provided `lifecycle_callbacks`
+ * (Board Chat still seeds renderer-side — identical + idempotent). Returns true when
+ * it seeded, so the caller can log per-origin.
+ */
+function seedConditionGate(
+  target: {
+    description?: string | null
+    lifecycle_callbacks?: KanbanTicketCreate['lifecycle_callbacks']
+    lifecycle_state?: KanbanTicketCreate['lifecycle_state']
+  },
+  draftKey: string | undefined,
+  gate: ConditionGateSettings
+): boolean {
+  // Pure decision + mutation lives in the shared lib so it's unit-testable without
+  // the DB/native layer this RPC domain pulls in.
+  return seedConditionGateOnTarget(target, draftKey, gate)
+}
 
 interface KanbanBoardImportTicket {
   readonly id: string
@@ -1135,6 +1168,14 @@ export const makeKanbanRpcHandlers = (
             try: () => kanbanTicketCreateSchema.parse(params),
             catch: (cause) => cause
           })
+          // Part A: auto-arm the Condition Gate before insert (single-create path has
+          // no draft key, so it matches on the description word pattern only).
+          const gate = readConditionGateSettings()
+          if (seedConditionGate(data, undefined, gate)) {
+            gateLog.info('[ConditionGate] seeded gate (create)', { title: data.title })
+          } else if (!gate.enabled) {
+            gateLog.debug('[ConditionGate] gate disabled — skipped (create)')
+          }
           return yield* service.createTicket(data.project_id, data)
         })
     ],
@@ -1146,6 +1187,19 @@ export const makeKanbanRpcHandlers = (
             try: () => kanbanTicketBatchCreateParamsSchema.parse(params),
             catch: (cause) => cause
           })
+          // Part A: auto-arm the Condition Gate on any matching draft before insert.
+          // Speckit's review ticket (draftKey `review` / `review-r{N}`) matches by name,
+          // so a CLI batch that sends no gate config still arms the loop.
+          const gate = readConditionGateSettings()
+          if (gate.enabled) {
+            for (const draft of data.drafts) {
+              if (seedConditionGate(draft, draft.draft_key, gate)) {
+                gateLog.info(`[ConditionGate] seeded gate on ${draft.draft_key} (createBatch)`)
+              }
+            }
+          } else {
+            gateLog.debug('[ConditionGate] gate disabled — skipped (createBatch)')
+          }
           const result = yield* service.createTicketBatch(projectId, data)
           // Tell the renderer a batch landed so it reloads the board AND re-drives
           // the auto-launch queue. Batch creates arriving over the wire (agent-driven

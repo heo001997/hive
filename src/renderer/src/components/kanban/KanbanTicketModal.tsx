@@ -26,7 +26,8 @@ import {
   Map as MapIcon,
   Wand2,
   PanelLeftOpen,
-  PanelLeftClose
+  PanelLeftClose,
+  RefreshCw
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -95,6 +96,7 @@ import { TicketAttachmentEditor } from './TicketAttachmentEditor'
 import { TicketDiscardChangesDialog } from './TicketDiscardChangesDialog'
 import { AutoApprovePlanToggle } from './AutoApprovePlanToggle'
 import { LifecycleCallbacksEditor } from './LifecycleCallbacksEditor'
+import { isConditionGate } from '@/lib/ticket-lifecycle'
 import type { TicketLifecycleConfig } from '@shared/types/ticket-lifecycle'
 import { useImagePaste } from '@/hooks/useImagePaste'
 import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoffSelection'
@@ -1543,6 +1545,8 @@ function EditModeContent({
     ticket.lifecycle_callbacks ?? null
   )
   const [isSaving, setIsSaving] = useState(false)
+  const [isRerunningGate, setIsRerunningGate] = useState(false)
+  const rerunConditionGate = useKanbanStore((s) => s.rerunConditionGate)
   const lifecycle = useLifecycleActions(ticket.worktree_id)
   const iterateMaxIterations = useSettingsStore((s) => s.kanbanIterateLoopMaxIterations)
   const iterateFixPromptTemplate = useSettingsStore((s) => s.kanbanIterateLoopFixPromptTemplate)
@@ -1658,6 +1662,24 @@ function EditModeContent({
       toast.error('Failed to delete ticket')
     }
   }, [deleteTicket, ticket.id, ticket.project_id, onClose])
+
+  // Part D — manual continuation. Re-run Stage-2 (file-first verdict) → decide →
+  // route (pass advance / fix launch round / block) without waiting for a settle.
+  const handleRerunGate = useCallback(async () => {
+    if (isRerunningGate) return
+    setIsRerunningGate(true)
+    try {
+      const outcome = await rerunConditionGate(ticket.id, ticket.project_id)
+      if (outcome === 'pass') toast.success('Condition Gate passed')
+      else if (outcome === 'fix') toast.info('Condition Gate requested a fix — running fix round')
+      else if (outcome === 'blocked') toast.warning('Condition Gate blocked — needs a human')
+      // null → the store already surfaced a warning (unknown ticket / not a gate).
+    } catch {
+      toast.error('Failed to re-run Condition Gate')
+    } finally {
+      setIsRerunningGate(false)
+    }
+  }, [isRerunningGate, rerunConditionGate, ticket.id, ticket.project_id])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -1994,6 +2016,19 @@ function EditModeContent({
             >
               <Archive className="h-3.5 w-3.5" />
               Archive
+            </Button>
+          )}
+          {ticket.column === 'review' && isConditionGate(ticket.lifecycle_callbacks) && (
+            <Button
+              type="button"
+              variant="outline"
+              className="gap-1.5 border-blue-500/30 text-blue-500 hover:bg-blue-500/10"
+              disabled={isRerunningGate}
+              onClick={handleRerunGate}
+              data-testid="rerun-condition-gate-btn"
+            >
+              <RefreshCw className={`h-3.5 w-3.5${isRerunningGate ? ' animate-spin' : ''}`} />
+              {isRerunningGate ? 'Re-running gate…' : 'Re-run gate now'}
             </Button>
           )}
           <TicketRunButton state={runScriptState} testId="edit-run-btn" />

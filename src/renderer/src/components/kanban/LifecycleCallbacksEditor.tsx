@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Plus,
   RotateCcw,
+  ShieldCheck,
   Trash2,
   Workflow
 } from 'lucide-react'
@@ -14,7 +15,14 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { buildDefaultLoopConfig, type LifecycleSlot } from '@/lib/ticket-lifecycle'
+import {
+  buildDefaultLoopConfig,
+  conditionGateConfigOf,
+  isConditionGate,
+  setConditionGate,
+  type ConditionGateActionConfig,
+  type LifecycleSlot
+} from '@/lib/ticket-lifecycle'
 import { COMPLETION_CHECK_PROVIDERS, COMPLETION_PROVIDER_LABELS } from '@shared/types/completion'
 import type {
   LifecycleAction,
@@ -107,6 +115,18 @@ export function LifecycleCallbacksEditor({
     () => new Set<LifecycleState>(['review', 'in_progress'])
   )
 
+  // ── Condition Gate (Part B) — the first-class, one-flip arm/repair control ──
+  // Derived straight from the config so it stays in sync with the advanced editor
+  // below (adding/removing the Review·During evaluate action there flips this too).
+  const gateOn = isConditionGate(value)
+  const gateCfg = conditionGateConfigOf(value)
+  // Patch a single gate field while preserving the rest; setConditionGate drops
+  // blank/undefined keys so an empty field falls back to the global gate settings.
+  const patchGate = (patch: ConditionGateActionConfig): void => {
+    onChange(setConditionGate(value, true, { ...conditionGateConfigOf(value), ...patch }))
+  }
+  const toggleGate = (next: boolean): void => onChange(setConditionGate(value, next, gateCfg))
+
   // Produce the next config immutably and hand it up. `value` may be null; the
   // master toggle seeds a default loop when first enabled from empty.
   const emit = (producer: (draft: TicketLifecycleConfig) => void): void => {
@@ -171,6 +191,89 @@ export function LifecycleCallbacksEditor({
       )}
       data-testid="lifecycle-editor"
     >
+      {/* Condition Gate — prominent, single-flip control (Part B). The guaranteed
+          way to arm/repair any review ticket; the advanced editor below is optional. */}
+      <div
+        className={cn(
+          'space-y-2 rounded-md border px-3 py-2.5',
+          gateOn ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-border/60 bg-background/40'
+        )}
+        data-testid="condition-gate-section"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+            <ShieldCheck
+              className={cn('h-4 w-4', gateOn ? 'text-emerald-500' : 'text-muted-foreground')}
+              aria-hidden="true"
+            />
+            Condition Gate (two-stage review)
+          </span>
+          <Switch
+            checked={gateOn}
+            onCheckedChange={toggleGate}
+            data-testid="condition-gate-toggle"
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Arms the automatic review↔fix loop on this ticket. After Strict Verify confirms the agent
+          finished, a second LLM reads the review and routes <strong>pass</strong> /{' '}
+          <strong>fix</strong> (opens a fix round) / <strong>needs-human</strong>. Blank fields fall
+          back to your global Condition Gate settings.
+        </p>
+
+        {gateOn && (
+          <div className="space-y-2 pt-1">
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <span className="w-20 shrink-0 text-muted-foreground">max rounds</span>
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                value={typeof gateCfg.maxRounds === 'number' ? gateCfg.maxRounds : ''}
+                placeholder={`global (${defaults.maxIterations})`}
+                onChange={(e) => {
+                  const raw = e.target.value.trim()
+                  const n = parseInt(raw, 10)
+                  patchGate({ maxRounds: raw === '' || isNaN(n) ? undefined : Math.max(1, Math.min(20, n)) })
+                }}
+                className="h-7 w-24 font-mono text-[11px]"
+                data-testid="condition-gate-maxrounds"
+              />
+              <span className="text-[10px] text-muted-foreground">fix loops before stuck</span>
+            </div>
+            <label className="flex items-center gap-1.5 text-[11px]">
+              <input
+                type="checkbox"
+                checked={gateCfg.autoDone === true}
+                onChange={(e) => patchGate({ autoDone: e.target.checked })}
+                className="h-3 w-3"
+                data-testid="condition-gate-autodone"
+              />
+              <span className="text-muted-foreground">
+                auto-advance to Done on a <strong>pass</strong> (needed for a terminal review ticket
+                with no dependent; default: wait in Review)
+              </span>
+            </label>
+            <div className="space-y-1">
+              <span className="text-[11px] text-muted-foreground">routing prompt</span>
+              <Textarea
+                value={typeof gateCfg.prompt === 'string' ? gateCfg.prompt : ''}
+                onChange={(e) => patchGate({ prompt: e.target.value })}
+                rows={3}
+                spellCheck={false}
+                placeholder="Blank uses your global Condition Gate routing prompt."
+                className="w-full font-mono text-[11px] leading-relaxed"
+                data-testid="condition-gate-prompt"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Must still ask for the <code>verdict</code> / <code>reason</code> /{' '}
+                <code>fixes</code> JSON or the gate can&apos;t be parsed.
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="flex items-center justify-between gap-3">
         <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
           <Workflow className="h-3.5 w-3.5 text-sky-500" aria-hidden="true" />
