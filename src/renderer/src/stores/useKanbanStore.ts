@@ -1199,25 +1199,35 @@ async function onInProgressRescueSettled(
     return
   }
 
-  // Frozen check (S0 at arm vs S1 now). No baseline → can't tell → conservatively
-  // leave it (treat as possibly still working).
+  // Frozen check — MUST agree with the In Progress ⟺ Review authority
+  // (`confirmSessionFrozen`), not a raw S0/S1 fingerprint compare. The old compare
+  // ignored `SessionStatus`: a session the status store still reports as `working`
+  // could read "frozen" here whenever its emitted-byte fingerprint happened to be
+  // momentarily stable (agent mid-turn — between a tool result and the next token,
+  // or a subagent whose output hasn't reached this tty yet). Rescue then re-promoted
+  // a genuinely-running session to Review, where the edge-triggered `session_working`
+  // puller could NOT recover it (status was already `working`, so no `→ working` edge
+  // ever fires again) → the ticket stranded in Review with a live terminal. Routing
+  // through `confirmSessionFrozen` fixes that: it returns `'active'` for any `working`
+  // session and for a live PTY that emitted within FROZEN_IDLE_MS, and still uses the
+  // armed S0 as the baseline for the non-PTY (exited-session) path — so a truly quiet
+  // or exited session is judged `'frozen'` exactly as before.
   if (!snap || snap.sessionId !== sessionId) return
-  const s0 = await snap.fp.catch(() => null)
-  if (!s0) return
-  let s1: SessionFingerprint | null = null
-  try {
-    const { completionApi } = await import('@/api/completion-api')
-    s1 = await completionApi.getSessionFingerprint(sessionId)
-  } catch (err) {
-    console.warn('In Progress rescue: failed to capture S1 fingerprint', err)
+  const frozen = await confirmSessionFrozen(sessionId, { baseline: snap.fp })
+
+  // Re-validate after the await — the session may have resumed / the ticket moved.
+  const afterCheck = (get().tickets.get(projectId) ?? []).find((t) => t.id === ticketId)
+  if (
+    !afterCheck ||
+    afterCheck.column !== 'in_progress' ||
+    afterCheck.current_session_id !== sessionId
+  ) {
     return
   }
-  if (!s1) return
 
-  const frozen = s1.length === s0.length && s1.hash === s0.hash
-  if (!frozen) {
+  if (frozen !== 'frozen') {
     console.log(
-      `[StrictVerify] rescue: ticket ${ticketId} still emitting → leaving in In Progress`
+      `[StrictVerify] rescue: ticket ${ticketId} not frozen (${frozen}) → leaving in In Progress`
     )
     return
   }

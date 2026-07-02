@@ -923,6 +923,41 @@ describe('In Progress rescue (frozen "Not done" watcher)', () => {
     expect(verdictOf('ticket-1')?.rescueExhausted).toBeFalsy()
   })
 
+  it('does NOT re-promote when the session resumed working, even if the byte-fingerprint looks frozen', async () => {
+    // Regression: the rescue frozen-check used a raw S0/S1 fingerprint compare that
+    // ignored SessionStatus. A session mid-turn (status `working`) whose emitted-byte
+    // stream is momentarily stable read as "frozen" → rescue re-promoted a genuinely
+    // running ticket to Review, where the edge-triggered puller could not recover it.
+    // Now it routes through `confirmSessionFrozen`, which returns `active` for any
+    // `working` session → the ticket stays In Progress.
+    hoisted.settings.kanbanInProgressRescueEnabled = true
+    // Non-zero delay so we can flip the status between Gate 1 (bounce) and the rescue.
+    hoisted.settings.kanbanStrictVerifyDelaySeconds = 1
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: false, needsInput: false, confidence: 0.9, reason: 'not done' }
+    })
+    // STABLE_FP (pty, ancient lastOutputAt) → the byte-fingerprint reads "frozen" the
+    // whole time; only the status flip below should change the rescue's mind.
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    // Gate 1: status still `completed` → frozen → Watcher bounces → arms the rescue.
+    await vi.advanceTimersByTimeAsync(1_100)
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(hoisted.detect).toHaveBeenCalledTimes(1)
+
+    // Agent resumes mid-turn: status flips to `working` (bytes still momentarily stable).
+    hoisted.sessionStatuses[SESSION_ID] = { status: 'working', timestamp: 0 }
+
+    // Rescue settle: confirmSessionFrozen sees `working` → `active` → leave In Progress.
+    await vi.advanceTimersByTimeAsync(1_100)
+    await vi.runAllTimersAsync()
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(hoisted.detect).toHaveBeenCalledTimes(1)
+    expect(verdictOf('ticket-1')?.rescueExhausted).toBeFalsy()
+  })
+
   it('gives up after one retry: labels the card "Re-checked" and leaves it in In Progress', async () => {
     // Always incomplete + always frozen → rescue re-promotes once, then exhausts.
     hoisted.detect.mockResolvedValue({
