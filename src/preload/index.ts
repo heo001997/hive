@@ -6,7 +6,16 @@ const desktopBridge = {
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   startHiveEnterpriseLogin: (serverUrl: string): Promise<{ token: string }> =>
     ipcRenderer.invoke('hive-enterprise:start-login', { serverUrl }),
-  relaunchApp: (): Promise<void> => ipcRenderer.invoke('app:relaunch')
+  relaunchApp: (): Promise<void> => ipcRenderer.invoke('app:relaunch'),
+  // Fire-and-forget bridge so the renderer can persist diagnostic lines (kanban
+  // column moves, session-status transitions) to the same on-disk log the main
+  // process writes. One-way `send` — a log call must never block a state update.
+  rendererLog: (
+    level: 'debug' | 'info' | 'warn' | 'error',
+    component: string,
+    message: string,
+    data?: Record<string, unknown>
+  ): void => ipcRenderer.send('renderer:log', { level, component, message, data })
 }
 
 // Force 100% zoom — Ghostty's native NSView overlay requires 1:1 CSS-to-AppKit

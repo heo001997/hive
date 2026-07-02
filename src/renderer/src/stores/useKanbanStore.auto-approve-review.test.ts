@@ -58,7 +58,26 @@ vi.mock('./useWorktreeStatusStore', () => ({
 }))
 
 vi.mock('./useSessionStore', () => ({
-  useSessionStore: { getState: () => ({ pendingFollowUpMessages: hoisted.followUpQueue }) }
+  useSessionStore: {
+    getState: () => ({
+      pendingFollowUpMessages: hoisted.followUpQueue,
+      // Read by the auto-bypass blocking-interaction guard (C3).
+      getPendingPlan: () => null
+    })
+  }
+}))
+
+// The auto-bypass guard (`hasBlockingInteraction`) dynamic-imports these three
+// interaction stores; mock them so they resolve to "nothing pending" instantly.
+// (Dynamic-importing the real, unmocked modules stalls under fake timers.)
+vi.mock('./useQuestionStore', () => ({
+  useQuestionStore: { getState: () => ({ getQuestions: () => [] }) }
+}))
+vi.mock('./usePermissionStore', () => ({
+  usePermissionStore: { getState: () => ({ getPermissions: () => [] }) }
+}))
+vi.mock('./useCommandApprovalStore', () => ({
+  useCommandApprovalStore: { getState: () => ({ getApprovals: () => [] }) }
 }))
 
 import { useKanbanStore, ticketKey } from './useKanbanStore'

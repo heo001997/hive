@@ -3,6 +3,7 @@ import { useSessionStore } from './useSessionStore'
 import { useConnectionStore } from './useConnectionStore'
 import { lastSendMode } from '@/lib/message-send-times'
 import { notifyKanbanSessionSync } from './store-coordination'
+import { logToMain } from '@/lib/renderer-log'
 import { dbApi } from '@/api/db-api'
 import type { SessionStatusType } from '@shared/types/session-status'
 
@@ -109,6 +110,8 @@ export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => 
       plan?: string
     }
   ) => {
+    const prevStatus = get().sessionStatuses[sessionId]?.status ?? null
+
     set((state) => {
       const next: Partial<WorktreeStatusState> = {
         sessionStatuses: {
@@ -119,6 +122,20 @@ export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => 
 
       return next
     })
+
+    // Durable trace of the session-status choreography (see renderer-log.ts). Only
+    // on an actual change so idle re-emits don't spam the log. This is the signal
+    // that decides a ticket's column, so it must be reconstructable from the log.
+    if (prevStatus !== status) {
+      logToMain('info', 'SessionStatus', `session ${sessionId}: ${prevStatus ?? 'none'} → ${status ?? 'none'}`, {
+        sessionId,
+        from: prevStatus,
+        to: status,
+        reason: metadata?.reason,
+        hookEventName: metadata?.hookEventName,
+        toolName: metadata?.toolName
+      })
+    }
 
     // ── Kanban coordination: notify kanban store of relevant status changes ──
     if (status === 'completed') {

@@ -401,6 +401,13 @@ export function useOpenCodeGlobalListener(): void {
           void import('@/lib/ticket-telegram-notify')
             .then((m) => m.notifyTicketQuestion(sessionId, String(request.id)))
             .catch(() => {})
+          // A pending structured question means the agent is PAUSED, waiting on the
+          // user — a Review state per the ticket model. Move the owning ticket to
+          // Review (with the Question badge) regardless of whether it's the active or
+          // a background session; when the user answers, `session_working` returns it
+          // to In Progress. No liveness gate needed: a question is definitively
+          // quiescent (no bytes emit until it's answered).
+          notifyKanbanSessionSync(sessionId, { type: 'session_question' })
           // Only set status badge for background sessions; active session manages its own
           if (sessionId !== activeId) {
             useWorktreeStatusStore.getState().setSessionStatus(sessionId, 'answering')

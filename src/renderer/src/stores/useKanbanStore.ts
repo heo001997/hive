@@ -53,6 +53,7 @@ import { usePinnedStore } from './usePinnedStore'
 import { useWorktreeStatusStore } from './useWorktreeStatusStore'
 import { kanbanApi as kanban } from '@/api/kanban-api'
 import { toast } from '@/lib/toast'
+import { logToMain } from '@/lib/renderer-log'
 
 export interface BoardTelegramTarget {
   ticketId: string
@@ -620,6 +621,17 @@ const pendingStrictVerify = new Map<TicketKey, ReturnType<typeof setTimeout>>()
 const pendingAutoBypass = new Map<TicketKey, ReturnType<typeof setTimeout>>()
 
 /**
+ * Review-promotion poll timers, keyed by ticketKey. When a build ticket's session
+ * emits `session_completed`, the board no longer trusts that idle/Stop event alone
+ * to move the ticket to Review — the terminal (including subagents sharing the same
+ * tty) is the authority. `promoteToReviewWhenQuiescent` confirms the session is
+ * frozen first; while it is still emitting it re-arms one of these timers to poll
+ * again, keeping the ticket In Progress until the WHOLE process actually goes quiet.
+ * A genuine resume (`session_working` → `cancelAll`) clears it.
+ */
+const pendingReviewPromotion = new Map<TicketKey, ReturnType<typeof setTimeout>>()
+
+/**
  * Gate-1 frozen-check snapshots. Captured (asynchronously) when Strict Verify is
  * armed: S0 is the session's output fingerprint at arm time. At settle the
  * handler re-captures S1 and compares — a change means the session is still
@@ -692,8 +704,11 @@ async function confirmSessionFrozen(
     const fp = await completionApi.getSessionFingerprint(sessionId)
 
     // (b) Live PTY — the ground truth is the last-emit timestamp. Any byte within
-    // the idle window (spinner/clock/token counter included) → still alive. A single
-    // read, no wait; this is the path the manual recheck also takes.
+    // the idle window (spinner/clock/token counter included) → still alive. Subagents
+    // run on the SAME tty and the parent's "Running… (Xs)" clock keeps ticking while
+    // a Task tool is in flight, so a working subagent restamps this too — i.e. the
+    // whole process (main agent + subagents) reads as `'active'`, which is exactly the
+    // desired semantics. A single read, no wait; the manual recheck takes this path too.
     if (fp.source === 'pty') {
       const lastOutputAt = fp.lastOutputAt ?? Date.now()
       return Date.now() - lastOutputAt >= FROZEN_IDLE_MS ? 'frozen' : 'active'
@@ -786,11 +801,20 @@ function cancelAutoBypass(key: TicketKey): void {
   }
 }
 
+function cancelReviewPromotion(key: TicketKey): void {
+  const timer = pendingReviewPromotion.get(key)
+  if (timer) {
+    clearTimeout(timer)
+    pendingReviewPromotion.delete(key)
+  }
+}
+
 /** Cancel both settle timers and drop any frozen snapshot for a ticket. */
 function cancelAll(key: TicketKey): void {
   cancelStrictVerify(key)
   cancelAutoBypass(key)
   cancelInProgressRescue(key)
+  cancelReviewPromotion(key)
   frozenSnapshots.delete(key)
 }
 
@@ -1013,6 +1037,90 @@ async function moveTicketBackToInProgress(
   } catch (err) {
     console.error('Completion check: move back to In Progress failed for ticket', ticketId, err)
   }
+}
+
+/**
+ * Liveness-gated promotion to Review — the authority for the In Progress ⟺ Review
+ * boundary (the user's rule: "if the ticket tty is still running it should ALWAYS be
+ * In Progress; Review is where NO agent is running").
+ *
+ * A `session_completed` event is the MAIN agent reporting it went idle — but the
+ * whole process may still be alive: a subagent working on the same tty, a multi-turn
+ * agent between turns, or a queued follow-up about to fire. So instead of trusting
+ * that event to move the ticket, we confirm the session is actually frozen first:
+ *   - `'active'`  → still emitting (subagent/spinner/next turn) → the WHOLE process is
+ *                   running → keep the ticket In Progress and poll again after one
+ *                   idle window. A genuine resume cancels the poll via `cancelAll`.
+ *   - `'frozen'`  → the terminal has gone silent for FROZEN_IDLE_MS → truly quiescent
+ *                   → promote to Review.
+ *   - `'unknown'` → the fingerprint round-trip failed, which for a session that just
+ *                   reported completed almost always means the PTY/session is gone
+ *                   (exited) → also promote (leaving it In Progress forever would
+ *                   strand a finished ticket).
+ *
+ * Re-reads the ticket before AND after the async frozen check so a move/resume that
+ * lands mid-check (column changed, session relinked, ticket done) aborts cleanly.
+ */
+async function promoteToReviewWhenQuiescent(
+  get: () => KanbanState,
+  projectId: string,
+  ticketId: string,
+  sessionId: string
+): Promise<void> {
+  const key = ticketKey(projectId, ticketId)
+
+  const stillPromotable = (): KanbanTicket | null => {
+    const t = (get().tickets.get(projectId) ?? []).find((x) => x.id === ticketId)
+    if (
+      !t ||
+      t.current_session_id !== sessionId ||
+      t.pending_launch_config ||
+      t.mode !== 'build' ||
+      t.column === 'review' ||
+      t.column === 'done'
+    ) {
+      cancelReviewPromotion(key)
+      return null
+    }
+    return t
+  }
+
+  if (!stillPromotable()) return
+
+  const frozen = await confirmSessionFrozen(sessionId)
+
+  // Re-validate after the await — the ticket may have resumed / moved meanwhile.
+  if (!stillPromotable()) return
+
+  if (frozen === 'active') {
+    // Still running (incl. a subagent on the same tty) → stays In Progress; re-check
+    // after one idle window. Self-driving: no further event is needed to eventually
+    // promote once the terminal goes quiet.
+    logToMain(
+      'info',
+      'Kanban',
+      `promote-defer ticket ${ticketId}: session still active, holding In Progress`,
+      { ticketId, sessionId }
+    )
+    const timer = setTimeout(() => {
+      pendingReviewPromotion.delete(key)
+      void promoteToReviewWhenQuiescent(get, projectId, ticketId, sessionId)
+    }, FROZEN_IDLE_MS)
+    pendingReviewPromotion.set(key, timer)
+    return
+  }
+
+  // 'frozen' (idle) or 'unknown' (PTY/session likely gone) → the process is no
+  // longer emitting → promote to Review.
+  cancelReviewPromotion(key)
+  logToMain('info', 'Kanban', `promote ticket ${ticketId} → Review (frozen=${frozen})`, {
+    ticketId,
+    sessionId,
+    frozen
+  })
+  get()
+    .moveTicket(ticketId, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+    .catch(() => {})
 }
 
 /**
@@ -1535,6 +1643,16 @@ async function applyIncompleteVerdict(
       .catch(() => {})
   }
 
+  // A `needsInput` verdict is NOT a failed review — the work isn't wrong, the agent
+  // is BLOCKED on the user. Per the ticket model that is a Review state (paused,
+  // waiting for Tu), NOT a bounce back to In Progress. Keep it in Review with the
+  // Question badge (driven by the stored `verdict.needsInput`); no Iterate-Loop, no
+  // In-Progress rescue. `session_working` returns it to In Progress once answered.
+  if (verdict.needsInput) {
+    get().setVerifyProgress(key, null)
+    return
+  }
+
   const ownsFail =
     isLifecycleEnabled(cfg) &&
     branchesForState(cfg, 'review').some((b) => b.when === 'fail') &&
@@ -1671,6 +1789,14 @@ async function runStrictVerify(
       get().setVerifyProgress(key, null)
       return 'bounced'
     }
+    // A `needsInput` verdict parks the ticket in Review with the Question badge — it
+    // is waiting on the user, not "moved back". Replay must keep it there (never
+    // advance to Done/auto-bypass) and must not re-ping (isFresh=false in the reuse
+    // path anyway). Return 'bounced' so the caller does not treat it as complete.
+    if (prior.needsInput) {
+      get().setVerifyProgress(key, null)
+      return 'bounced'
+    }
     if (prior.movedBack) {
       // Re-apply the bounce idempotently: no re-prompt, no extra iteration count.
       await applyIncompleteVerdict(
@@ -1722,7 +1848,10 @@ async function runStrictVerify(
     ...verdict,
     sessionId,
     checkedAt: Date.now(),
-    movedBack: incomplete
+    // `needsInput` parks the ticket in Review (waiting on the user) — it does NOT
+    // move back to In Progress, so record `movedBack: false` even though it's
+    // "incomplete". The Question badge is driven by `needsInput`, not `movedBack`.
+    movedBack: incomplete && !verdict.needsInput
   })
 
   if (incomplete) {
@@ -2217,6 +2346,35 @@ async function onStrictVerifySettled(
  * timer itself after verifying. When Feature A is off, the opt-in alone is enough
  * (legacy behavior). Re-checks the settle guards so transient churn can't fire it.
  */
+/**
+ * True when the session has an OUTSTANDING interaction that is waiting on the user —
+ * a pending question, permission prompt, command approval, or a plan awaiting review.
+ * Review with any of these is a "paused, waiting for Tu" state, so the auto-bypass
+ * MUST NOT commit/advance the ticket past it (mirrors the SDK listener's
+ * `hasOutstandingBlockingInteraction`). Best-effort: on an import failure it returns
+ * false (allow) rather than stranding the ticket — these are always-present local
+ * stores, so failure is effectively impossible in the app.
+ */
+async function hasBlockingInteraction(sessionId: string | null): Promise<boolean> {
+  if (!sessionId) return false
+  try {
+    const [{ useQuestionStore }, { usePermissionStore }, { useCommandApprovalStore }] =
+      await Promise.all([
+        import('./useQuestionStore'),
+        import('./usePermissionStore'),
+        import('./useCommandApprovalStore')
+      ])
+    const { useSessionStore } = await import('./useSessionStore')
+    if (useQuestionStore.getState().getQuestions(sessionId).length > 0) return true
+    if (usePermissionStore.getState().getPermissions(sessionId).length > 0) return true
+    if (useCommandApprovalStore.getState().getApprovals(sessionId).length > 0) return true
+    if (useSessionStore.getState().getPendingPlan(sessionId)) return true
+  } catch (err) {
+    console.warn('[StrictVerify] blocking-interaction check failed', err)
+  }
+  return false
+}
+
 async function onAutoBypassSettled(
   get: () => KanbanState,
   ticketId: string,
@@ -2233,6 +2391,20 @@ async function onAutoBypassSettled(
   const settings = useSettingsStore.getState()
   const settleMs = Math.max(0, (settings.kanbanAutoApproveDelaySeconds ?? 10) * 1000)
   if (!(await passesSettleGuards(current, settleMs))) {
+    get().setVerifyProgress(key, null)
+    return
+  }
+
+  // Never auto-commit/advance past an outstanding user interaction. Review with a
+  // pending question/permission/approval/plan is a "waiting for Tu" state — hold
+  // the ticket in Review; the resume (session_working) re-arms the pipeline.
+  if (await hasBlockingInteraction(current.current_session_id)) {
+    logToMain(
+      'info',
+      'Kanban',
+      `auto-bypass held for ticket ${ticketId}: outstanding user interaction`,
+      { ticketId, sessionId: current.current_session_id }
+    )
     get().setVerifyProgress(key, null)
     return
   }
@@ -2961,6 +3133,23 @@ export const useKanbanStore = create<KanbanState>()(
 
         const movedTicket = prev.find((t) => t.id === ticketId)
 
+        // Durable trace of every column transition (see renderer-log.ts) — the
+        // authority for reconstructing "why is this in Review" after the fact.
+        logToMain(
+          'info',
+          'Kanban',
+          `move ticket ${ticketId}: ${movedTicket?.column ?? '?'} → ${column}`,
+          {
+            ticketId,
+            projectId,
+            from: movedTicket?.column ?? null,
+            to: column,
+            mode: movedTicket?.mode ?? null,
+            sessionId: movedTicket?.current_session_id ?? null,
+            userInitiated: opts?.userInitiated ?? false
+          }
+        )
+
         try {
           await kanban.ticket.move(projectId, ticketId, column, sortOrder)
 
@@ -3226,10 +3415,13 @@ export const useKanbanStore = create<KanbanState>()(
                   ticket.column !== 'review' &&
                   ticket.column !== 'done'
                 ) {
-                  // Auto-advance build ticket to review column (idempotent — skip if already there)
-                  get()
-                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
-                    .catch(() => {})
+                  // Liveness gate (the In Progress ⟺ Review authority): do NOT trust
+                  // the main agent's idle/Stop event to move the ticket. Confirm the
+                  // session's terminal has actually gone quiet first — while it is
+                  // still emitting (a subagent on the same tty, the next turn, a
+                  // spinner) the whole process is running, so the ticket stays In
+                  // Progress and this polls until it settles.
+                  void promoteToReviewWhenQuiescent(get, projectId, ticket.id, sessionId)
                 } else if (isPlanLike(ticket.mode) && !ticket.plan_ready) {
                   // Plan finished — set plan_ready and move to review for user attention
                   get()
@@ -3340,6 +3532,25 @@ export const useKanbanStore = create<KanbanState>()(
                 if (ticket.pending_launch_config) break
                 // Error requires user attention — move to review if currently in_progress
                 if (ticket.column === 'in_progress') {
+                  get()
+                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                    .catch(() => {})
+                }
+                break
+              }
+
+              case 'session_question': {
+                // The agent asked a structured question and is now PAUSED, waiting on
+                // the user — a Review state (the "Question" badge tells Tu to look). A
+                // pending question is definitively quiescent (nothing emits until it's
+                // answered), so — unlike session_completed — no liveness gate: move
+                // straight to Review. `session_working` (fired when the answer resumes
+                // the agent) returns it to In Progress and clears the badge.
+                if (ticket.pending_launch_config) break
+                if (ticket.mode === 'build' && ticket.column === 'in_progress') {
+                  // A pending question supersedes any in-flight promote-when-quiescent
+                  // poll for this ticket (both target Review; avoid a double move).
+                  cancelReviewPromotion(ticketKey(projectId, ticket.id))
                   get()
                     .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
                     .catch(() => {})
@@ -3985,14 +4196,17 @@ export const useKanbanStore = create<KanbanState>()(
 
         const verdict = result.verdict
         const incomplete = !verdict.complete || verdict.confidence < threshold || verdict.needsInput
+        // `needsInput` stays in Review (waiting on the user) with the Question badge —
+        // it is not a move-back. Only a genuine incomplete bounces to In Progress.
+        const movedBack = incomplete && !verdict.needsInput
         const stored: StoredCompletionVerdict = {
           ...verdict,
           sessionId,
           checkedAt: Date.now(),
-          movedBack: incomplete
+          movedBack
         }
         get().setCompletionVerdict(ticketKey(projectId, ticketId), stored)
-        if (incomplete && ticket.column === 'review') {
+        if (movedBack && ticket.column === 'review') {
           await moveTicketBackToInProgress(get, ticketId, projectId)
           maybeArmRescueAfterBounce(
             get,
