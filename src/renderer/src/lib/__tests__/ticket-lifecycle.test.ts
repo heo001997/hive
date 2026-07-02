@@ -18,6 +18,7 @@ import {
   parseGateRound,
   renderTemplate,
   retryMaxForState,
+  setConditionGate,
   verdictToLifecycle
 } from '../ticket-lifecycle'
 import type { TicketLifecycleConfig } from '@shared/types/ticket-lifecycle'
@@ -382,6 +383,80 @@ describe('conditionGateConfigOf', () => {
       }
     }
     expect(conditionGateConfigOf(cfg).maxRounds).toBeUndefined()
+  })
+})
+
+describe('setConditionGate', () => {
+  it('arming from null produces a valid gate config', () => {
+    const next = setConditionGate(null, true)
+    expect(isConditionGate(next)).toBe(true)
+    // A blank gateCfg leaves the evaluate config empty → falls back to global.
+    expect(conditionGateConfigOf(next)).toEqual({
+      provider: undefined,
+      model: undefined,
+      prompt: undefined,
+      maxRounds: undefined,
+      autoDone: false
+    })
+  })
+
+  it('arming carries the provided gate config (dropping blanks)', () => {
+    const next = setConditionGate(null, true, {
+      maxRounds: 5,
+      autoDone: true,
+      prompt: '',
+      provider: 'claude-code'
+    })
+    expect(conditionGateConfigOf(next)).toEqual({
+      provider: 'claude-code',
+      model: undefined,
+      prompt: undefined, // '' dropped → global fallback
+      maxRounds: 5,
+      autoDone: true
+    })
+  })
+
+  it('is idempotent — re-arming replaces the single evaluate action', () => {
+    const once = setConditionGate(null, true, { maxRounds: 2 })
+    const twice = setConditionGate(once, true, { maxRounds: 9 })
+    const during = twice?.states?.review?.during ?? []
+    expect(during.filter((a) => a.type === 'evaluate')).toHaveLength(1)
+    expect(conditionGateConfigOf(twice).maxRounds).toBe(9)
+  })
+
+  it('preserves other during actions when arming', () => {
+    const base: TicketLifecycleConfig = {
+      enabled: true,
+      states: { review: { during: [{ id: 'notify-1', type: 'notify', config: { event: 'review' } }] } }
+    }
+    const next = setConditionGate(base, true, { maxRounds: 3 })
+    const during = next?.states?.review?.during ?? []
+    expect(during.some((a) => a.type === 'notify')).toBe(true)
+    expect(during.some((a) => a.type === 'evaluate')).toBe(true)
+  })
+
+  it('disarming a gate-only config returns null (reverts to global seeding)', () => {
+    const armed = setConditionGate(null, true, { maxRounds: 3 })
+    expect(setConditionGate(armed, false)).toBeNull()
+  })
+
+  it('disarming strips only the evaluate action, keeping other config', () => {
+    const base: TicketLifecycleConfig = {
+      enabled: true,
+      states: {
+        review: {
+          during: [
+            { id: 'notify-1', type: 'notify', config: { event: 'review' } },
+            { id: 'condition-gate-evaluate', type: 'evaluate', config: { maxRounds: 3 } }
+          ]
+        }
+      }
+    }
+    const next = setConditionGate(base, false)
+    expect(isConditionGate(next)).toBe(false)
+    const during = next?.states?.review?.during ?? []
+    expect(during).toHaveLength(1)
+    expect(during[0].type).toBe('notify')
   })
 })
 

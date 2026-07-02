@@ -57,6 +57,9 @@ Rules:
 export const CONDITION_GATE_VERDICTS = ['pass', 'fix', 'needs-human'] as const
 export type ConditionGateVerdictKind = (typeof CONDITION_GATE_VERDICTS)[number]
 
+/** Where a Stage-2 verdict came from: the agent's own file, or the LLM over the transcript. */
+export type ConditionGateVerdictSource = 'review-gate.json' | 'llm-transcript'
+
 export interface ConditionGateVerdict {
   verdict: ConditionGateVerdictKind
   /** One-sentence justification (no newlines). */
@@ -66,6 +69,12 @@ export interface ConditionGateVerdict {
    * into the fix ticket's prompt). Empty/omitted for pass / needs-human.
    */
   fixes?: string[]
+  /**
+   * Verdict provenance (Part E). `review-gate.json` = read verbatim from the
+   * agent's deterministic `<cwd>/.hive/review-gate.json`; `llm-transcript` = the
+   * fallback LLM read over the reviewed transcript. Omitted on legacy payloads.
+   */
+  source?: ConditionGateVerdictSource
 }
 
 /** Result envelope returned by the `completionOps.detectTicketVerdict` RPC. */
