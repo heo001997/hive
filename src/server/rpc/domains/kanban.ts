@@ -1,6 +1,7 @@
 import { Effect } from 'effect'
 import { z } from 'zod'
 import { seedConditionGateOnTarget } from '../../../shared/lib/condition-gate'
+import { LIFECYCLE_ACTION_TYPES } from '../../../shared/types/ticket-lifecycle'
 import { isDesktopCommandResult, makeDesktopCommandRequest } from '../../../shared/desktop-command'
 import { KANBAN_TICKETS_CREATED_CHANNEL } from '../../../shared/kanban-events'
 import type {
@@ -247,9 +248,12 @@ const sessionModeSchema = z.enum(['build', 'plan', 'super-plan'])
 const ticketMarkSchema = z.enum(['common', 'rare', 'epic', 'legendary'])
 
 // Per-ticket lifecycle-callback config (mirrors src/shared/types/ticket-lifecycle.ts).
+// The action-type enum is derived from the shared LIFECYCLE_ACTION_TYPES source of
+// truth so the validator can never drift from the type/editor (the drift that made
+// a Condition Gate `evaluate` action fail this very RPC).
 const lifecycleActionSchema = z.object({
   id: z.string(),
-  type: z.enum(['prompt', 'agent', 'check', 'review', 'notify', 'goto', 'wait']),
+  type: z.enum(LIFECYCLE_ACTION_TYPES),
   // z.record requires 2 args (keySchema, valueSchema).
   config: z.record(z.string(), z.unknown()),
   runOn: z.array(z.enum(['initial', 'retry'])).optional()
@@ -268,8 +272,12 @@ const lifecycleStateConfigSchema = z.object({
 })
 const ticketLifecycleConfigSchema = z.object({
   enabled: z.boolean(),
-  // z.record requires 2 args (keySchema, valueSchema).
-  states: z.record(ticketColumnSchema, lifecycleStateConfigSchema)
+  // PARTIAL record — a config only carries the states it configures (a gate is just
+  // `review`, the loop `review` + `in_progress`). Zod 4's `z.record(enum, v)` is
+  // EXHAUSTIVE (demands every column), which rejected every real lifecycle payload on
+  // save; `z.partialRecord` keeps the column-key constraint without requiring all keys.
+  // Matches the `Partial<Record<LifecycleState, …>>` TS type.
+  states: z.partialRecord(ticketColumnSchema, lifecycleStateConfigSchema)
 })
 
 const kanbanTicketCreateSchema = z

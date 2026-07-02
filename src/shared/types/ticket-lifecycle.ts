@@ -25,16 +25,27 @@
  * so the loop survives app restarts.
  */
 
-/** Action kinds a lifecycle slot can hold. Each runs an existing engine primitive. */
-export type LifecycleActionType =
-  | 'prompt'
-  | 'agent'
-  | 'check'
-  | 'review'
-  | 'notify'
-  | 'goto'
-  | 'wait'
-  | 'evaluate'
+/**
+ * Action kinds a lifecycle slot can hold. Each runs an existing engine primitive.
+ * SINGLE SOURCE OF TRUTH — the type below is derived from this array and the
+ * server zod validator (`kanban.ts`) + the editor dropdown both consume it, so a
+ * new kind is added in exactly one place and can never drift (see `agent-sdk.ts`
+ * for the same `z.enum(CONST)` convention). A missing entry here was why the
+ * Condition Gate `evaluate` action failed the update-ticket RPC validator.
+ */
+export const LIFECYCLE_ACTION_TYPES = [
+  'prompt',
+  'agent',
+  'check',
+  'review',
+  'evaluate',
+  'notify',
+  'goto',
+  'wait'
+] as const
+
+/** Action kinds a lifecycle slot can hold. Derived from {@link LIFECYCLE_ACTION_TYPES}. */
+export type LifecycleActionType = (typeof LIFECYCLE_ACTION_TYPES)[number]
 
 /** The slots a state's actions can live in. */
 export type LifecycleSlot = 'before' | 'retry' | 'during' | 'after'

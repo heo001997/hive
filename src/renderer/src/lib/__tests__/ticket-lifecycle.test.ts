@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { z } from 'zod'
 import {
   actionsForSlot,
   branchesForState,
@@ -21,6 +22,7 @@ import {
   setConditionGate,
   verdictToLifecycle
 } from '../ticket-lifecycle'
+import { LIFECYCLE_ACTION_TYPES } from '@shared/types/ticket-lifecycle'
 import type { TicketLifecycleConfig } from '@shared/types/ticket-lifecycle'
 
 describe('buildDefaultLoopConfig', () => {
@@ -457,6 +459,57 @@ describe('setConditionGate', () => {
     const during = next?.states?.review?.during ?? []
     expect(during).toHaveLength(1)
     expect(during[0].type).toBe('notify')
+  })
+})
+
+// Regression for the "Failed to update ticket" bug: the server RPC validator's
+// action-type enum had drifted from the type/editor and lacked 'evaluate', so saving
+// a Condition Gate ticket failed zod parse. The enum now derives from the shared
+// LIFECYCLE_ACTION_TYPES; this reproduces the RPC boundary from that same const so a
+// future drift (or a gate emitting a type the validator rejects) fails a test, not a
+// user's save. Mirrors `lifecycleActionSchema` in server/rpc/domains/kanban.ts.
+describe('lifecycle action-type ↔ RPC validator contract', () => {
+  // Mirrors server/rpc/domains/kanban.ts: PARTIAL record (Zod 4 `z.record(enum, v)`
+  // is exhaustive and rejected partial `states` — the deeper cause of the save bug).
+  const rpcLifecycleConfigSchema = z.object({
+    enabled: z.boolean(),
+    states: z.partialRecord(
+      z.enum(['todo', 'in_progress', 'review', 'done']),
+      z.object({
+        before: z.array(z.object({ id: z.string(), type: z.enum(LIFECYCLE_ACTION_TYPES), config: z.record(z.string(), z.unknown()) })).optional(),
+        retry: z.array(z.object({ id: z.string(), type: z.enum(LIFECYCLE_ACTION_TYPES), config: z.record(z.string(), z.unknown()) })).optional(),
+        during: z.array(z.object({ id: z.string(), type: z.enum(LIFECYCLE_ACTION_TYPES), config: z.record(z.string(), z.unknown()) })).optional(),
+        after: z.array(z.object({ id: z.string(), type: z.enum(LIFECYCLE_ACTION_TYPES), config: z.record(z.string(), z.unknown()) })).optional()
+      })
+    )
+  })
+
+  it("includes 'evaluate' (the Condition Gate step) in the source of truth", () => {
+    expect(LIFECYCLE_ACTION_TYPES).toContain('evaluate')
+  })
+
+  it('accepts a Condition Gate config through the RPC validator (the exact save that failed)', () => {
+    const armed = setConditionGate(null, true, { maxRounds: 3, provider: 'claude-code' })
+    expect(() => rpcLifecycleConfigSchema.parse(armed)).not.toThrow()
+  })
+
+  it('accepts the default review↔fix loop through the RPC validator', () => {
+    const loop = buildDefaultLoopConfig({ maxIterations: 3, fixPromptTemplate: 'do {{reason}}' })
+    expect(() => rpcLifecycleConfigSchema.parse(loop)).not.toThrow()
+  })
+
+  it('every emitted action type is a validator-accepted kind', () => {
+    const armed = setConditionGate(null, true, { maxRounds: 3 })!
+    const loop = buildDefaultLoopConfig({ maxIterations: 3, fixPromptTemplate: 'x' })
+    for (const cfg of [armed, loop]) {
+      for (const state of Object.values(cfg.states ?? {})) {
+        for (const slot of ['before', 'retry', 'during', 'after'] as const) {
+          for (const action of state?.[slot] ?? []) {
+            expect(LIFECYCLE_ACTION_TYPES).toContain(action.type)
+          }
+        }
+      }
+    }
   })
 })
 

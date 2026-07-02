@@ -1634,7 +1634,11 @@ function EditModeContent({
       })
       toast.success('Ticket updated')
       onClose()
-    } catch {
+    } catch (err) {
+      // Surface the real reason (e.g. a zod "invalid enum value" from the RPC
+      // validator) instead of a bare generic toast — a swallowed error here made
+      // a Condition Gate `evaluate` schema-drift look like a mystery save failure.
+      console.error('[KanbanTicketModal] updateTicket failed', err)
       toast.error('Failed to update ticket')
     } finally {
       setIsSaving(false)

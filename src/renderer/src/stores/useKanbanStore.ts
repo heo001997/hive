@@ -1314,7 +1314,8 @@ async function resolveSessionCwd(sessionId: string): Promise<string | null> {
  *   prompt → dispatchClaudeCliFollowup   notify → notifyTicketEvent
  *   goto   → moveTicketToLifecycleState  agent  → autoLaunchTicket
  *   wait   → timer                       check  → session bash (fire-and-forget)
- *   review → settle-driven (armSettleTimers / onStrictVerifySettled), skipped here.
+ *   review, evaluate → settle-driven (armSettleTimers / onStrictVerifySettled),
+ *                      skipped here (`evaluate` = the Condition Gate Stage-2 step).
  */
 async function runLifecycleAction(
   get: () => KanbanState,
@@ -1399,8 +1400,11 @@ async function runLifecycleAction(
       return 'pass'
     }
     case 'review':
-      // The Reviewer is settle-driven (armSettleTimers → onStrictVerifySettled),
-      // never invoked inline — treated as a no-op verdict here.
+    case 'evaluate':
+      // Both gate types are settle-driven (armSettleTimers → onStrictVerifySettled →
+      // runConditionGate for `evaluate`), never invoked inline — no-op verdict here.
+      // Explicit cases (not just `default`) so a future default-branch refactor can't
+      // silently strand the Condition Gate.
       return 'pass'
     default:
       return 'pass'
