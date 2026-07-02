@@ -3,6 +3,7 @@ import {
   type LocalEnvironmentBootstrap
 } from '@shared/desktop-bridge'
 import { getDesktopBackendBootstrap } from './backend-manager'
+import { logger } from '../services/logger'
 import { app, ipcMain, shell } from 'electron'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -42,6 +43,37 @@ export function registerDesktopBridgeHandlers(): void {
     app.relaunch()
     app.quit()
   })
+
+  // Renderer diagnostic log bridge (one-way). The kanban / session-status stores
+  // route their state-transition traces here so the exact choreography that decides
+  // a ticket's column lands in the persistent on-disk log next to the main-process
+  // `[StrictVerify]` / `[TelegramNotify]` lines — previously renderer transitions
+  // were console-only and invisible when diagnosing "why is this in Review".
+  ipcMain.on(
+    'renderer:log',
+    (
+      _event,
+      payload: {
+        level?: string
+        component?: string
+        message?: string
+        data?: Record<string, unknown>
+      }
+    ) => {
+      const level =
+        payload?.level === 'debug' ||
+        payload?.level === 'warn' ||
+        payload?.level === 'error'
+          ? payload.level
+          : 'info'
+      const component =
+        typeof payload?.component === 'string' && payload.component ? payload.component : 'Renderer'
+      const message = typeof payload?.message === 'string' ? payload.message : ''
+      const data = payload?.data && typeof payload.data === 'object' ? payload.data : undefined
+      if (level === 'error') logger.error(component, message, undefined, data)
+      else logger[level](component, message, data)
+    }
+  )
 
   ipcMain.handle('hive-enterprise:start-login', async (_event, args: HiveEnterpriseLoginArgs) => {
     const serverUrl =

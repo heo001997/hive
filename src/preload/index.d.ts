@@ -52,6 +52,12 @@ declare global {
       getPathForFile: (file: File) => string
       startHiveEnterpriseLogin: (serverUrl: string) => Promise<{ token: string }>
       relaunchApp: () => Promise<void>
+      rendererLog: (
+        level: 'debug' | 'info' | 'warn' | 'error',
+        component: string,
+        message: string,
+        data?: Record<string, unknown>
+      ) => void
     }
   }
 

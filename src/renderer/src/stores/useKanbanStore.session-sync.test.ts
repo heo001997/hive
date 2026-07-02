@@ -19,6 +19,26 @@ vi.mock('./useSettingsStore', () => ({
   useSettingsStore: { getState: () => ({ followUpTriggerColumn: 'done' }) }
 }))
 
+// session_completed now routes through the In Progress ⟺ Review liveness gate
+// (`confirmSessionFrozen`) before promoting: it reads the session-status store and
+// fingerprints the terminal. Mock both so the gate reads a quiet (frozen) terminal —
+// a PTY fingerprint whose last emit is ancient (Date.now() - 0 ≫ FROZEN_IDLE_MS) —
+// so a completed session deterministically advances to Review here.
+vi.mock('./useWorktreeStatusStore', () => ({
+  useWorktreeStatusStore: {
+    getState: () => ({ sessionStatuses: {}, clearCompletedReviewSession: () => {} })
+  }
+}))
+
+vi.mock('@/api/completion-api', () => ({
+  completionApi: {
+    getSessionFingerprint: vi
+      .fn()
+      .mockResolvedValue({ length: 1, hash: 'frozen', source: 'pty', lastOutputAt: 0 }),
+    detectTicketCompletion: vi.fn()
+  }
+}))
+
 import { useKanbanStore } from './useKanbanStore'
 import { kanbanApi } from '@/api/kanban-api'
 

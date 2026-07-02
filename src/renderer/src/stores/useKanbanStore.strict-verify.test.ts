@@ -38,6 +38,12 @@ const hoisted = vi.hoisted(() => ({
   },
   sessionStatuses: {} as Record<string, { status: string; timestamp: number } | null>,
   followUpQueue: new Map<string, string[]>(),
+  // Pending user-interaction state read by the auto-bypass guard (C3). Mutable so a
+  // test can inject a blocking question/permission/approval/plan and assert the hold.
+  pendingQuestions: [] as unknown[],
+  pendingPermissions: [] as unknown[],
+  pendingApprovals: [] as unknown[],
+  pendingPlan: null as unknown,
   detect: vi.fn<(...args: unknown[]) => Promise<CompletionCheckResult>>(),
   fingerprint: vi.fn<(...args: unknown[]) => Promise<SessionFingerprint>>(),
   toastError: vi.fn(),
@@ -104,7 +110,27 @@ vi.mock('./useWorktreeStatusStore', () => ({
 }))
 
 vi.mock('./useSessionStore', () => ({
-  useSessionStore: { getState: () => ({ pendingFollowUpMessages: hoisted.followUpQueue }) }
+  useSessionStore: {
+    getState: () => ({
+      pendingFollowUpMessages: hoisted.followUpQueue,
+      // Read by the auto-bypass blocking-interaction guard (C3).
+      getPendingPlan: () => hoisted.pendingPlan
+    })
+  }
+}))
+
+// The auto-bypass guard (`hasBlockingInteraction`) dynamic-imports these three
+// interaction stores; mock them so they resolve instantly (dynamic-importing the
+// real, unmocked modules stalls under fake timers). They read mutable hoisted
+// arrays so a test can inject a pending interaction and assert the bypass is held.
+vi.mock('./useQuestionStore', () => ({
+  useQuestionStore: { getState: () => ({ getQuestions: () => hoisted.pendingQuestions }) }
+}))
+vi.mock('./usePermissionStore', () => ({
+  usePermissionStore: { getState: () => ({ getPermissions: () => hoisted.pendingPermissions }) }
+}))
+vi.mock('./useCommandApprovalStore', () => ({
+  useCommandApprovalStore: { getState: () => ({ getApprovals: () => hoisted.pendingApprovals }) }
 }))
 
 vi.mock('@/api/completion-api', () => ({
@@ -196,6 +222,10 @@ beforeEach(() => {
   hoisted.settings.kanbanInProgressRescueEnabled = false
   hoisted.sessionStatuses = { [SESSION_ID]: { status: 'completed', timestamp: -1_000_000 } }
   hoisted.followUpQueue = new Map()
+  hoisted.pendingQuestions = []
+  hoisted.pendingPermissions = []
+  hoisted.pendingApprovals = []
+  hoisted.pendingPlan = null
   hoisted.detect.mockReset()
   hoisted.fingerprint.mockReset()
   // Default: output is frozen (S0 === S1) so Gate 1 passes through to the Watcher.
@@ -354,7 +384,7 @@ describe('Strict Verify — Gate 2 (the Watcher)', () => {
     expect(verdictOf('ticket-1')?.movedBack).toBe(true)
   })
 
-  it('bounces back and flags needsInput when the agent is asking the user', async () => {
+  it('parks a needsInput verdict in Review (waiting on the user, not moved back)', async () => {
     hoisted.detect.mockResolvedValue({
       success: true,
       verdict: { complete: false, needsInput: true, confidence: 0.9, reason: 'Which DB?' }
@@ -364,8 +394,10 @@ describe('Strict Verify — Gate 2 (the Watcher)', () => {
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
 
-    expect(columnOf('ticket-1')).toBe('in_progress')
-    expect(verdictOf('ticket-1')).toMatchObject({ movedBack: true, needsInput: true })
+    // Waiting-on-user is a Review state (paused, awaiting Tu) — NOT a bounce back to
+    // In Progress. The ticket stays in Review with the Question badge; movedBack=false.
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')).toMatchObject({ movedBack: false, needsInput: true })
     // The waiting-on-user verdict is the ONLY signal for plain-text question flows
     // (e.g. speckit clarify-all) — it must fire the Telegram "question" fan-out.
     expect(hoisted.notifyNeedsInput).toHaveBeenCalledTimes(1)
@@ -736,7 +768,7 @@ describe('completion verdict actions', () => {
     expect(columnOf('ticket-1')).toBe('in_progress')
   })
 
-  it('recheckTicketCompletion treats needsInput as moved-back', async () => {
+  it('recheckTicketCompletion keeps a needsInput verdict in Review (not moved-back)', async () => {
     hoisted.detect.mockResolvedValue({
       success: true,
       verdict: { complete: false, needsInput: true, confidence: 0.9, reason: 'question?' }
@@ -744,8 +776,10 @@ describe('completion verdict actions', () => {
     seed(makeTicket({ column: 'review' }))
 
     const verdict = await useKanbanStore.getState().recheckTicketCompletion('ticket-1', PROJECT_ID)
-    expect(verdict?.movedBack).toBe(true)
+    // Waiting-on-user parks in Review (paused, awaiting Tu) — it is not a bounce.
+    expect(verdict?.movedBack).toBe(false)
     expect(verdict?.needsInput).toBe(true)
+    expect(columnOf('ticket-1')).toBe('review')
   })
 
   it('recheckTicketCompletion returns null when the ticket has no session', async () => {
@@ -916,9 +950,10 @@ describe('In Progress rescue (frozen "Not done" watcher)', () => {
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
 
-    // needsInput bounce is NOT a frozen-rescue candidate — judged once, no re-promote.
+    // needsInput parks in Review (waiting on Tu) — it never bounces, so it is not a
+    // frozen-rescue candidate: judged once, no re-promote, stays in Review.
     expect(hoisted.detect).toHaveBeenCalledTimes(1)
-    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(columnOf('ticket-1')).toBe('review')
     expect(verdictOf('ticket-1')?.needsInput).toBe(true)
     expect(verdictOf('ticket-1')?.rescueExhausted).toBeFalsy()
   })
@@ -959,5 +994,121 @@ describe('In Progress rescue (frozen "Not done" watcher)', () => {
     await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
     await vi.runAllTimersAsync()
     expect(hoisted.detect).toHaveBeenCalledTimes(2)
+  })
+})
+
+// The In Progress ⟺ Review boundary is governed by actual terminal liveness, not by
+// the main agent's idle/Stop event. `session_completed` no longer moves the ticket
+// straight to Review: it defers to `promoteToReviewWhenQuiescent`, which holds the
+// ticket In Progress while the tty is still emitting (a subagent on the same tty, the
+// next turn, the parent spinner) and promotes only once the process goes quiet.
+describe('Liveness gate on session_completed (In Progress ⟺ Review authority)', () => {
+  it('holds the ticket In Progress while the session is still emitting, then promotes once it goes quiet', async () => {
+    // Isolate the liveness gate from the Strict Verify machinery that arms on the
+    // eventual move to Review.
+    hoisted.settings.kanbanStrictVerifyEnabled = false
+    // `working` = the terminal is actively emitting (a subagent belongs to the main
+    // agent, so while ANY of them emits the WHOLE process is running).
+    hoisted.sessionStatuses = { [SESSION_ID]: { status: 'working', timestamp: 0 } }
+    seed(makeTicket({ column: 'in_progress' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, {
+      type: 'session_completed',
+      sessionMode: 'build'
+    })
+    // Well under one idle window — the poll has not fired, and it must not promote
+    // early: still running → stays In Progress.
+    await vi.advanceTimersByTimeAsync(500)
+    expect(columnOf('ticket-1')).toBe('in_progress')
+
+    // Terminal goes quiet (the default STABLE_FP fingerprint reads frozen). The next
+    // poll sees no liveness and promotes — self-driving, no further event needed.
+    hoisted.sessionStatuses[SESSION_ID] = { status: 'completed', timestamp: 0 }
+    await vi.runAllTimersAsync()
+    expect(columnOf('ticket-1')).toBe('review')
+  })
+
+  it('promotes to Review when the session is already gone (fingerprint unavailable → unknown)', async () => {
+    hoisted.settings.kanbanStrictVerifyEnabled = false
+    // Not `working`, and the fingerprint round-trip fails → confirmSessionFrozen is
+    // 'unknown' (PTY/session likely gone) → treat as no-longer-running → promote.
+    hoisted.fingerprint.mockRejectedValue(new Error('session gone'))
+    seed(makeTicket({ column: 'in_progress' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, {
+      type: 'session_completed',
+      sessionMode: 'build'
+    })
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+  })
+})
+
+// A pending question is a Review state (paused, waiting on Tu, with the "Question"
+// badge). Unlike completion, a pending question is definitively quiescent — nothing
+// emits until it is answered — so it moves to Review with NO liveness gate, even while
+// the status still reads `working`. `session_working` (the answer resumes the agent)
+// returns it to In Progress.
+describe('session_question → Review (waiting on the user)', () => {
+  it('moves an active build ticket straight to Review even while the status still reads working', async () => {
+    hoisted.settings.kanbanStrictVerifyEnabled = false
+    // `working` would HOLD a session_completed in place (see the liveness-gate suite),
+    // but a pending question supersedes it: the ticket is paused on the user.
+    hoisted.sessionStatuses = { [SESSION_ID]: { status: 'working', timestamp: 0 } }
+    seed(makeTicket({ column: 'in_progress' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_question' })
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+  })
+
+  it('ignores a non-build (plan) ticket — the gate is build-only', async () => {
+    hoisted.settings.kanbanStrictVerifyEnabled = false
+    seed(makeTicket({ column: 'in_progress', mode: 'plan' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_question' })
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+  })
+})
+
+// Review means "no agent is running — everything is paused waiting on the user, OR all
+// is complete and awaiting a final look". Auto Review Bypass must therefore NOT fast-
+// forward a ticket to Done while the user still owes an answer: a pending question,
+// permission, command approval, or plan approval holds the ticket in Review.
+describe('Auto Review Bypass holds on a pending user interaction', () => {
+  it('does not advance to Done while a structured question is still open', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    // A verified-complete verdict would normally auto-advance (see the Feature B suite),
+    // but an open question means the agent is not actually free — hold it in Review.
+    hoisted.pendingQuestions = [{ id: 'q1', sessionId: SESSION_ID }]
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
+  })
+
+  it('does not advance to Done while a plan is awaiting approval', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    hoisted.pendingPlan = { sessionId: SESSION_ID, plan: 'do the thing' }
+    seed(makeTicket({ column: 'in_progress', auto_approve_review: true }))
+    addDependent('ticket-1', 'ticket-2')
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
   })
 })

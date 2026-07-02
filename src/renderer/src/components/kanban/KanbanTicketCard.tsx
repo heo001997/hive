@@ -1148,10 +1148,12 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                 {/* Live Strict Verify / Auto Review Bypass progress — countdown +
                     work status while the ticket settles in Review. */}
                 {verifyProgress && <VerifyProgressBadge progress={verifyProgress} />}
-                {/* Strict Verify verdict badge — shown when the Watcher bounced the
-                    ticket back to In Progress. "Questions" when the agent is waiting
-                    on the user, otherwise "Not done". */}
-                {completionVerdict?.needsInput ? (
+                {/* "Question" state badge — the agent is PAUSED waiting on the user,
+                    so the ticket sits in Review. Two sources feed it: a plain-text
+                    `needsInput` verdict (Strict Verify) OR a pending structured
+                    question (question store / `answering` status) while in Review.
+                    Otherwise, "Not done" when the Watcher bounced it to In Progress. */}
+                {completionVerdict?.needsInput || (isAsking && ticket.column === 'review') ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span
@@ -1163,7 +1165,9 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                       </span>
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs whitespace-pre-wrap break-words">
-                      Agent is waiting on you: {completionVerdict.reason}
+                      {completionVerdict?.needsInput
+                        ? `Agent is waiting on you: ${completionVerdict.reason}`
+                        : 'Agent is waiting on your answer.'}
                     </TooltipContent>
                   </Tooltip>
                 ) : (
