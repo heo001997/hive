@@ -20,12 +20,15 @@ import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import type {
   CompletionCheckProvider,
   CompletionVerdict,
+  ConditionGateCheckResult,
   ConditionGateResult,
   ConditionGateVerdict,
+  ReviewJudgeContextSource,
   SessionFingerprint,
   StoredCompletionVerdict,
   VerifyProgress
 } from '@shared/types/completion'
+import { DEFAULT_REVIEW_JUDGE_PROMPT } from '@shared/types/completion'
 import { sortTicketsBy, SORT_STEP, type SortField, type SortDir } from '../lib/kanban-sort'
 import {
   actionsForSlot,
@@ -1391,6 +1394,12 @@ interface StrictVerifySettings {
   kanbanConditionGatePrompt?: string
   /** Condition gate: when a `pass` verdict lands, optionally auto-advance a chain ticket to Done. */
   kanbanConditionGateAutoDone?: boolean
+  /** Review Judge (Stage-2): user-editable "review standard" prompt fed to the spawned judge CLI (blank → built-in default). */
+  kanbanReviewJudgePrompt?: string
+  /** Review Judge: which slice of the finished review session to feed the judge (default `transcript`). */
+  kanbanReviewJudgeContextSource?: ReviewJudgeContextSource
+  /** Review Judge: trailing-char budget for the context fed to the judge (default 10000). */
+  kanbanReviewJudgeContextChars?: number
 }
 
 /**
@@ -2229,66 +2238,147 @@ async function runConditionGate(
 
   if (!sessionId) return blockForTu('condition-gate ticket has no session to evaluate')
 
-  // Stage-2 verdict — FILE-ONLY (`fileOnly: true`): read the review agent's own
-  // `<cwd>/.hive/review-gate.json` and NEVER LLM-guess a pass. The frozen check fires
-  // the instant the tty goes silent, which can race the agent's final flush of that
-  // file, so retry a few times (short backoff) before escalating — a write-race must
-  // not be mistaken for "no verdict". Config precedence: per-ticket gate config →
-  // global condition-gate settings → provider default.
-  const GATE_VERDICT_MAX_ATTEMPTS = 3
+  // Stage-2 verdict — HIVE-DRIVEN JUDGE. The review skill is now a pure code
+  // reviewer that knows NOTHING about Hive; it never writes a verdict file. Once its
+  // session has gone frozen (Stage-1), Hive itself produces the verdict:
+  //   1. extract the tail of the review session (and clear any stale verdict file so
+  //      the judge's fresh write is unambiguous),
+  //   2. compose {user-editable standard prompt} + {context} and spawn a fresh
+  //      interactive judge CLI (inheriting the ticket's model),
+  //   3. wait for the judge to WRITE `<cwd>/.hive/review-gate.json` (its verdict
+  //      transport — an interactive CLI can't return structured stdout),
+  //   4. read + route that verdict below (the decideConditionGate tail is unchanged).
+  // NEVER fails open: any failure blocks for the human (per [[hive-strict-verify-trust-agent]]).
+  const { completionApi } = await import('@/api/completion-api')
+
+  // 1. Extract the review-session context + clear any stale verdict from a prior round.
+  let reviewContext = ''
+  try {
+    const ctxRes = await completionApi.extractReviewContext({
+      sessionId,
+      ticketId,
+      source: settings.kanbanReviewJudgeContextSource,
+      maxChars: settings.kanbanReviewJudgeContextChars,
+      clearGateFile: true
+    })
+    if (!ctxRes.success) {
+      return blockForTu(`review-judge context extraction failed: ${ctxRes.error ?? 'unknown'}`)
+    }
+    reviewContext = (ctxRes.context ?? '').trim()
+    logToMain('info', 'ReviewJudge', `ticket ${ticketId} context extracted`, {
+      ticketId,
+      sessionId,
+      source: ctxRes.source,
+      contextChars: reviewContext.length,
+      clearedStaleGateFile: ctxRes.clearedStaleGateFile
+    })
+  } catch (err) {
+    return blockForTu(
+      `review-judge context extraction threw: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  if (!reviewContext) {
+    return blockForTu('review-judge: the review session produced no context to judge', {
+      kind: 'block'
+    })
+  }
+
+  // 2. Spawn the interactive judge CLI in the reviewed worktree, fed the standard
+  //    prompt + the context tail. Prompt precedence: per-ticket `judgePrompt` override
+  //    → global `kanbanReviewJudgePrompt` → built-in default.
+  const worktreeId = current.worktree_id
+  if (!worktreeId) {
+    return blockForTu('review-judge: reviewed ticket has no worktree to run the judge in')
+  }
+  const standardPrompt =
+    current.verify_overrides?.judgePrompt?.trim() ||
+    settings.kanbanReviewJudgePrompt?.trim() ||
+    DEFAULT_REVIEW_JUDGE_PROMPT
+  const { buildJudgePrompt, dispatchReviewJudge } = await import('../lib/run-review-judge')
+  const judgePrompt = buildJudgePrompt(standardPrompt, reviewContext)
+
+  get().setVerifyProgress(key, { phase: 'judging' })
+  logToMain('info', 'ReviewJudge', `ticket ${ticketId} spawning judge`, {
+    ticketId,
+    sessionId,
+    worktreeId,
+    customPrompt: !!current.verify_overrides?.judgePrompt?.trim()
+  })
+  const spawn = await dispatchReviewJudge({
+    worktreeId,
+    projectId,
+    ticketId,
+    prompt: judgePrompt,
+    reviewedSessionId: sessionId
+  })
+  if (!spawn.success || !spawn.sessionId) {
+    return blockForTu(`review-judge failed to launch: ${spawn.error ?? 'unknown'}`)
+  }
+  const judgeSessionId = spawn.sessionId
+
+  // 3. Await the judge. Poll for a VALID `.hive/review-gate.json` (a half-written
+  //    file fails JSON/schema parse → reads as `noFile`, so we simply keep polling —
+  //    the write-race resolves itself). If the judge's terminal goes frozen (it
+  //    stopped) for a couple of consecutive checks WITHOUT a valid file, it finished
+  //    without a verdict → block for the human. Long horizon: the judge may read
+  //    files / run commands before deciding.
+  const JUDGE_POLL_MS = 3000
+  const JUDGE_MAX_MS = 8 * 60 * 1000
+  const JUDGE_FROZEN_GRACE = 2
+  const judgeDeadline = Date.now() + JUDGE_MAX_MS
   let verdict: ConditionGateVerdict | null = null
-  for (let attempt = 1; attempt <= GATE_VERDICT_MAX_ATTEMPTS; attempt++) {
+  let frozenNoFile = 0
+  while (Date.now() < judgeDeadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, JUDGE_POLL_MS))
+    let res: ConditionGateCheckResult
     try {
-      const { completionApi } = await import('@/api/completion-api')
-      const res = await completionApi.detectTicketVerdict({
-        sessionId,
+      // Read the verdict file from the JUDGE's session (its worktree = the reviewed
+      // worktree = repo root of `.hive/review-gate.json`).
+      res = await completionApi.detectTicketVerdict({
+        sessionId: judgeSessionId,
         ticketId,
-        maxChars: settings.kanbanStrictVerifyChars,
-        provider:
-          (gateCfg.provider as CompletionCheckProvider) ?? settings.kanbanConditionGateProvider,
-        model: gateCfg.model || settings.kanbanConditionGateModel || undefined,
-        systemPrompt: gateCfg.prompt || settings.kanbanConditionGatePrompt || undefined,
         fileOnly: true
       })
-      if (res.success && res.verdict) {
-        verdict = res.verdict
-        logToMain('info', 'ConditionGate', `ticket ${ticketId} verdict read from file`, {
-          ticketId,
-          sessionId,
-          attempt,
-          verdict: res.verdict.verdict,
-          source: res.verdict.source
-        })
-        break
-      }
-      if (res.noFile) {
-        logToMain(
-          'info',
-          'ConditionGate',
-          `ticket ${ticketId} no review-gate.json (attempt ${attempt}/${GATE_VERDICT_MAX_ATTEMPTS})`,
-          { ticketId, sessionId, attempt }
-        )
-        if (attempt < GATE_VERDICT_MAX_ATTEMPTS) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 500 * attempt))
-          continue
-        }
-        break // exhausted → escalate to Tu below (no LLM fallback)
-      }
-      // A hard eval error (not a missing file) — don't retry, block for the human.
-      return blockForTu(`condition-gate eval failed: ${res.error ?? 'no verdict'}`)
     } catch (err) {
-      return blockForTu(
-        `condition-gate eval threw: ${err instanceof Error ? err.message : String(err)}`
-      )
+      logToMain('warn', 'ReviewJudge', `ticket ${ticketId} verdict read threw — retrying`, {
+        ticketId,
+        judgeSessionId,
+        error: err instanceof Error ? err.message : String(err)
+      })
+      continue
+    }
+    if (res.success && res.verdict) {
+      verdict = res.verdict
+      logToMain('info', 'ReviewJudge', `ticket ${ticketId} judge wrote verdict`, {
+        ticketId,
+        judgeSessionId,
+        verdict: res.verdict.verdict,
+        source: res.verdict.source
+      })
+      break
+    }
+    // No valid file yet. If the judge has gone frozen it may have finished WITHOUT a
+    // valid verdict — count consecutive frozen-empty polls before giving up.
+    const judgeState = await confirmSessionFrozen(judgeSessionId, {
+      sample: true,
+      idleMs: FROZEN_IDLE_MS,
+      trace: { ticketId }
+    })
+    if (judgeState === 'frozen') {
+      frozenNoFile += 1
+      if (frozenNoFile >= JUDGE_FROZEN_GRACE) {
+        return blockForTu('review-judge finished without writing a valid review-gate.json', {
+          kind: 'block'
+        })
+      }
+    } else {
+      frozenNoFile = 0 // still working (or unknown) — keep waiting
     }
   }
 
   if (!verdict) {
-    // 3 checks, still no `review-gate.json` → never LLM-guess a pass. Escalate to Tu
-    // (block + Telegram notify, leave in Review).
-    return blockForTu('condition gate → needs human: no review-gate.json after 3 checks', {
-      kind: 'block'
-    })
+    // Ran out the clock without a verdict → never guess a pass. Block for the human.
+    return blockForTu('review-judge timed out before writing a verdict', { kind: 'block' })
   }
 
   const decision = decideConditionGate(verdict, round, maxRounds)

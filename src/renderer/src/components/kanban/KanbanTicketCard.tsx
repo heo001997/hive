@@ -170,6 +170,9 @@ function VerifyProgressBadge({ progress }: { progress: VerifyProgress }) {
   } else if (phase === 'frozen-active') {
     label = 'Active → In Progress'
     icon = 'undo'
+  } else if (phase === 'judging') {
+    label = 'Judging review…'
+    icon = 'spinner'
   } else {
     label = 'Committing…'
     icon = 'spinner'

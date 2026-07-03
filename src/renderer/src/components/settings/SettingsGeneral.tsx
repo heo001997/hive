@@ -42,6 +42,7 @@ import {
   COMPLETION_CHECK_PROVIDERS,
   COMPLETION_PROVIDER_LABELS,
   DEFAULT_CONDITION_GATE_PROMPT,
+  DEFAULT_REVIEW_JUDGE_PROMPT,
   DEFAULT_STRICT_VERIFY_PROMPT
 } from '@shared/types/completion'
 import claudeIcon from '@/assets/model-icons/claude.svg'
@@ -185,6 +186,9 @@ export function SettingsGeneral(): React.JSX.Element {
     kanbanConditionGateMatchMode,
     kanbanConditionGateKeyPattern,
     kanbanConditionGateWordPattern,
+    kanbanReviewJudgePrompt,
+    kanbanReviewJudgeContextSource,
+    kanbanReviewJudgeContextChars,
     vimModeEnabled,
     keepAwakeEnabled,
     mergeConflictMode,
@@ -1294,6 +1298,99 @@ export function SettingsGeneral(): React.JSX.Element {
                 The system prompt for the Stage-2 router. It <strong>must</strong> still ask for the
                 JSON verdict (<code>verdict</code>, <code>reason</code>, <code>fixes</code>) or the
                 gate can&apos;t be parsed.
+              </p>
+            </div>
+
+            {/* ── Review Judge (Stage-2, file-first) ─────────────────────────
+                The active Stage-2 path: the review skill is now a PURE code
+                reviewer that knows nothing about Hive. Once its session goes idle,
+                Hive spawns a fresh interactive judge CLI (inheriting the ticket's
+                model), feeds it the standard prompt + the review context, and the
+                judge WRITES `.hive/review-gate.json`, which the gate reads + routes.
+                The "Routing …" controls above are the legacy transcript-LLM path. */}
+            <div className="space-y-2 border-t border-border pt-4">
+              <label className="text-sm font-medium">Review judge — context source</label>
+              <select
+                value={kanbanReviewJudgeContextSource}
+                onChange={(e) =>
+                  updateSetting(
+                    'kanbanReviewJudgeContextSource',
+                    e.target.value as typeof kanbanReviewJudgeContextSource
+                  )
+                }
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                data-testid="review-judge-context-source"
+              >
+                <option value="transcript">Clean transcript (+ terminal-tail fallback)</option>
+                <option value="terminal-tail">Raw terminal tail</option>
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Which slice of the finished review session is handed to the judge as its{' '}
+                <code>Context:</code>. <strong>Transcript</strong> is the structured conversation
+                (falls back to the raw tail when unavailable); <strong>terminal tail</strong> is the
+                raw ANSI-stripped output.
+              </p>
+            </div>
+
+            {/* Context char budget for the judge. */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Review judge — context length</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number"
+                  min={1000}
+                  max={100000}
+                  step={1000}
+                  value={kanbanReviewJudgeContextChars}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10)
+                    if (!isNaN(val) && val >= 1000 && val <= 100000) {
+                      updateSetting('kanbanReviewJudgeContextChars', val)
+                    }
+                  }}
+                  className="w-28 font-mono text-sm"
+                  data-testid="review-judge-context-chars"
+                />
+                <span className="text-xs text-muted-foreground">chars (default 10000)</span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                How many trailing characters of the review session are fed to the judge as context.
+              </p>
+            </div>
+
+            {/* Judge standard prompt — editable, reset-to-default. */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-sm font-medium">Review judge — standard prompt</label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    updateSetting('kanbanReviewJudgePrompt', DEFAULT_REVIEW_JUDGE_PROMPT)
+                  }
+                  disabled={kanbanReviewJudgePrompt === DEFAULT_REVIEW_JUDGE_PROMPT}
+                  data-testid="review-judge-prompt-reset"
+                >
+                  <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+                  Reset to default
+                </Button>
+              </div>
+              <Textarea
+                value={kanbanReviewJudgePrompt}
+                onChange={(e) => updateSetting('kanbanReviewJudgePrompt', e.target.value)}
+                rows={12}
+                spellCheck={false}
+                className="w-full font-mono text-xs leading-relaxed"
+                data-testid="review-judge-prompt"
+              />
+              <p className="text-xs text-muted-foreground">
+                Your review <strong>standard</strong> — this is the prompt the spawned judge is fed,
+                ahead of the review context. Edit it to define what &quot;good&quot; means. It{' '}
+                <strong>must</strong> keep the instruction to write{' '}
+                <code>.hive/review-gate.json</code> (<code>verdict</code>, <code>reason</code>,{' '}
+                <code>fixes</code>) or the gate has no verdict to read — it then blocks for you (never
+                a fail-open pass). Overridable per-ticket in the ticket&apos;s Verification section.
               </p>
             </div>
           </div>

@@ -634,6 +634,7 @@ function VerificationOverridesSection({
   const reviewerEnabled = useSettingsStore((s) => s.kanbanStrictVerifyReviewerEnabled)
   const frozenIdleSeconds = useSettingsStore((s) => s.kanbanStrictVerifyFrozenIdleSeconds)
   const masterEnabled = useSettingsStore((s) => s.kanbanStrictVerifyEnabled)
+  const globalJudgePrompt = useSettingsStore((s) => s.kanbanReviewJudgePrompt)
 
   const ov = value ?? {}
   const resolved = resolveVerifyConfig(
@@ -656,6 +657,12 @@ function VerificationOverridesSection({
     if (merged.gateLoop !== null && merged.gateLoop !== undefined) cleaned.gateLoop = merged.gateLoop
     if (merged.frozenIdleSeconds !== null && merged.frozenIdleSeconds !== undefined)
       cleaned.frozenIdleSeconds = merged.frozenIdleSeconds
+    if (
+      merged.judgePrompt !== null &&
+      merged.judgePrompt !== undefined &&
+      merged.judgePrompt.trim() !== ''
+    )
+      cleaned.judgePrompt = merged.judgePrompt
     onChange(Object.keys(cleaned).length ? cleaned : null)
   }
 
@@ -731,6 +738,46 @@ function VerificationOverridesSection({
           </span>
         </div>
       </div>
+
+      {resolved.gateLoop && (
+        <div className="space-y-1.5 border-t border-border pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-sm font-medium">Review judge standard (this ticket)</label>
+            {ov.judgePrompt != null && ov.judgePrompt.trim() !== '' && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => patch({ judgePrompt: null })}
+                data-testid="verify-override-judge-prompt-clear"
+              >
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                Use global
+              </Button>
+            )}
+          </div>
+          <Textarea
+            value={ov.judgePrompt ?? ''}
+            placeholder={
+              globalJudgePrompt
+                ? `Uses the global judge prompt:\n\n${globalJudgePrompt.slice(0, 200)}…`
+                : 'Uses the global review-judge prompt from Settings…'
+            }
+            onChange={(e) =>
+              patch({ judgePrompt: e.target.value.trim() === '' ? null : e.target.value })
+            }
+            rows={8}
+            spellCheck={false}
+            className="w-full font-mono text-xs leading-relaxed"
+            data-testid="verify-override-judge-prompt"
+          />
+          <p className="text-xs text-muted-foreground">
+            The standard the spawned judge is held to for THIS ticket only. Must keep the
+            instruction to write <code>.hive/review-gate.json</code>. Blank = use the global prompt
+            from Settings.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
