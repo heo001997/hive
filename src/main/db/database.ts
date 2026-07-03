@@ -350,6 +350,16 @@ export class DatabaseService {
       lifecycleCallbacks = null
     }
 
+    let conditionGateResult: KanbanTicket['condition_gate_result'] = null
+    try {
+      const raw = row.condition_gate_result as string
+      if (raw) {
+        conditionGateResult = JSON.parse(raw)
+      }
+    } catch {
+      conditionGateResult = null
+    }
+
     return {
       id: row.id as string,
       project_id: row.project_id as string,
@@ -382,7 +392,8 @@ export class DatabaseService {
       review_seen_at: (row.review_seen_at as string) ?? null,
       lifecycle_callbacks: lifecycleCallbacks,
       lifecycle_state: (row.lifecycle_state as KanbanTicket['lifecycle_state']) ?? null,
-      lifecycle_iteration: (row.lifecycle_iteration as number) ?? 0
+      lifecycle_iteration: (row.lifecycle_iteration as number) ?? 0,
+      condition_gate_result: conditionGateResult
     }
   }
 
@@ -688,6 +699,7 @@ export class DatabaseService {
     this.safeAddColumn('kanban_tickets', 'lifecycle_callbacks', 'TEXT DEFAULT NULL')
     this.safeAddColumn('kanban_tickets', 'lifecycle_state', 'TEXT DEFAULT NULL')
     this.safeAddColumn('kanban_tickets', 'lifecycle_iteration', 'INTEGER NOT NULL DEFAULT 0')
+    this.safeAddColumn('kanban_tickets', 'condition_gate_result', 'TEXT DEFAULT NULL')
     this.safeAddColumn('sessions', 'session_type', "TEXT NOT NULL DEFAULT 'default'")
     this.safeAddColumn(
       'discord_resources',
@@ -2837,6 +2849,10 @@ export class DatabaseService {
     if (data.lifecycle_iteration !== undefined) {
       updates.push('lifecycle_iteration = ?')
       values.push(data.lifecycle_iteration)
+    }
+    if (data.condition_gate_result !== undefined) {
+      updates.push('condition_gate_result = ?')
+      values.push(data.condition_gate_result ? JSON.stringify(data.condition_gate_result) : null)
     }
     if (data.review_seen_at !== undefined) {
       updates.push('review_seen_at = ?')

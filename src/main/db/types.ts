@@ -1,6 +1,9 @@
 import type { CustomProjectCommand } from '@shared/lib/custom-commands'
 import type { AgentSdk } from '@shared/types/agent-sdk'
 import type { TicketLifecycleConfig, LifecycleState } from '@shared/types/ticket-lifecycle'
+import type { ConditionGateResult } from '@shared/types/completion'
+
+export type { ConditionGateResult } from '@shared/types/completion'
 
 // Re-export the lifecycle-callback types from the kanban types barrel so consumers
 // that already import KanbanTicket from here can grab them in one place.
@@ -563,6 +566,13 @@ export interface KanbanTicket {
    * the loop. Reset to 0 on a stable entry; incremented on each fail bounce.
    */
   lifecycle_iteration?: number
+  /**
+   * Last recorded run of the two-stage Condition Gate on this ticket — the verdict,
+   * its source, the round, and what the engine did next. Persisted so the ticket
+   * detail can SHOW whether the gate ran and how (the renderer's transient verdict
+   * map is lost on reload). NULL until the gate first evaluates. Stored as JSON TEXT.
+   */
+  condition_gate_result?: ConditionGateResult | null
 }
 
 /** One column's slice of tickets plus the total active count in that column. */
@@ -625,6 +635,7 @@ export interface KanbanTicketUpdate {
   lifecycle_callbacks?: TicketLifecycleConfig | null
   lifecycle_state?: LifecycleState | null
   lifecycle_iteration?: number
+  condition_gate_result?: ConditionGateResult | null
 }
 
 export interface BoardAssistantDraft {

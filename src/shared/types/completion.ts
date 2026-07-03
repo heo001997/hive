@@ -84,6 +84,50 @@ export interface ConditionGateCheckResult {
   error?: string
 }
 
+/** The branch `decideConditionGate` chose, plus `error` for the pre-verdict failure paths. */
+export type ConditionGateDecisionKind = 'pass' | 'fix' | 'block' | 'error'
+
+/** The value `runConditionGate` returned. */
+export type ConditionGateOutcomeKind = 'pass' | 'fix' | 'blocked'
+
+/**
+ * A recorded run of the two-stage Condition Gate on a review ticket, PERSISTED on
+ * the ticket (`condition_gate_result` column) so the user can verify AFTER THE
+ * FACT whether the gate ran and how it decided — the transient renderer
+ * `completionVerdicts` map is lost on reload, and the final decision only ever
+ * hit the devtools console. Written by `runConditionGate` at every terminal
+ * branch (pass / fix / needs-human / eval error), for both the automatic settle
+ * run and the manual "Re-run gate now" button.
+ */
+export interface ConditionGateResult {
+  /** `Date.now()` ms when the gate produced this result. */
+  ranAt: number
+  /** Automatic settle-driven run, or the manual "Re-run gate now" button. */
+  trigger: 'auto' | 'manual'
+  /** Stage-2 verdict kind; `null` when the gate errored before producing one. */
+  verdict: ConditionGateVerdictKind | null
+  /** Where the verdict came from; `null` on the error path. */
+  source: ConditionGateVerdictSource | null
+  /** One-sentence justification carried from the verdict (or the error message). */
+  reason: string
+  /** Concrete fixes on a `fix` verdict; empty otherwise. */
+  fixes: string[]
+  /** Fix-loop round this run evaluated (parsed from the ticket title). */
+  round: number
+  /** Max rounds before a `fix` escalates to needs-human. */
+  maxRounds: number
+  /** The branch `decideConditionGate` chose (`error` = failed before a verdict). */
+  decision: ConditionGateDecisionKind
+  /** The outcome `runConditionGate` returned. */
+  outcome: ConditionGateOutcomeKind
+  /** Human-readable one-liner of what the engine did next (moved to Done / stayed in Review / launched fix round N / blocked). */
+  action: string
+  /** Session the gate evaluated. */
+  sessionId: string | null
+  /** Set only on the error path (no session, eval failed/threw, fix-round launch failed). */
+  error?: string
+}
+
 /**
  * Default system prompt for the condition gate (Stage 2). The gate TRUSTS the
  * review agent's transcript (same trust model as Strict-Verify) and does

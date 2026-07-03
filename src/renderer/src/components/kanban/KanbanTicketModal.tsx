@@ -96,6 +96,7 @@ import { TicketAttachmentEditor } from './TicketAttachmentEditor'
 import { TicketDiscardChangesDialog } from './TicketDiscardChangesDialog'
 import { AutoApprovePlanToggle } from './AutoApprovePlanToggle'
 import { LifecycleCallbacksEditor } from './LifecycleCallbacksEditor'
+import { ConditionGateResultPanel } from './ConditionGateResultPanel'
 import { isConditionGate } from '@/lib/ticket-lifecycle'
 import type { TicketLifecycleConfig } from '@shared/types/ticket-lifecycle'
 import { useImagePaste } from '@/hooks/useImagePaste'
@@ -1821,6 +1822,11 @@ function EditModeContent({
           }}
         />
 
+        {/* Last Condition-Gate run — so re-running the gate shows its result inline. */}
+        {ticket.condition_gate_result && (
+          <ConditionGateResultPanel result={ticket.condition_gate_result} />
+        )}
+
         {/* Prompt queue (Claude CLI) — author a batch of follow-ups up front.
             Hidden on Done; renders nothing unless the feature is active. */}
         {ticket.column !== 'done' && <ClaudeCliQueueSection ticket={ticket} />}
@@ -3157,6 +3163,32 @@ function ReviewModeContent({
     }
   }, [recheckTicketCompletion, ticket.id, ticket.project_id])
 
+  // ── Manual Condition-Gate re-run ──────────────────────────────────
+  // Re-trigger the two-stage gate on demand (file-first verdict → decide →
+  // route). Same action the auto-callback runs, `trigger:'manual'`; supersedes
+  // any in-flight countdown. Colocated with the result panel below so "check it
+  // again, and see how it decided" is one click from where the verdict shows.
+  // NOT a passive re-check: pass advances (→ Done if auto-close), fix launches a
+  // fix round, block routes needs-human — the toast says which.
+  const rerunConditionGate = useKanbanStore((s) => s.rerunConditionGate)
+  const isGateTicket = isConditionGate(ticket.lifecycle_callbacks)
+  const [isRerunningGate, setIsRerunningGate] = useState(false)
+  const handleRerunGate = useCallback(async () => {
+    if (isRerunningGate) return
+    setIsRerunningGate(true)
+    try {
+      const outcome = await rerunConditionGate(ticket.id, ticket.project_id)
+      if (outcome === 'pass') toast.success('Condition Gate passed')
+      else if (outcome === 'fix') toast.info('Condition Gate requested a fix — running fix round')
+      else if (outcome === 'blocked') toast.warning('Condition Gate blocked — needs a human')
+      // null → the store already surfaced a warning (unknown ticket / not a gate).
+    } catch {
+      toast.error('Failed to re-run Condition Gate')
+    } finally {
+      setIsRerunningGate(false)
+    }
+  }, [isRerunningGate, rerunConditionGate, ticket.id, ticket.project_id])
+
   const handleAttach = useCallback((file: AttachmentInput) => {
     setAttachments((prev) => {
       if (prev.length >= MAX_ATTACHMENTS) {
@@ -3555,6 +3587,32 @@ function ReviewModeContent({
             onChange={handleToggleAutoApprove}
             testId="ticket-review-auto-approve-review-toggle"
           />
+        </div>
+      )}
+
+      {/* Condition Gate result — durable record of whether the two-stage gate ran
+          and how it decided (survives reload; shows regardless of ticket mode).
+          The re-run button lives here (not just the edit-mode footer) so you can
+          re-trigger the gate from where you read the verdict. */}
+      {(ticket.condition_gate_result || isGateTicket) && (
+        <div className="flex-shrink-0 space-y-2">
+          {ticket.condition_gate_result && (
+            <ConditionGateResultPanel result={ticket.condition_gate_result} />
+          )}
+          {isGateTicket && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 border-blue-500/30 text-blue-500 hover:bg-blue-500/10"
+              disabled={isRerunningGate}
+              onClick={handleRerunGate}
+              data-testid="review-rerun-condition-gate-btn"
+            >
+              <RefreshCw className={`h-3.5 w-3.5${isRerunningGate ? ' animate-spin' : ''}`} />
+              {isRerunningGate ? 'Re-running gate…' : 'Re-run gate now'}
+            </Button>
+          )}
         </div>
       )}
 

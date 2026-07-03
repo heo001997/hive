@@ -672,5 +672,13 @@ DROP TABLE IF EXISTS diff_comments;`
       ALTER TABLE kanban_tickets ADD COLUMN lifecycle_iteration INTEGER NOT NULL DEFAULT 0;
     `,
     down: `-- no-op`
+  },
+  {
+    version: 41,
+    name: 'add_ticket_condition_gate_result',
+    up: `
+      ALTER TABLE kanban_tickets ADD COLUMN condition_gate_result TEXT DEFAULT NULL;
+    `,
+    down: `-- SQLite cannot drop columns safely; no-op.`
   }
 ]
