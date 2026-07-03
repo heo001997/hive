@@ -268,5 +268,14 @@ export const kanbanApi = {
           callback(event.payload)
         }
       })
+  },
+  autoLaunch: {
+    /**
+     * Ask the server to re-emit KANBAN_TICKETS_CREATED for every project that still
+     * carries a pending-launch backlog (Core 2 cold-start replay). Called once from
+     * {@link useKanbanStore.initializeAutoLaunch} right after the listener is live.
+     */
+    replayPending: async (): Promise<void> =>
+      getRendererRpcClient().request<void>('kanban.autoLaunch.replayPending')
   }
 }

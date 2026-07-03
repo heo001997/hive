@@ -298,6 +298,42 @@ function isCurrentLoad(projectId: string, generation: number): boolean {
   return loadGeneration.get(projectId) === generation
 }
 
+/**
+ * Idempotency holder for {@link initializeAutoLaunch}. Guards against React
+ * StrictMode's mount→unmount→mount and any accidental second caller: a second init
+ * while one is live returns a no-op teardown instead of opening a duplicate
+ * KANBAN_TICKETS_CREATED listener (a duplicate would double every reload + launch).
+ */
+let autoLaunchUnsub: (() => void) | null = null
+
+/**
+ * Turn a KANBAN_TICKETS_CREATED event into launches — serves BOTH the live create
+ * event and the cold-start replay events (Core 2), one mechanism for both. The event
+ * is a discrete domain signal ("these tickets are newly ready"), so this is the single
+ * owning handler; it does NOT scan on a timer.
+ *
+ * Uses the FULL-snapshot loader (`loadTicketsWithArchiveVisibility`), NOT `loadTickets`:
+ * the latter's fast path resolves after only the first page per column, fires
+ * `loadDependencies` un-awaited, and streams the rest in the background. Launching
+ * against that partial set + an empty `dependencyMap` would let a still-blocked chain
+ * member look ready and race parallel sessions into one worktree. The full loader does a
+ * single complete fetch (tickets + deps) before we launch. Deps are then awaited
+ * explicitly (the loader's internal call is fire-and-forget). No fail-open: on error we
+ * `console.error` and leave state put (matches Strict-Verify philosophy).
+ */
+async function handleCreated(projectId: string): Promise<void> {
+  try {
+    const store = useKanbanStore.getState()
+    const includeArchived = store.showArchivedByProject[projectId] ?? false
+    await store.loadTicketsWithArchiveVisibility(projectId, includeArchived)
+    await store.loadDependencies(projectId)
+    const { launchReadyCreatedTickets } = await import('../lib/worktree-concurrency')
+    await launchReadyCreatedTickets(projectId)
+  } catch (err) {
+    console.error('[auto-launch] handleCreated failed for project', projectId, err)
+  }
+}
+
 /** Record a locally-removed ticket so background pages can't resurrect it. */
 function trackRemovedTicket(projectId: string, ticketId: string): void {
   let ids = removedTicketIds.get(projectId)
@@ -436,6 +472,13 @@ interface KanbanState {
   clearSelectedTicketKeys: () => void
   setBoardTelegramTarget: (target: BoardTelegramTarget | null) => void
   clearBoardTelegramTarget: () => void
+  /**
+   * App-lifetime auto-launch owner: subscribe to KANBAN_TICKETS_CREATED and fire the
+   * cold-start backlog replay once. Returns a cleanup. Call ONLY from `App.tsx` (the
+   * always-mounted, unfiltered root) — never from a board/view component, or launches
+   * revert to being scoped to the on-screen board. Idempotent.
+   */
+  initializeAutoLaunch: () => () => void
   loadTickets: (projectId: string) => Promise<void>
   loadTicketsWithArchiveVisibility: (projectId: string, includeArchived: boolean) => Promise<void>
   createTicket: (projectId: string, data: KanbanTicketCreate) => Promise<KanbanTicket>
@@ -2828,6 +2871,28 @@ export const useKanbanStore = create<KanbanState>()(
 
       clearBoardTelegramTarget: () => {
         set({ boardTelegramTarget: null })
+      },
+
+      // ── initializeAutoLaunch ─────────────────────────────────────
+      initializeAutoLaunch: () => {
+        // Idempotent: a second call while a listener is live is a no-op (returns a
+        // throwaway cleanup), so StrictMode's mount→unmount→mount or a stray caller
+        // can't open a duplicate subscription.
+        if (autoLaunchUnsub) return () => {}
+        const unsub = kanban.watch.onTicketsCreated((event) => {
+          void handleCreated(event.projectId)
+        })
+        // Core 2: with the live listener up, ask the server to re-emit
+        // KANBAN_TICKETS_CREATED for any prior-session pending-launch backlog.
+        // Subscribe-then-request ordering guarantees the listener is live before the
+        // replay events arrive. Best-effort — a replay failure must not tear the
+        // live subscription down.
+        void kanban.autoLaunch.replayPending().catch(() => {})
+        autoLaunchUnsub = unsub
+        return () => {
+          unsub()
+          autoLaunchUnsub = null
+        }
       },
 
       // ── loadTickets ──────────────────────────────────────────────

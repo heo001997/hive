@@ -57,29 +57,12 @@ export function useMarkdownKanbanWatcher(
     }
   }, [])
 
-  // Out-of-band ticket creation (agent-driven condition-gate fix rounds CRUD the
-  // next round straight into the DB via the `hive-ticket` CLI). Those creates never
-  // touch this renderer's store, so besides reloading the board we must also re-drive
-  // the auto-launch queue — otherwise the fresh round sits queued forever.
-  useEffect(() => {
-    const unsubscribe = kanbanApi.watch.onTicketsCreated((event) => {
-      if (!previousProjectIdsRef.current.includes(event.projectId)) return
-      const reload = reloadProjectRef.current ?? useKanbanStore.getState().loadTickets
-      void Promise.resolve(reload(event.projectId)).then(async () => {
-        // Refresh dependencies too — the launcher reads `dependencyMap` to tell a
-        // ready head from a still-blocked chain member. Without this the round's
-        // brand-new deps are absent and every ticket would look launch-ready, racing
-        // three sessions into one worktree.
-        await useKanbanStore.getState().loadDependencies(event.projectId)
-        const { launchReadyCreatedTickets } = await import('@/lib/worktree-concurrency')
-        await launchReadyCreatedTickets(event.projectId)
-      })
-    })
-
-    return () => {
-      unsubscribe()
-    }
-  }, [])
+  // NOTE: KANBAN_TICKETS_CREATED launch handling deliberately does NOT live here.
+  // Launch is a domain action owned app-wide by `useKanbanStore.initializeAutoLaunch()`
+  // (wired once in App.tsx), which reloads + launches for ANY project regardless of
+  // which board is displayed. A handler here would be board-scoped (the 2822 bug) and
+  // would double-reload the visible board. This view owns only board-visibility
+  // concerns (which projects to watch, on-disk edit refresh) and never launches.
 
   useEffect(() => {
     return () => {

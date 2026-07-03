@@ -24,7 +24,8 @@ import {
   getMaxParallelWorktrees,
   getRunningWorktreeCount,
   canLaunchWorktreeNow,
-  launchNextQueuedTickets
+  launchNextQueuedTickets,
+  launchReadyCreatedTickets
 } from './worktree-concurrency'
 
 const PROJECT_ID = 'project-1'
@@ -324,5 +325,93 @@ describe('launchNextQueuedTickets', () => {
     await launchNextQueuedTickets(PROJECT_ID)
     expect(autoLaunchMocks.autoLaunchTicket).toHaveBeenCalledTimes(1)
     expect(autoLaunchMocks.autoLaunchTicket.mock.calls[0][0].id).toBe('blocked')
+  })
+})
+
+describe('launchReadyCreatedTickets', () => {
+  it('capped: delegates to the serialized drainer (cap respected, oldest-first)', async () => {
+    setProject(2)
+    setTickets([
+      makeTicket({ id: 'running', column: 'in_progress' }),
+      makeTicket({
+        id: 'newer',
+        column: 'todo',
+        created_at: '2026-01-03T00:00:00.000Z',
+        pending_launch_config: QUEUED_CONFIG
+      }),
+      makeTicket({
+        id: 'older',
+        column: 'todo',
+        created_at: '2026-01-02T00:00:00.000Z',
+        pending_launch_config: QUEUED_CONFIG
+      })
+    ])
+    await launchReadyCreatedTickets(PROJECT_ID)
+    // 1 running + cap 2 → exactly one free slot → oldest queued only.
+    expect(autoLaunchMocks.autoLaunchTicket).toHaveBeenCalledTimes(1)
+    expect(autoLaunchMocks.autoLaunchTicket.mock.calls[0][0].id).toBe('older')
+  })
+
+  it('uncapped: launches ready no-blocker heads; skips unsatisfied-blocker / archived / done / null-config', async () => {
+    setProject(0)
+    const ready = makeTicket({ id: 'ready', column: 'todo', pending_launch_config: QUEUED_CONFIG })
+    const blocked = makeTicket({
+      id: 'blocked',
+      column: 'todo',
+      pending_launch_config: QUEUED_CONFIG
+    })
+    const blocker = makeTicket({ id: 'blocker', column: 'todo' })
+    const archived = makeTicket({
+      id: 'archived',
+      column: 'todo',
+      pending_launch_config: QUEUED_CONFIG,
+      archived_at: '2026-01-02T00:00:00.000Z'
+    })
+    const done = makeTicket({ id: 'done', column: 'done', pending_launch_config: QUEUED_CONFIG })
+    const noConfig = makeTicket({ id: 'noConfig', column: 'todo', pending_launch_config: null })
+    useKanbanStore.setState({
+      tickets: new Map([[PROJECT_ID, [ready, blocked, blocker, archived, done, noConfig]]]),
+      // blocked → blocker (in 'todo' → unsatisfied against trigger 'review').
+      dependencyMap: new Map([
+        [ticketKey(PROJECT_ID, 'blocked'), new Set([ticketKey(PROJECT_ID, 'blocker')])]
+      ])
+    })
+    await launchReadyCreatedTickets(PROJECT_ID)
+    expect(autoLaunchMocks.autoLaunchTicket).toHaveBeenCalledTimes(1)
+    expect(autoLaunchMocks.autoLaunchTicket.mock.calls[0][0].id).toBe('ready')
+  })
+
+  it('concurrent double-invoke on one ready ticket launches it exactly once', async () => {
+    // Capped so both calls route through the per-project serialized drainer; the
+    // second call sets a rerun flag instead of racing a concurrent launch.
+    setProject(1)
+    setTickets([
+      makeTicket({ id: 'q1', column: 'todo', pending_launch_config: QUEUED_CONFIG })
+    ])
+
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    autoLaunchMocks.autoLaunchTicket.mockImplementation(async (ticket: { id: string }) => {
+      await gate
+      const map = new Map(useKanbanStore.getState().tickets)
+      const arr = (map.get(PROJECT_ID) ?? []).map((t) =>
+        t.id === ticket.id
+          ? { ...t, column: 'in_progress' as KanbanTicketColumn, pending_launch_config: null }
+          : t
+      )
+      map.set(PROJECT_ID, arr)
+      useKanbanStore.setState({ tickets: map })
+    })
+
+    const p1 = launchReadyCreatedTickets(PROJECT_ID)
+    const p2 = launchReadyCreatedTickets(PROJECT_ID)
+    await p2
+    release()
+    await p1
+
+    expect(autoLaunchMocks.autoLaunchTicket).toHaveBeenCalledTimes(1)
+    expect(autoLaunchMocks.autoLaunchTicket.mock.calls[0][0].id).toBe('q1')
   })
 })
