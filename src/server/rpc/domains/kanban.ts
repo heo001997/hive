@@ -1258,6 +1258,45 @@ export const makeKanbanRpcHandlers = (
         })
     ],
     [
+      // Cold-start backlog replay (Core 2). Tickets stranded carrying a
+      // `pending_launch_config` in a PRIOR session (their KANBAN_TICKETS_CREATED event
+      // fired while no app was connected, so nothing launched them) are adopted on the
+      // next connect: we re-emit the SAME channel per project that has a pending
+      // backlog, so the renderer's single auto-launch owner picks them up — for any
+      // project, even one whose board is never opened. One-shot, event-driven, bounded
+      // (project count is small) — NOT a reconciler: no interval, no periodic sweep.
+      'kanban.autoLaunch.replayPending',
+      (params, context) =>
+        Effect.gen(function* () {
+          yield* Effect.try({
+            try: () => emptyParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          const projects = yield* Effect.tryPromise({
+            try: async () => {
+              const { getDatabase } = await import('../../../main/db')
+              return getDatabase().getAllProjects()
+            },
+            catch: (cause) => cause
+          })
+          for (const project of projects) {
+            // Backend-agnostic list (DB- and markdown-backed both carry the config).
+            const tickets = yield* service.getTicketsByProject(project.id, false)
+            const ticketIds = tickets
+              .filter(
+                (t) => t.pending_launch_config != null && t.column !== 'done' && !t.archived_at
+              )
+              .map((t) => t.id)
+            if (ticketIds.length > 0) {
+              yield* context.eventBus.publish({
+                channel: KANBAN_TICKETS_CREATED_CHANNEL,
+                payload: { projectId: project.id, ticketIds }
+              })
+            }
+          }
+        })
+    ],
+    [
       'kanban.ticket.get',
       (params) =>
         Effect.gen(function* () {

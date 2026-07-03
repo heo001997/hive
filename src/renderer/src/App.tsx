@@ -7,6 +7,7 @@ import { initPlatform } from '@/lib/platform'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useTipStore } from '@/stores/useTipStore'
 import { useFullscreenStore } from '@/stores/useFullscreenStore'
+import { useKanbanStore } from '@/stores/useKanbanStore'
 import { PetStatusBridge } from '@/components/pet/PetStatusBridge'
 
 function App(): React.JSX.Element {
@@ -27,6 +28,13 @@ function App(): React.JSX.Element {
   // Track window fullscreen state so the header can drop the macOS traffic-light
   // spacer (window buttons are hidden in fullscreen).
   useEffect(() => useFullscreenStore.getState().initialize(), [])
+
+  // App-lifetime auto-launch owner. This — NOT the on-screen board — turns
+  // KANBAN_TICKETS_CREATED (out-of-band condition-gate fix rounds via the CLI) and the
+  // cold-start backlog replay into launches, so a fresh round on a board that isn't
+  // displayed still starts. App is the always-mounted, unfiltered root, mirroring the
+  // fullscreen init above; keep this the sole caller.
+  useEffect(() => useKanbanStore.getState().initializeAutoLaunch(), [])
 
   useEffect(() => {
     if (settingsLoading || didRefreshHiveOrg.current) return
