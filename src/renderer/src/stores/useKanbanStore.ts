@@ -20,6 +20,7 @@ import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import type {
   CompletionCheckProvider,
   CompletionVerdict,
+  ConditionGateResult,
   ConditionGateVerdict,
   SessionFingerprint,
   StoredCompletionVerdict,
@@ -2079,17 +2080,59 @@ async function runConditionGate(
   ticketId: string,
   projectId: string,
   current: KanbanTicket,
-  settings: StrictVerifySettings
+  settings: StrictVerifySettings,
+  trigger: ConditionGateResult['trigger'] = 'auto'
 ): Promise<ConditionGateOutcome> {
   const key = ticketKey(projectId, ticketId)
   const sessionId = current.current_session_id
   const gateCfg = conditionGateConfigOf(current.lifecycle_callbacks)
+  const round = parseGateRound(current.title)
+  const maxRounds = gateCfg.maxRounds ?? settings.kanbanConditionGateMaxRounds ?? 3
 
-  // needs-Tu: store a blocked marker, clear the badge, notify, leave in Review.
-  const blockForTu = (reason: string, base?: CompletionVerdict): ConditionGateOutcome => {
+  // Persist WHAT happened onto the ticket so the detail view can show whether the
+  // gate ran and how it decided — the `completionVerdicts` map is lost on reload
+  // and the decision only ever hit the devtools console. Also mirror it to the
+  // main-process file log (the renderer's decision was the missing trace line).
+  const recordGateResult = (
+    r: Pick<
+      ConditionGateResult,
+      'verdict' | 'source' | 'reason' | 'fixes' | 'decision' | 'outcome' | 'action'
+    > &
+      Partial<Pick<ConditionGateResult, 'error'>>
+  ): void => {
+    const result: ConditionGateResult = {
+      ranAt: Date.now(),
+      trigger,
+      round,
+      maxRounds,
+      sessionId,
+      ...r
+    }
+    logToMain('info', 'ConditionGate', `DECISION ticket ${ticketId} → ${result.decision}`, {
+      ...result
+    })
+    void get()
+      .updateTicket(ticketId, projectId, { condition_gate_result: result })
+      .catch((err) =>
+        console.warn(`[ConditionGate] persist result for ${ticketId} failed`, err)
+      )
+  }
+
+  // needs-Tu / error: store a blocked marker, clear the badge, notify, leave in
+  // Review, and record the result. `kind: 'block'` = a genuine needs-human verdict;
+  // `kind: 'error'` = the gate could not produce a verdict at all.
+  const blockForTu = (
+    reason: string,
+    opts?: {
+      base?: CompletionVerdict
+      verdict?: ConditionGateVerdict
+      kind?: 'block' | 'error'
+    }
+  ): ConditionGateOutcome => {
+    const kind = opts?.kind ?? 'error'
     const prior = get().completionVerdicts.get(key)
     const verdictBase: CompletionVerdict =
-      base ?? prior ?? { complete: false, needsInput: false, confidence: 0, reason }
+      opts?.base ?? prior ?? { complete: false, needsInput: false, confidence: 0, reason }
     get().setCompletionVerdict(key, {
       ...verdictBase,
       reason,
@@ -2100,6 +2143,19 @@ async function runConditionGate(
     })
     get().setVerifyProgress(key, null)
     console.warn(`[ConditionGate] ticket ${ticketId} BLOCKED (needs Tu): ${reason}`)
+    recordGateResult({
+      verdict: opts?.verdict?.verdict ?? null,
+      source: opts?.verdict?.source ?? null,
+      reason,
+      fixes: opts?.verdict?.fixes ?? [],
+      decision: kind,
+      outcome: 'blocked',
+      action:
+        kind === 'block'
+          ? 'Needs human — left in Review, you were notified'
+          : 'Gate error — left in Review so the miss is traceable',
+      ...(kind === 'error' ? { error: reason } : {})
+    })
     void import('../lib/ticket-telegram-notify')
       .then((m) =>
         m.notifyTicketEvent('question', {
@@ -2137,8 +2193,6 @@ async function runConditionGate(
     )
   }
 
-  const round = parseGateRound(current.title)
-  const maxRounds = gateCfg.maxRounds ?? settings.kanbanConditionGateMaxRounds ?? 3
   const decision = decideConditionGate(verdict, round, maxRounds)
   console.log(
     `[ConditionGate] ticket ${ticketId} verdict=${verdict.verdict} ` +
@@ -2147,7 +2201,10 @@ async function runConditionGate(
   )
 
   if (decision.kind === 'block') {
-    return blockForTu(`condition gate → needs human: ${decision.reason}`)
+    return blockForTu(`condition gate → needs human: ${decision.reason}`, {
+      verdict,
+      kind: 'block'
+    })
   }
 
   if (decision.kind === 'fix') {
@@ -2161,11 +2218,23 @@ async function runConditionGate(
       decision.round
     )
     if (!launched.ok) {
-      return blockForTu(`condition-gate fix round failed to launch: ${launched.error ?? 'unknown'}`)
+      return blockForTu(
+        `condition-gate fix round failed to launch: ${launched.error ?? 'unknown'}`,
+        { verdict }
+      )
     }
     // The reviewed ticket's job is done — it produced a verdict + spawned the next
     // round in its own worktree/chain. Commit + move to Done; the freshly-created
     // round re-enters this same gate.
+    recordGateResult({
+      verdict: verdict.verdict,
+      source: verdict.source ?? null,
+      reason: verdict.reason,
+      fixes: verdict.fixes ?? [],
+      decision: 'fix',
+      outcome: 'fix',
+      action: `Launched fix round ${decision.round} — this ticket committed & moved to Done`
+    })
     await commitTicketWorktree(ticketId, current)
     await moveReviewedTicketToDone(get, ticketId, projectId)
     get().setVerifyProgress(key, null)
@@ -2190,7 +2259,19 @@ async function runConditionGate(
   // its chain, or standalone) stays in Review for Tu — unless the gate opted into
   // `autoDone` (auto-close even the terminal review).
   const autoDone = gateCfg.autoDone ?? settings.kanbanConditionGateAutoDone ?? false
-  if (ticketHasDependent(get, projectId, ticketId) || autoDone) {
+  const willAutoClose = ticketHasDependent(get, projectId, ticketId) || autoDone
+  recordGateResult({
+    verdict: verdict.verdict,
+    source: verdict.source ?? null,
+    reason: verdict.reason,
+    fixes: [],
+    decision: 'pass',
+    outcome: 'pass',
+    action: willAutoClose
+      ? 'Clean pass — committed & moved to Done'
+      : 'Clean pass — left in Review for you'
+  })
+  if (willAutoClose) {
     await commitTicketWorktree(ticketId, current)
     await moveReviewedTicketToDone(get, ticketId, projectId)
   }
@@ -4272,7 +4353,7 @@ export const useKanbanStore = create<KanbanState>()(
         const settings = useSettingsStore.getState()
         console.info(`[ConditionGate] ticket ${ticketId} manual re-run requested`)
         get().setVerifyProgress(ticketKey(projectId, ticketId), { phase: 'checking' })
-        return runConditionGate(get, ticketId, projectId, current, settings)
+        return runConditionGate(get, ticketId, projectId, current, settings, 'manual')
       },
 
       addQueuedPrompt: (

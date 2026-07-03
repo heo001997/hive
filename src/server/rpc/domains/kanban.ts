@@ -1,6 +1,7 @@
 import { Effect } from 'effect'
 import { z } from 'zod'
 import { seedConditionGateOnTarget } from '../../../shared/lib/condition-gate'
+import { CONDITION_GATE_VERDICTS } from '../../../shared/types/completion'
 import { LIFECYCLE_ACTION_TYPES } from '../../../shared/types/ticket-lifecycle'
 import { isDesktopCommandResult, makeDesktopCommandRequest } from '../../../shared/desktop-command'
 import { KANBAN_TICKETS_CREATED_CHANNEL } from '../../../shared/kanban-events'
@@ -328,6 +329,27 @@ const kanbanTicketBatchCreateParamsSchema = z
     data: kanbanTicketBatchCreateSchema
   })
   .strict()
+// A recorded Condition-Gate run, persisted on the ticket so the detail view can
+// show whether the gate ran and how. `.strict()` to match the update schema's
+// no-unknown-keys contract (the same drift class that broke ticket saves before).
+const conditionGateResultSchema = z
+  .object({
+    ranAt: z.number(),
+    trigger: z.enum(['auto', 'manual']),
+    verdict: z.enum(CONDITION_GATE_VERDICTS).nullable(),
+    source: z.enum(['review-gate.json', 'llm-transcript']).nullable(),
+    reason: z.string(),
+    fixes: z.array(z.string()),
+    round: z.number(),
+    maxRounds: z.number(),
+    decision: z.enum(['pass', 'fix', 'block', 'error']),
+    outcome: z.enum(['pass', 'fix', 'blocked']),
+    action: z.string(),
+    sessionId: z.string().nullable(),
+    error: z.string().optional()
+  })
+  .strict()
+
 const kanbanTicketUpdateSchema = z
   .object({
     title: z.string().optional(),
@@ -352,7 +374,8 @@ const kanbanTicketUpdateSchema = z
     review_seen_at: z.string().nullable().optional(),
     lifecycle_callbacks: ticketLifecycleConfigSchema.nullable().optional(),
     lifecycle_state: ticketColumnSchema.nullable().optional(),
-    lifecycle_iteration: z.number().optional()
+    lifecycle_iteration: z.number().optional(),
+    condition_gate_result: conditionGateResultSchema.nullable().optional()
   })
   .strict() satisfies z.ZodType<KanbanTicketUpdate>
 const ticketIdProjectParamsSchema = z
