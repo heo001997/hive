@@ -30,10 +30,12 @@ describe('Settings Store — Strict Verify Ticket Review State', () => {
     vi.restoreAllMocks()
   })
 
-  it('defaults: disabled, 8s delay, claude-code, no model, 6000 chars, 0.6 threshold', () => {
+  it('defaults: ENABLED, 8s delay, 5s frozen window, claude-code, no model, 6000 chars, 0.6 threshold', () => {
     const s = useSettingsStore.getState()
-    expect(s.kanbanStrictVerifyEnabled).toBe(false)
+    // WS4 — frozen-first verification ships on out of the box (was false).
+    expect(s.kanbanStrictVerifyEnabled).toBe(true)
     expect(s.kanbanStrictVerifyDelaySeconds).toBe(8)
+    expect(s.kanbanStrictVerifyFrozenIdleSeconds).toBe(5)
     expect(s.kanbanStrictVerifyProvider).toBe('claude-code')
     expect(s.kanbanStrictVerifyModel).toBe('')
     expect(s.kanbanStrictVerifyChars).toBe(6000)

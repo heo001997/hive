@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Effect } from 'effect'
 import { z } from 'zod'
@@ -12,11 +12,15 @@ import type {
 import {
   COMPLETION_CHECK_PROVIDERS,
   CONDITION_GATE_VERDICTS,
+  DEFAULT_REVIEW_JUDGE_CONTEXT_CHARS,
+  REVIEW_JUDGE_CONTEXT_SOURCES,
   type CompletionCheckProvider,
   type CompletionCheckResult,
   type CompletionVerdict,
   type ConditionGateCheckResult,
   type ConditionGateVerdict,
+  type ReviewContextResult,
+  type ReviewJudgeContextSource,
   type SessionFingerprint
 } from '@shared/types/completion'
 import { stripAnsi } from '../../../shared/lib/ansi'
@@ -79,6 +83,27 @@ export function readReviewGateFile(cwd: string | undefined): ConditionGateVerdic
   }
 }
 
+/**
+ * Remove a stale `<cwd>/.hive/review-gate.json` before a fresh Stage-2 judge runs,
+ * so the judge's new write is the ONLY verdict Hive can read (never a previous
+ * round's leftover). Returns true if a file was actually present and removed.
+ */
+export function clearReviewGateFile(cwd: string | undefined): boolean {
+  if (!cwd) return false
+  const path = join(cwd, '.hive', 'review-gate.json')
+  if (!existsSync(path)) return false
+  try {
+    rmSync(path, { force: true })
+    return true
+  } catch (err) {
+    log.warn('[ReviewJudge] failed to clear stale review-gate.json', {
+      path,
+      error: err instanceof Error ? err.message : String(err)
+    })
+    return false
+  }
+}
+
 /** Single-line, length-capped preview of a blob for logging. */
 const preview = (s: string, n = 240): string =>
   (s.length <= n ? s : `${s.slice(0, n)}…`).replace(/\s+/g, ' ').trim()
@@ -112,10 +137,28 @@ export interface DetectTicketVerdictParams {
   model?: string
   /** Optional condition-gate system prompt override (blank → built-in default). */
   systemPrompt?: string
+  /**
+   * Gate path: consult ONLY `<cwd>/.hive/review-gate.json`. When absent, return
+   * `{ success: true, noFile: true }` rather than the `llm-transcript` fallback —
+   * the gate must NEVER LLM-guess a pass (the store retries then escalates to Tu).
+   */
+  fileOnly?: boolean
 }
 
 export interface GetSessionFingerprintParams {
   sessionId: string
+}
+
+/** Params for the Stage-2 pre-spawn context extraction (feeds the review-judge CLI). */
+export interface ExtractReviewContextParams {
+  sessionId: string
+  ticketId: string
+  /** Which slice of the finished review session to extract (default `transcript`). */
+  source?: ReviewJudgeContextSource
+  /** Trailing-char budget for the extracted context (default 10000). */
+  maxChars?: number
+  /** When true, also remove any stale `<cwd>/.hive/review-gate.json` before the judge runs. */
+  clearGateFile?: boolean
 }
 
 export interface TestStrictVerifyProviderParams {
@@ -147,6 +190,9 @@ export interface CompletionOpsRpcService {
   readonly testStrictVerifyProvider: (
     params: TestStrictVerifyProviderParams
   ) => Effect.Effect<CompletionCheckResult, unknown, never>
+  readonly extractReviewContext: (
+    params: ExtractReviewContextParams
+  ) => Effect.Effect<ReviewContextResult, unknown, never>
 }
 
 /** Injectable dependencies — default to the real DB + detector via dynamic import. */
@@ -364,7 +410,8 @@ const detectVerdictParamsSchema = z
     maxChars: z.number().int().positive().optional(),
     provider: z.enum(COMPLETION_CHECK_PROVIDERS).optional(),
     model: z.string().optional(),
-    systemPrompt: z.string().optional()
+    systemPrompt: z.string().optional(),
+    fileOnly: z.boolean().optional()
   })
   .strict()
 
@@ -373,6 +420,16 @@ const testProviderParamsSchema = z
     provider: z.enum(COMPLETION_CHECK_PROVIDERS).optional(),
     model: z.string().optional(),
     systemPrompt: z.string().optional()
+  })
+  .strict()
+
+const extractReviewContextParamsSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    ticketId: z.string().min(1),
+    source: z.enum(REVIEW_JUDGE_CONTEXT_SOURCES).optional(),
+    maxChars: z.number().int().positive().optional(),
+    clearGateFile: z.boolean().optional()
   })
   .strict()
 
@@ -500,6 +557,17 @@ export const makeLiveCompletionOpsRpcService = (
             return { success: true, verdict: fileVerdict }
           }
 
+          // Gate path — never LLM-guess a pass. No file → report `noFile` so the
+          // store can retry (write-race) then escalate to the human, instead of
+          // falling through to the transcript LLM (the old auto-pass footgun).
+          if (params.fileOnly) {
+            log.info('[ConditionGate] NO FILE (fileOnly)', {
+              ticketId: params.ticketId,
+              cwd: cwd ?? '(none)'
+            })
+            return { success: true, noFile: true }
+          }
+
           const messages = await resolveTranscriptMessages(db, session, worktree, params, deps)
           const transcriptTail = buildTail(messages, params.maxChars)
 
@@ -610,6 +678,73 @@ export const makeLiveCompletionOpsRpcService = (
         }
       },
       catch: (cause) => cause
+    }),
+
+  // Stage 2 (new judge path) — extract the tail of the finished review session so
+  // Hive can feed it to a spawned interactive judge CLI, and clear any stale verdict
+  // file first. Reuses the same transcript resolution as the Watcher (clean
+  // transcript → pty-tail fallback) OR the raw terminal tail, per the setting.
+  extractReviewContext: (params) =>
+    Effect.tryPromise({
+      try: async (): Promise<ReviewContextResult> => {
+        try {
+          const loadDatabase =
+            deps.loadDatabase ?? (async () => (await import('../../../main/db')).getDatabase())
+          const buildTail =
+            deps.buildTail ??
+            (await import('../../../main/services/completion-detector')).buildTranscriptTail
+
+          const db = await loadDatabase()
+
+          const session = db.getSession(params.sessionId)
+          const worktree = session?.worktree_id ? db.getWorktree(session.worktree_id) : null
+          const cwd = worktree?.path ?? undefined
+
+          // Clear any stale verdict BEFORE the judge runs so its fresh write is the
+          // ONLY file Hive can read (never a previous round's leftover).
+          const clearedStaleGateFile = params.clearGateFile ? clearReviewGateFile(cwd) : false
+
+          const maxChars = params.maxChars ?? DEFAULT_REVIEW_JUDGE_CONTEXT_CHARS
+          const source: ReviewJudgeContextSource = params.source ?? 'transcript'
+
+          let context = ''
+          if (source === 'terminal-tail') {
+            const readLiveness =
+              deps.readLiveness ??
+              (await import('../../../main/services/terminal-pty-bridge')).getTerminalLiveness
+            const live = readLiveness(params.sessionId)
+            const tail = live?.tail ? stripAnsi(live.tail).trim() : ''
+            context = tail.length > maxChars ? tail.slice(-maxChars) : tail
+          } else {
+            // transcript — clean structured conversation, with pty-tail fallback
+            // handled internally by resolveTranscriptMessages.
+            const messages = await resolveTranscriptMessages(db, session, worktree, params, deps)
+            context = buildTail(messages, maxChars)
+          }
+
+          log.info('[ReviewJudge] CONTEXT extracted', {
+            ticketId: params.ticketId,
+            sessionId: params.sessionId,
+            source,
+            maxChars,
+            contextChars: context.length,
+            clearedStaleGateFile,
+            cwd: cwd ?? '(none)',
+            tailEnd:
+              context.length > 400 ? `…${preview(context.slice(-400), 400)}` : preview(context, 400)
+          })
+
+          return { success: true, context, cwd, source, clearedStaleGateFile }
+        } catch (err) {
+          log.error(
+            '[ReviewJudge] context extraction failed',
+            err instanceof Error ? err : new Error(String(err)),
+            { ticketId: params.ticketId, sessionId: params.sessionId }
+          )
+          return { success: false, error: err instanceof Error ? err.message : String(err) }
+        }
+      },
+      catch: (cause) => cause
     })
 })
 
@@ -659,6 +794,17 @@ export const makeCompletionOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.testStrictVerifyProvider(parsed)
+        })
+    ],
+    [
+      'completionOps.extractReviewContext',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => extractReviewContextParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.extractReviewContext(parsed)
         })
     ]
   ])

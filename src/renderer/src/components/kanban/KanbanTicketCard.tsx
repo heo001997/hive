@@ -33,7 +33,9 @@ import {
   Copy,
   Code,
   MessageCircleQuestion,
-  Clock
+  Clock,
+  CheckCircle2,
+  Undo2
 } from 'lucide-react'
 import { CheckeredFlagIcon } from './CheckeredFlagIcon'
 import { UpdateStatusModal } from './UpdateStatusModal'
@@ -150,27 +152,49 @@ function VerifyProgressBadge({ progress }: { progress: VerifyProgress }) {
   void now // `now` exists only to force the interval re-render
 
   let label: string
-  let spinning = false
+  // Frozen-check result phases are short-lived: green when idle-confirmed, amber
+  // when the tty was still active; everything else is the amber in-progress pill.
+  let tone: 'amber' | 'green' = 'amber'
+  let icon: 'spinner' | 'clock' | 'check' | 'undo' = 'clock'
   if (phase === 'verify-countdown') {
     label = `Verifying in ${deadline !== undefined ? secondsLeft(deadline) : 0}s`
   } else if (phase === 'bypass-countdown') {
     label = `Auto-approving in ${deadline !== undefined ? secondsLeft(deadline) : 0}s`
   } else if (phase === 'checking') {
     label = 'Verifying…'
-    spinning = true
+    icon = 'spinner'
+  } else if (phase === 'frozen-idle') {
+    label = 'Idle-confirmed'
+    tone = 'green'
+    icon = 'check'
+  } else if (phase === 'frozen-active') {
+    label = 'Active → In Progress'
+    icon = 'undo'
+  } else if (phase === 'judging') {
+    label = 'Judging review…'
+    icon = 'spinner'
   } else {
     label = 'Committing…'
-    spinning = true
+    icon = 'spinner'
   }
 
   return (
     <span
       data-testid="kanban-ticket-verify-progress"
       data-phase={phase}
-      className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 text-[11px] font-medium text-amber-500"
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+        tone === 'green'
+          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500'
+          : 'bg-amber-500/10 border-amber-500/30 text-amber-500'
+      )}
     >
-      {spinning ? (
+      {icon === 'spinner' ? (
         <Loader2 className="h-3 w-3 animate-spin" />
+      ) : icon === 'check' ? (
+        <CheckCircle2 className="h-3 w-3" />
+      ) : icon === 'undo' ? (
+        <Undo2 className="h-3 w-3" />
       ) : (
         <Clock className="h-3 w-3" />
       )}

@@ -98,7 +98,9 @@ import { AutoApprovePlanToggle } from './AutoApprovePlanToggle'
 import { LifecycleCallbacksEditor } from './LifecycleCallbacksEditor'
 import { ConditionGateResultPanel } from './ConditionGateResultPanel'
 import { isConditionGate } from '@/lib/ticket-lifecycle'
+import { resolveVerifyConfig } from '@/lib/verify-config'
 import type { TicketLifecycleConfig } from '@shared/types/ticket-lifecycle'
+import type { VerifyOverrides } from '@shared/types/completion'
 import { useImagePaste } from '@/hooks/useImagePaste'
 import { buildHandoffPrompt, type HandoffSelectionOverride } from '@/lib/handoffSelection'
 import { canonicalizeTicketTitle, extractPlanTitle } from '@shared/types/branch-utils'
@@ -550,6 +552,232 @@ function AutoApproveReviewToggle({
           )}
         />
       </button>
+    </div>
+  )
+}
+
+// Tri-state override control (Use global / On / Off) for one verification component.
+// `value` is the stored override (null/undefined = follow global/ticket type);
+// `effective` is the resolved value shown so the user sees what actually runs.
+function TriStateOverride({
+  label,
+  description,
+  value,
+  effective,
+  onChange,
+  testId
+}: {
+  label: string
+  description: string
+  value: boolean | null | undefined
+  effective: boolean
+  onChange: (next: boolean | null) => void
+  testId: string
+}) {
+  const current = value ?? null
+  const options: Array<{ key: string; val: boolean | null; text: string }> = [
+    { key: 'global', val: null, text: 'Use global' },
+    { key: 'on', val: true, text: 'On' },
+    { key: 'off', val: false, text: 'Off' }
+  ]
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <label className="text-sm font-medium">{label}</label>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+        <div
+          className="inline-flex shrink-0 overflow-hidden rounded-md border border-border"
+          data-testid={testId}
+        >
+          {options.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              aria-pressed={current === opt.val}
+              onClick={() => onChange(opt.val)}
+              className={cn(
+                'px-2 py-1 text-xs font-medium transition-colors',
+                current === opt.val
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-background text-muted-foreground hover:bg-muted'
+              )}
+            >
+              {opt.text}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Effective: <span className="font-medium">{effective ? 'On' : 'Off'}</span>
+        {current === null && ' (from global / ticket type)'}
+      </p>
+    </div>
+  )
+}
+
+// Per-ticket override of the three separable verification components (WS3). Folds
+// the stored `verify_overrides` over the global settings via `resolveVerifyConfig`
+// and shows the effective value for each. Collapses an all-default override to null
+// so a ticket left on "Use global" keeps following Settings.
+function VerificationOverridesSection({
+  ticket,
+  value,
+  onChange
+}: {
+  ticket: KanbanTicket
+  value: VerifyOverrides | null
+  onChange: (next: VerifyOverrides | null) => void
+}) {
+  const snapshotEnabled = useSettingsStore((s) => s.kanbanStrictVerifySnapshotEnabled)
+  const reviewerEnabled = useSettingsStore((s) => s.kanbanStrictVerifyReviewerEnabled)
+  const frozenIdleSeconds = useSettingsStore((s) => s.kanbanStrictVerifyFrozenIdleSeconds)
+  const masterEnabled = useSettingsStore((s) => s.kanbanStrictVerifyEnabled)
+  const globalJudgePrompt = useSettingsStore((s) => s.kanbanReviewJudgePrompt)
+
+  const ov = value ?? {}
+  const resolved = resolveVerifyConfig(
+    { lifecycle_callbacks: ticket.lifecycle_callbacks, verify_overrides: value },
+    {
+      kanbanStrictVerifySnapshotEnabled: snapshotEnabled,
+      kanbanStrictVerifyReviewerEnabled: reviewerEnabled,
+      kanbanStrictVerifyFrozenIdleSeconds: frozenIdleSeconds
+    }
+  )
+
+  // Merge a partial change, drop null/undefined keys, collapse empty → null.
+  const patch = (p: Partial<VerifyOverrides>) => {
+    const merged: VerifyOverrides = { ...ov, ...p }
+    const cleaned: VerifyOverrides = {}
+    if (merged.frozenCheck !== null && merged.frozenCheck !== undefined)
+      cleaned.frozenCheck = merged.frozenCheck
+    if (merged.llmReviewer !== null && merged.llmReviewer !== undefined)
+      cleaned.llmReviewer = merged.llmReviewer
+    if (merged.gateLoop !== null && merged.gateLoop !== undefined) cleaned.gateLoop = merged.gateLoop
+    if (merged.frozenIdleSeconds !== null && merged.frozenIdleSeconds !== undefined)
+      cleaned.frozenIdleSeconds = merged.frozenIdleSeconds
+    if (
+      merged.judgePrompt !== null &&
+      merged.judgePrompt !== undefined &&
+      merged.judgePrompt.trim() !== ''
+    )
+      cleaned.judgePrompt = merged.judgePrompt
+    onChange(Object.keys(cleaned).length ? cleaned : null)
+  }
+
+  return (
+    <div
+      className="space-y-3 rounded-md border border-border p-3"
+      data-testid="ticket-edit-verify-overrides"
+    >
+      <div>
+        <label className="text-sm font-medium text-foreground">Verification</label>
+        <p className="text-xs text-muted-foreground">
+          Per-ticket override of the three completion components.{' '}
+          {resolved.isGate
+            ? 'This is a gate/review ticket — the LLM Reviewer defaults Off (its prose would bounce the ticket) and the gate loop runs Stage-2.'
+            : 'This is a normal build ticket — the LLM Reviewer defaults On.'}{' '}
+          Leave a control on “Use global” to follow Settings.
+        </p>
+        {!masterEnabled && (
+          <p className="text-[11px] text-amber-500">
+            Strict Verify master is Off in Settings — these run only when it&apos;s on.
+          </p>
+        )}
+      </div>
+
+      <TriStateOverride
+        label="Frozen check"
+        description="Deterministic tty-stillness gate. The trustworthy liveness signal."
+        value={ov.frozenCheck}
+        effective={resolved.frozenEnabled}
+        onChange={(v) => patch({ frozenCheck: v })}
+        testId="verify-override-frozen"
+      />
+      <TriStateOverride
+        label="LLM Reviewer"
+        description="AI reads the transcript tail. Auto-off on gate/review tickets."
+        value={ov.llmReviewer}
+        effective={resolved.llmReviewer}
+        onChange={(v) => patch({ llmReviewer: v })}
+        testId="verify-override-reviewer"
+      />
+      <TriStateOverride
+        label="Gate loop (Stage-2)"
+        description="Runs the review→fix condition gate after the frozen check."
+        value={ov.gateLoop}
+        effective={resolved.gateLoop}
+        onChange={(v) => patch({ gateLoop: v })}
+        testId="verify-override-gate"
+      />
+
+      <div className="space-y-1.5 border-t border-border pt-3">
+        <label className="text-sm font-medium">Frozen window override</label>
+        <div className="flex items-center gap-3">
+          <Input
+            type="number"
+            min={2}
+            max={30}
+            placeholder="global"
+            value={ov.frozenIdleSeconds ?? ''}
+            onChange={(e) => {
+              const raw = e.target.value.trim()
+              if (raw === '') {
+                patch({ frozenIdleSeconds: null })
+                return
+              }
+              const val = parseInt(raw, 10)
+              if (!isNaN(val)) patch({ frozenIdleSeconds: Math.max(2, Math.min(30, val)) })
+            }}
+            className="w-24 font-mono text-sm"
+            data-testid="verify-override-frozen-seconds"
+          />
+          <span className="text-xs text-muted-foreground">
+            seconds — effective {Math.round(resolved.frozenIdleMs / 1000)}s (blank = global)
+          </span>
+        </div>
+      </div>
+
+      {resolved.gateLoop && (
+        <div className="space-y-1.5 border-t border-border pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-sm font-medium">Review judge standard (this ticket)</label>
+            {ov.judgePrompt != null && ov.judgePrompt.trim() !== '' && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => patch({ judgePrompt: null })}
+                data-testid="verify-override-judge-prompt-clear"
+              >
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                Use global
+              </Button>
+            )}
+          </div>
+          <Textarea
+            value={ov.judgePrompt ?? ''}
+            placeholder={
+              globalJudgePrompt
+                ? `Uses the global judge prompt:\n\n${globalJudgePrompt.slice(0, 200)}…`
+                : 'Uses the global review-judge prompt from Settings…'
+            }
+            onChange={(e) =>
+              patch({ judgePrompt: e.target.value.trim() === '' ? null : e.target.value })
+            }
+            rows={8}
+            spellCheck={false}
+            className="w-full font-mono text-xs leading-relaxed"
+            data-testid="verify-override-judge-prompt"
+          />
+          <p className="text-xs text-muted-foreground">
+            The standard the spawned judge is held to for THIS ticket only. Must keep the
+            instruction to write <code>.hive/review-gate.json</code>. Blank = use the global prompt
+            from Settings.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -1545,6 +1773,9 @@ function EditModeContent({
   const [lifecycleConfig, setLifecycleConfig] = useState<TicketLifecycleConfig | null>(
     ticket.lifecycle_callbacks ?? null
   )
+  const [verifyOverrides, setVerifyOverrides] = useState<VerifyOverrides | null>(
+    ticket.verify_overrides ?? null
+  )
   const [isSaving, setIsSaving] = useState(false)
   const [isRerunningGate, setIsRerunningGate] = useState(false)
   const rerunConditionGate = useKanbanStore((s) => s.rerunConditionGate)
@@ -1555,12 +1786,15 @@ function EditModeContent({
   const lifecycleDirty =
     JSON.stringify(lifecycleConfig ?? null) !==
     JSON.stringify(ticket.lifecycle_callbacks ?? null)
+  const verifyOverridesDirty =
+    JSON.stringify(verifyOverrides ?? null) !== JSON.stringify(ticket.verify_overrides ?? null)
   const isDirty =
     normalizeDraftText(title) !== normalizeDraftText(ticket.title) ||
     normalizeDraftText(description) !== normalizeDraftText(ticket.description) ||
     normalizeTicketAttachments(attachments) !== normalizeTicketAttachments(ticket.attachments) ||
     autoApproveReview !== ticket.auto_approve_review ||
-    lifecycleDirty
+    lifecycleDirty ||
+    verifyOverridesDirty
 
   useEffect(() => {
     onDirtyChange(isDirty)
@@ -1631,7 +1865,8 @@ function EditModeContent({
         description: description.trim() || null,
         attachments: attachments.map((a) => ({ type: a.type, url: a.url, label: a.label })),
         auto_approve_review: autoApproveReview,
-        ...(lifecycleDirty ? { lifecycle_callbacks: lifecycleConfig } : {})
+        ...(lifecycleDirty ? { lifecycle_callbacks: lifecycleConfig } : {}),
+        ...(verifyOverridesDirty ? { verify_overrides: verifyOverrides } : {})
       })
       toast.success('Ticket updated')
       onClose()
@@ -1651,6 +1886,8 @@ function EditModeContent({
     autoApproveReview,
     lifecycleDirty,
     lifecycleConfig,
+    verifyOverridesDirty,
+    verifyOverrides,
     isSaving,
     updateTicket,
     ticket.id,
@@ -1820,6 +2057,13 @@ function EditModeContent({
             maxIterations: iterateMaxIterations,
             fixPromptTemplate: iterateFixPromptTemplate
           }}
+        />
+
+        {/* Verification — per-ticket override of the three completion components */}
+        <VerificationOverridesSection
+          ticket={ticket}
+          value={verifyOverrides}
+          onChange={setVerifyOverrides}
         />
 
         {/* Last Condition-Gate run — so re-running the gate shows its result inline. */}

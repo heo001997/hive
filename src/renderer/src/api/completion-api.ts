@@ -3,6 +3,8 @@ import type {
   CompletionCheckProvider,
   CompletionCheckResult,
   ConditionGateCheckResult,
+  ReviewContextResult,
+  ReviewJudgeContextSource,
   SessionFingerprint
 } from '@shared/types/completion'
 
@@ -46,9 +48,33 @@ export const completionApi = {
     provider?: CompletionCheckProvider
     model?: string
     systemPrompt?: string
+    /**
+     * Gate path (Stage-2): read ONLY `<cwd>/.hive/review-gate.json`. When absent,
+     * resolve `{ success: true, noFile: true }` instead of falling back to the
+     * transcript LLM — the gate must never LLM-guess a pass.
+     */
+    fileOnly?: boolean
   }): Promise<ConditionGateCheckResult> =>
     getRendererRpcClient().request<ConditionGateCheckResult>(
       'completionOps.detectTicketVerdict',
+      params
+    ),
+
+  /**
+   * Stage-2 (judge path) — extract the tail of a finished review session to feed a
+   * spawned interactive judge CLI as its "Context:", and (with `clearGateFile`)
+   * remove any stale `.hive/review-gate.json` first so the judge's fresh write is
+   * the only verdict Hive reads. Resolves to `{ success: false, error }` on failure.
+   */
+  extractReviewContext: async (params: {
+    sessionId: string
+    ticketId: string
+    source?: ReviewJudgeContextSource
+    maxChars?: number
+    clearGateFile?: boolean
+  }): Promise<ReviewContextResult> =>
+    getRendererRpcClient().request<ReviewContextResult>(
+      'completionOps.extractReviewContext',
       params
     ),
 

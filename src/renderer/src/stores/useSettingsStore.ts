@@ -9,8 +9,11 @@ import type { PetSettings } from '@shared/types/pet'
 import type { AgentSdk, HandoffAgentSdk } from '@shared/types/agent-sdk'
 import {
   DEFAULT_CONDITION_GATE_PROMPT,
+  DEFAULT_REVIEW_JUDGE_CONTEXT_CHARS,
+  DEFAULT_REVIEW_JUDGE_PROMPT,
   DEFAULT_STRICT_VERIFY_PROMPT,
-  type CompletionCheckProvider
+  type CompletionCheckProvider,
+  type ReviewJudgeContextSource
 } from '@shared/types/completion'
 import { DEFAULT_CONTEXT_TEMPLATE } from '@/lib/worktree-context-constants'
 import {
@@ -117,6 +120,8 @@ export interface AppSettings {
   kanbanStrictVerifyPrompt: string
   /** Kanban: settle delay (seconds) the ticket must sit idle in Review before Strict Verify (Feature A / D1) runs. */
   kanbanStrictVerifyDelaySeconds: number
+  /** Kanban: frozen check — seconds of total terminal silence that count as "frozen" (stopped). ANY byte (spinner/clock/tokens) within the window means still-running. Must exceed the CLI's 1s clock tick; default 5, floored to 2. */
+  kanbanStrictVerifyFrozenIdleSeconds: number
   /** Kanban: which AI provider runs the Strict Verify Watcher (claude-code | codex | opencode). */
   kanbanStrictVerifyProvider: CompletionCheckProvider
   /** Kanban: optional model id forwarded to the Watcher provider (empty → provider default). */
@@ -153,6 +158,12 @@ export interface AppSettings {
   kanbanConditionGateKeyPattern: string
   /** Kanban: Condition Gate — case-insensitive regex tested against a draft's description to seed the gate. Default `/speckit-review(?![\w-])`. Invalid patterns fall back to the default. */
   kanbanConditionGateWordPattern: string
+  /** Kanban: Review Judge (Stage-2) — user-editable "review standard" prompt fed to the judge CLI Hive spawns after a review session goes frozen. Hive appends the review-session context tail below it and the judge writes `.hive/review-gate.json`. Seeds from `DEFAULT_REVIEW_JUDGE_PROMPT`; a custom prompt MUST keep the write-`.hive/review-gate.json` contract. Per-ticket overridable via `verify_overrides.judgePrompt`. */
+  kanbanReviewJudgePrompt: string
+  /** Kanban: Review Judge — which slice of the finished review session is extracted as the judge's context: the clean `transcript` (+ raw tail fallback) or the raw `terminal-tail`. Default `transcript`. */
+  kanbanReviewJudgeContextSource: ReviewJudgeContextSource
+  /** Kanban: Review Judge — how many trailing characters of the review session to feed the judge as context. Default 10000. */
+  kanbanReviewJudgeContextChars: number
   /** Kanban: Telegram ticket notifications — master switch. Off by default (opt-in) so users who already configured a Telegram bot for forwarding aren't surprised by ticket messages. When on, a message is sent to the configured Telegram bot + chat on the ticket lifecycle events toggled below. No-op until a Telegram bot is configured. */
   kanbanTelegramNotifyEnabled: boolean
   /** Kanban: notify when a ticket first moves Todo → In Progress (work started). */
@@ -309,11 +320,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanAutoApproveReview: false,
   kanbanAutoCommitOnReview: false,
   kanbanAutoApproveDelaySeconds: 10,
-  kanbanStrictVerifyEnabled: false,
+  kanbanStrictVerifyEnabled: true,
   kanbanStrictVerifySnapshotEnabled: true,
   kanbanStrictVerifyReviewerEnabled: true,
   kanbanStrictVerifyPrompt: DEFAULT_STRICT_VERIFY_PROMPT,
   kanbanStrictVerifyDelaySeconds: 8,
+  kanbanStrictVerifyFrozenIdleSeconds: 5,
   kanbanStrictVerifyProvider: 'claude-code',
   kanbanStrictVerifyModel: '',
   kanbanStrictVerifyChars: 6000,
@@ -332,6 +344,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanConditionGateMatchMode: 'both',
   kanbanConditionGateKeyPattern: DEFAULT_CONDITION_GATE_KEY_PATTERN,
   kanbanConditionGateWordPattern: DEFAULT_CONDITION_GATE_WORD_PATTERN,
+  kanbanReviewJudgePrompt: DEFAULT_REVIEW_JUDGE_PROMPT,
+  kanbanReviewJudgeContextSource: 'transcript',
+  kanbanReviewJudgeContextChars: DEFAULT_REVIEW_JUDGE_CONTEXT_CHARS,
   kanbanTelegramNotifyEnabled: false,
   kanbanTelegramNotifyOnStart: true,
   kanbanTelegramNotifyOnQuestion: true,
@@ -586,6 +601,7 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanStrictVerifyReviewerEnabled: state.kanbanStrictVerifyReviewerEnabled,
     kanbanStrictVerifyPrompt: state.kanbanStrictVerifyPrompt,
     kanbanStrictVerifyDelaySeconds: state.kanbanStrictVerifyDelaySeconds,
+    kanbanStrictVerifyFrozenIdleSeconds: state.kanbanStrictVerifyFrozenIdleSeconds,
     kanbanStrictVerifyProvider: state.kanbanStrictVerifyProvider,
     kanbanStrictVerifyModel: state.kanbanStrictVerifyModel,
     kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
@@ -604,6 +620,9 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanConditionGateMatchMode: state.kanbanConditionGateMatchMode,
     kanbanConditionGateKeyPattern: state.kanbanConditionGateKeyPattern,
     kanbanConditionGateWordPattern: state.kanbanConditionGateWordPattern,
+    kanbanReviewJudgePrompt: state.kanbanReviewJudgePrompt,
+    kanbanReviewJudgeContextSource: state.kanbanReviewJudgeContextSource,
+    kanbanReviewJudgeContextChars: state.kanbanReviewJudgeContextChars,
     kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
     kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
     kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,
@@ -1000,6 +1019,7 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanStrictVerifyReviewerEnabled: state.kanbanStrictVerifyReviewerEnabled,
         kanbanStrictVerifyPrompt: state.kanbanStrictVerifyPrompt,
         kanbanStrictVerifyDelaySeconds: state.kanbanStrictVerifyDelaySeconds,
+        kanbanStrictVerifyFrozenIdleSeconds: state.kanbanStrictVerifyFrozenIdleSeconds,
         kanbanStrictVerifyProvider: state.kanbanStrictVerifyProvider,
         kanbanStrictVerifyModel: state.kanbanStrictVerifyModel,
         kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
@@ -1018,6 +1038,9 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanConditionGateMatchMode: state.kanbanConditionGateMatchMode,
         kanbanConditionGateKeyPattern: state.kanbanConditionGateKeyPattern,
         kanbanConditionGateWordPattern: state.kanbanConditionGateWordPattern,
+        kanbanReviewJudgePrompt: state.kanbanReviewJudgePrompt,
+        kanbanReviewJudgeContextSource: state.kanbanReviewJudgeContextSource,
+        kanbanReviewJudgeContextChars: state.kanbanReviewJudgeContextChars,
         kanbanTelegramNotifyEnabled: state.kanbanTelegramNotifyEnabled,
         kanbanTelegramNotifyOnStart: state.kanbanTelegramNotifyOnStart,
         kanbanTelegramNotifyOnQuestion: state.kanbanTelegramNotifyOnQuestion,

@@ -20,12 +20,15 @@ import { isSessionOwnedByAnotherTicket } from '@/lib/session-ownership'
 import type {
   CompletionCheckProvider,
   CompletionVerdict,
+  ConditionGateCheckResult,
   ConditionGateResult,
   ConditionGateVerdict,
+  ReviewJudgeContextSource,
   SessionFingerprint,
   StoredCompletionVerdict,
   VerifyProgress
 } from '@shared/types/completion'
+import { DEFAULT_REVIEW_JUDGE_PROMPT } from '@shared/types/completion'
 import { sortTicketsBy, SORT_STEP, type SortField, type SortDir } from '../lib/kanban-sort'
 import {
   actionsForSlot,
@@ -55,6 +58,7 @@ import { useWorktreeStatusStore } from './useWorktreeStatusStore'
 import { kanbanApi as kanban } from '@/api/kanban-api'
 import { toast } from '@/lib/toast'
 import { logToMain } from '@/lib/renderer-log'
+import { resolveVerifyConfig } from '../lib/verify-config'
 
 export interface BoardTelegramTarget {
   ticketId: string
@@ -694,11 +698,37 @@ const FROZEN_IDLE_MS = 2500
  */
 async function confirmSessionFrozen(
   sessionId: string,
-  opts: { baseline?: Promise<SessionFingerprint | null>; sample?: boolean } = {}
+  opts: {
+    baseline?: Promise<SessionFingerprint | null>
+    sample?: boolean
+    /**
+     * Idle window (ms) that counts as frozen for a live PTY. Defaults to the
+     * module const; the settle handler threads the resolved per-ticket / global
+     * `kanbanStrictVerifyFrozenIdleSeconds` value (WS2). Floored elsewhere at 2s.
+     */
+    idleMs?: number
+    /** When set, trace each branch of the decision to the on-disk log (WS6). */
+    trace?: { ticketId: string }
+  } = {}
 ): Promise<'frozen' | 'active' | 'unknown'> {
+  const idleMs = opts.idleMs ?? FROZEN_IDLE_MS
+  const traceBranch = (result: string, data: Record<string, unknown>): void => {
+    if (!opts.trace) return
+    logToMain('info', 'FrozenCheck', `ticket ${opts.trace.ticketId} → ${result}`, {
+      ticketId: opts.trace.ticketId,
+      sessionId,
+      idleMs,
+      result,
+      ...data
+    })
+  }
+
   // (a) Liveness — a session still actively working is, by definition, not frozen.
   const statusEntry = useWorktreeStatusStore.getState().sessionStatuses[sessionId]
-  if (statusEntry?.status === 'working') return 'active'
+  if (statusEntry?.status === 'working') {
+    traceBranch('active', { source: 'hook-status' })
+    return 'active'
+  }
 
   try {
     const { completionApi } = await import('@/api/completion-api')
@@ -712,7 +742,10 @@ async function confirmSessionFrozen(
     // desired semantics. A single read, no wait; the manual recheck takes this path too.
     if (fp.source === 'pty') {
       const lastOutputAt = fp.lastOutputAt ?? Date.now()
-      return Date.now() - lastOutputAt >= FROZEN_IDLE_MS ? 'frozen' : 'active'
+      const ageMs = Date.now() - lastOutputAt
+      const result = ageMs >= idleMs ? 'frozen' : 'active'
+      traceBranch(result, { source: 'pty', lastOutputAt, ageMs })
+      return result
     }
 
     // (c) Non-PTY / exited session — no live emit stream to timestamp, so confirm
@@ -726,9 +759,12 @@ async function confirmSessionFrozen(
       await new Promise<void>((resolve) => setTimeout(resolve, FROZEN_STABILITY_MS))
       b = await completionApi.getSessionFingerprint(sessionId)
     }
-    return a.length === b.length && a.hash === b.hash ? 'frozen' : 'active'
+    const result = a.length === b.length && a.hash === b.hash ? 'frozen' : 'active'
+    traceBranch(result, { source: 'db', baseline: !!s0 })
+    return result
   } catch (err) {
     console.warn('[StrictVerify] frozen check: fingerprint round-trip failed', err)
+    traceBranch('unknown', { source: 'error', error: err instanceof Error ? err.message : String(err) })
     return 'unknown'
   }
 }
@@ -835,6 +871,27 @@ function forgetTicketState(get: () => KanbanState, key: TicketKey): void {
   get().setVerifyProgress(key, null)
 }
 
+/** How long a frozen-check RESULT badge (idle-confirmed / active) stays on the card. */
+const FROZEN_RESULT_BADGE_MS = 6000
+
+/**
+ * Briefly surface the frozen-check RESULT on the card (WS7) so the user can SEE the
+ * check ran and how it decided. Sets a short-lived `verifyProgress` phase and clears
+ * it after {@link FROZEN_RESULT_BADGE_MS} — but only if it's still the same phase (a
+ * later real pipeline phase supersedes it, and a move/clear wins the race cleanly).
+ */
+function flashVerifyResult(
+  get: () => KanbanState,
+  key: TicketKey,
+  phase: 'frozen-idle' | 'frozen-active'
+): void {
+  get().setVerifyProgress(key, { phase })
+  setTimeout(() => {
+    const cur = get().verifyProgress.get(key)
+    if (cur && cur.phase === phase) get().setVerifyProgress(key, null)
+  }, FROZEN_RESULT_BADGE_MS)
+}
+
 /**
  * Schedule Strict Verify (Feature A, D1) after a settle delay. Reschedules if
  * already pending and supersedes any pending bypass. Asynchronously captures the
@@ -939,12 +996,17 @@ async function armSettleTimers(
       (a) => a.type === 'review' || a.type === 'evaluate'
     )
   if (settings.kanbanStrictVerifyEnabled || lifecycleArmsReview) {
+    // Capture the S0 baseline only when the frozen check resolves ON for THIS ticket
+    // (per-ticket `frozenCheck` override → global Snapshot setting). Off = no baseline;
+    // the settle-time frozen check then fresh-resamples instead — the liveness gate
+    // still always runs, this only picks its sampling method (WS2/WS3).
+    const resolved = resolveVerifyConfig(ticket, settings)
     scheduleStrictVerify(
       get,
       ticketId,
       projectId,
       (settings.kanbanStrictVerifyDelaySeconds ?? 8) * 1000,
-      settings.kanbanStrictVerifySnapshotEnabled ?? true
+      resolved.frozenEnabled
     )
   } else if (ticket.auto_approve_review) {
     scheduleAutoBypass(
@@ -1332,6 +1394,12 @@ interface StrictVerifySettings {
   kanbanConditionGatePrompt?: string
   /** Condition gate: when a `pass` verdict lands, optionally auto-advance a chain ticket to Done. */
   kanbanConditionGateAutoDone?: boolean
+  /** Review Judge (Stage-2): user-editable "review standard" prompt fed to the spawned judge CLI (blank → built-in default). */
+  kanbanReviewJudgePrompt?: string
+  /** Review Judge: which slice of the finished review session to feed the judge (default `transcript`). */
+  kanbanReviewJudgeContextSource?: ReviewJudgeContextSource
+  /** Review Judge: trailing-char budget for the context fed to the judge (default 10000). */
+  kanbanReviewJudgeContextChars?: number
 }
 
 /**
@@ -2170,27 +2238,147 @@ async function runConditionGate(
 
   if (!sessionId) return blockForTu('condition-gate ticket has no session to evaluate')
 
-  // Stage-2 routing LLM. Config precedence: per-ticket gate config → global
-  // condition-gate settings → provider default (empty → provider picks).
-  let verdict: ConditionGateVerdict
+  // Stage-2 verdict — HIVE-DRIVEN JUDGE. The review skill is now a pure code
+  // reviewer that knows NOTHING about Hive; it never writes a verdict file. Once its
+  // session has gone frozen (Stage-1), Hive itself produces the verdict:
+  //   1. extract the tail of the review session (and clear any stale verdict file so
+  //      the judge's fresh write is unambiguous),
+  //   2. compose {user-editable standard prompt} + {context} and spawn a fresh
+  //      interactive judge CLI (inheriting the ticket's model),
+  //   3. wait for the judge to WRITE `<cwd>/.hive/review-gate.json` (its verdict
+  //      transport — an interactive CLI can't return structured stdout),
+  //   4. read + route that verdict below (the decideConditionGate tail is unchanged).
+  // NEVER fails open: any failure blocks for the human (per [[hive-strict-verify-trust-agent]]).
+  const { completionApi } = await import('@/api/completion-api')
+
+  // 1. Extract the review-session context + clear any stale verdict from a prior round.
+  let reviewContext = ''
   try {
-    const { completionApi } = await import('@/api/completion-api')
-    const res = await completionApi.detectTicketVerdict({
+    const ctxRes = await completionApi.extractReviewContext({
       sessionId,
       ticketId,
-      maxChars: settings.kanbanStrictVerifyChars,
-      provider: (gateCfg.provider as CompletionCheckProvider) ?? settings.kanbanConditionGateProvider,
-      model: gateCfg.model || settings.kanbanConditionGateModel || undefined,
-      systemPrompt: gateCfg.prompt || settings.kanbanConditionGatePrompt || undefined
+      source: settings.kanbanReviewJudgeContextSource,
+      maxChars: settings.kanbanReviewJudgeContextChars,
+      clearGateFile: true
     })
-    if (!res.success || !res.verdict) {
-      return blockForTu(`condition-gate eval failed: ${res.error ?? 'no verdict'}`)
+    if (!ctxRes.success) {
+      return blockForTu(`review-judge context extraction failed: ${ctxRes.error ?? 'unknown'}`)
     }
-    verdict = res.verdict
+    reviewContext = (ctxRes.context ?? '').trim()
+    logToMain('info', 'ReviewJudge', `ticket ${ticketId} context extracted`, {
+      ticketId,
+      sessionId,
+      source: ctxRes.source,
+      contextChars: reviewContext.length,
+      clearedStaleGateFile: ctxRes.clearedStaleGateFile
+    })
   } catch (err) {
     return blockForTu(
-      `condition-gate eval threw: ${err instanceof Error ? err.message : String(err)}`
+      `review-judge context extraction threw: ${err instanceof Error ? err.message : String(err)}`
     )
+  }
+  if (!reviewContext) {
+    return blockForTu('review-judge: the review session produced no context to judge', {
+      kind: 'block'
+    })
+  }
+
+  // 2. Spawn the interactive judge CLI in the reviewed worktree, fed the standard
+  //    prompt + the context tail. Prompt precedence: per-ticket `judgePrompt` override
+  //    → global `kanbanReviewJudgePrompt` → built-in default.
+  const worktreeId = current.worktree_id
+  if (!worktreeId) {
+    return blockForTu('review-judge: reviewed ticket has no worktree to run the judge in')
+  }
+  const standardPrompt =
+    current.verify_overrides?.judgePrompt?.trim() ||
+    settings.kanbanReviewJudgePrompt?.trim() ||
+    DEFAULT_REVIEW_JUDGE_PROMPT
+  const { buildJudgePrompt, dispatchReviewJudge } = await import('../lib/run-review-judge')
+  const judgePrompt = buildJudgePrompt(standardPrompt, reviewContext)
+
+  get().setVerifyProgress(key, { phase: 'judging' })
+  logToMain('info', 'ReviewJudge', `ticket ${ticketId} spawning judge`, {
+    ticketId,
+    sessionId,
+    worktreeId,
+    customPrompt: !!current.verify_overrides?.judgePrompt?.trim()
+  })
+  const spawn = await dispatchReviewJudge({
+    worktreeId,
+    projectId,
+    ticketId,
+    prompt: judgePrompt,
+    reviewedSessionId: sessionId
+  })
+  if (!spawn.success || !spawn.sessionId) {
+    return blockForTu(`review-judge failed to launch: ${spawn.error ?? 'unknown'}`)
+  }
+  const judgeSessionId = spawn.sessionId
+
+  // 3. Await the judge. Poll for a VALID `.hive/review-gate.json` (a half-written
+  //    file fails JSON/schema parse → reads as `noFile`, so we simply keep polling —
+  //    the write-race resolves itself). If the judge's terminal goes frozen (it
+  //    stopped) for a couple of consecutive checks WITHOUT a valid file, it finished
+  //    without a verdict → block for the human. Long horizon: the judge may read
+  //    files / run commands before deciding.
+  const JUDGE_POLL_MS = 3000
+  const JUDGE_MAX_MS = 8 * 60 * 1000
+  const JUDGE_FROZEN_GRACE = 2
+  const judgeDeadline = Date.now() + JUDGE_MAX_MS
+  let verdict: ConditionGateVerdict | null = null
+  let frozenNoFile = 0
+  while (Date.now() < judgeDeadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, JUDGE_POLL_MS))
+    let res: ConditionGateCheckResult
+    try {
+      // Read the verdict file from the JUDGE's session (its worktree = the reviewed
+      // worktree = repo root of `.hive/review-gate.json`).
+      res = await completionApi.detectTicketVerdict({
+        sessionId: judgeSessionId,
+        ticketId,
+        fileOnly: true
+      })
+    } catch (err) {
+      logToMain('warn', 'ReviewJudge', `ticket ${ticketId} verdict read threw — retrying`, {
+        ticketId,
+        judgeSessionId,
+        error: err instanceof Error ? err.message : String(err)
+      })
+      continue
+    }
+    if (res.success && res.verdict) {
+      verdict = res.verdict
+      logToMain('info', 'ReviewJudge', `ticket ${ticketId} judge wrote verdict`, {
+        ticketId,
+        judgeSessionId,
+        verdict: res.verdict.verdict,
+        source: res.verdict.source
+      })
+      break
+    }
+    // No valid file yet. If the judge has gone frozen it may have finished WITHOUT a
+    // valid verdict — count consecutive frozen-empty polls before giving up.
+    const judgeState = await confirmSessionFrozen(judgeSessionId, {
+      sample: true,
+      idleMs: FROZEN_IDLE_MS,
+      trace: { ticketId }
+    })
+    if (judgeState === 'frozen') {
+      frozenNoFile += 1
+      if (frozenNoFile >= JUDGE_FROZEN_GRACE) {
+        return blockForTu('review-judge finished without writing a valid review-gate.json', {
+          kind: 'block'
+        })
+      }
+    } else {
+      frozenNoFile = 0 // still working (or unknown) — keep waiting
+    }
+  }
+
+  if (!verdict) {
+    // Ran out the clock without a verdict → never guess a pass. Block for the human.
+    return blockForTu('review-judge timed out before writing a verdict', { kind: 'block' })
   }
 
   const decision = decideConditionGate(verdict, round, maxRounds)
@@ -2308,6 +2496,10 @@ async function onStrictVerifySettled(
 
   const { useSettingsStore } = await import('./useSettingsStore')
   const settings = useSettingsStore.getState()
+  // Resolve the three separable verification components ONCE (per-ticket overrides →
+  // gate-type default → global). Frozen window, gate loop, and Watcher gating all
+  // read from this so a gate/review ticket auto-skips the LLM Reviewer (the 2822 fix).
+  const resolved = resolveVerifyConfig(current, settings)
   const settleMs = Math.max(0, (settings.kanbanStrictVerifyDelaySeconds ?? 8) * 1000)
   // Queue prompts: a Review ticket with queued follow-ups must still settle so it
   // gets verified — the verdict is what drains the queue. Allow the queued state.
@@ -2331,10 +2523,16 @@ async function onStrictVerifySettled(
     const snap = frozenSnapshots.get(key)
     const baseline = snap && snap.sessionId === sessionId ? snap.fp : undefined
     frozenSnapshots.delete(key)
-    const frozen = await confirmSessionFrozen(sessionId, { baseline, sample: true })
+    const frozen = await confirmSessionFrozen(sessionId, {
+      baseline,
+      sample: true,
+      idleMs: resolved.frozenIdleMs,
+      trace: { ticketId }
+    })
     if (frozen === 'active') {
       // Still emitting / working → not frozen → it's In Progress, not done.
       await moveTicketBackToInProgress(get, ticketId, projectId)
+      flashVerifyResult(get, key, 'frozen-active') // after the move (armSettleTimers cleared)
       return
     }
     if (frozen === 'unknown') {
@@ -2347,21 +2545,28 @@ async function onStrictVerifySettled(
       get().setVerifyProgress(key, null)
       return
     }
+    // 'frozen' — idle-confirmed. Surface the result on the card (WS7); the pipeline
+    // continues (gate / Watcher / synthetic verify) below.
+    flashVerifyResult(get, key, 'frozen-idle')
   } else {
     frozenSnapshots.delete(key)
   }
 
-  // ── Condition GATE intercept (`evaluate` action) — two-stage ──────
-  // Stage 1 = the completion Watcher, run with `isGate` so `needsInput` is NOT a
-  // bounce (the gate prompt says "report & stop" — a review presenting findings
-  // reads as complete). Only a genuine incomplete still bounces to In Progress.
+  // ── Condition GATE intercept (`evaluate` action) — Stage-2 ──────
+  // The frozen check above ALREADY guarantees the session is stopped, so the gate no
+  // longer needs the LLM Watcher to confirm "done" — and MUST NOT run it by default:
+  // a `fix` review's own "CHANGES REQUESTED" prose reads as `complete=false` and
+  // bounces the ticket to In Progress, so Stage-2 never fires (the 2822 bug). The
+  // Watcher runs here ONLY when a per-ticket override opts back in (`resolved.llmReviewer`).
   // Stage 2 = runConditionGate, which routes pass/fix/needs-human and is TERMINAL
   // (never falls through to the verified-complete tail / auto-bypass).
-  const isCondGate = isConditionGate(current.lifecycle_callbacks)
-  if (isCondGate) {
-    // Part C — trace the ARM branch (the trace gap that made 2822 undiagnosable).
-    console.info(`[ConditionGate] ticket ${ticketId} ARMED — running two-stage gate`)
-    if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
+  if (resolved.gateLoop) {
+    logToMain('info', 'ConditionGate', `ticket ${ticketId} ARMED — frozen confirmed`, {
+      ticketId,
+      sessionId,
+      llmReviewer: resolved.llmReviewer
+    })
+    if (resolved.llmReviewer) {
       const outcome = await runStrictVerify(get, ticketId, projectId, current, settings, true)
       if (outcome === 'bounced') return // genuine incomplete → bounced to In Progress
       if (outcome === 'error') {
@@ -2374,17 +2579,25 @@ async function onStrictVerifySettled(
   }
   // Part C — trace the SKIP branch + its reason, so a review ticket that never armed
   // (the exact 2822 failure class: `lifecycle_callbacks` NULL) is diagnosable.
-  console.info(
-    `[ConditionGate] ticket ${ticketId} skipped:` +
-      (current.lifecycle_callbacks
+  logToMain(
+    'info',
+    'ConditionGate',
+    `ticket ${ticketId} skipped: ${
+      current.lifecycle_callbacks
         ? 'no review.during evaluate action'
-        : 'lifecycle_callbacks null (no gate seeded)')
+        : 'lifecycle_callbacks null (no gate seeded)'
+    }`,
+    { ticketId, sessionId }
   )
 
   // ── Gate 2: Ticket Reviewer (the AI Watcher) ──────────────────────
-  // Skipped when the Reviewer sub-gate is off — a ticket that cleared the
-  // snapshot (or had it disabled) is then treated as verified without a model call.
-  if (settings.kanbanStrictVerifyReviewerEnabled ?? true) {
+  // Skipped when the Reviewer component is off (global, or a per-ticket override) —
+  // a ticket that cleared the frozen check is then treated as verified without a
+  // model call. Store a SYNTHETIC verified verdict so auto-approve still works (the
+  // re-verify guard in onAutoBypassSettled blocks when no verdict exists) and the
+  // badge reflects the frozen result. Gate tickets store their own verdict in
+  // runConditionGate, so this synthetic path is non-gate only.
+  if (resolved.llmReviewer) {
     const outcome = await runStrictVerify(get, ticketId, projectId, current, settings)
     if (outcome === 'bounced') return // verdict stored + moved back (the move clears progress)
     if (outcome === 'error') {
@@ -2396,6 +2609,17 @@ async function onStrictVerifySettled(
       get().setVerifyProgress(key, null)
       return
     }
+  } else if (sessionId) {
+    get().setCompletionVerdict(key, {
+      complete: true,
+      needsInput: false,
+      confidence: 1,
+      reason: 'frozen: idle-confirmed',
+      source: 'frozen',
+      sessionId,
+      checkedAt: Date.now(),
+      movedBack: false
+    })
   }
 
   // Verified complete. Queue prompts takes precedence over Done/auto-approve: if

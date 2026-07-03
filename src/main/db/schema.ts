@@ -680,5 +680,13 @@ DROP TABLE IF EXISTS diff_comments;`
       ALTER TABLE kanban_tickets ADD COLUMN condition_gate_result TEXT DEFAULT NULL;
     `,
     down: `-- SQLite cannot drop columns safely; no-op.`
+  },
+  {
+    version: 42,
+    name: 'add_ticket_verify_overrides',
+    up: `
+      ALTER TABLE kanban_tickets ADD COLUMN verify_overrides TEXT DEFAULT NULL;
+    `,
+    down: `-- SQLite cannot drop columns safely; no-op.`
   }
 ]

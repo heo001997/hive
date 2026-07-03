@@ -360,6 +360,16 @@ export class DatabaseService {
       conditionGateResult = null
     }
 
+    let verifyOverrides: KanbanTicket['verify_overrides'] = null
+    try {
+      const raw = row.verify_overrides as string
+      if (raw) {
+        verifyOverrides = JSON.parse(raw)
+      }
+    } catch {
+      verifyOverrides = null
+    }
+
     return {
       id: row.id as string,
       project_id: row.project_id as string,
@@ -393,7 +403,8 @@ export class DatabaseService {
       lifecycle_callbacks: lifecycleCallbacks,
       lifecycle_state: (row.lifecycle_state as KanbanTicket['lifecycle_state']) ?? null,
       lifecycle_iteration: (row.lifecycle_iteration as number) ?? 0,
-      condition_gate_result: conditionGateResult
+      condition_gate_result: conditionGateResult,
+      verify_overrides: verifyOverrides
     }
   }
 
@@ -700,6 +711,7 @@ export class DatabaseService {
     this.safeAddColumn('kanban_tickets', 'lifecycle_state', 'TEXT DEFAULT NULL')
     this.safeAddColumn('kanban_tickets', 'lifecycle_iteration', 'INTEGER NOT NULL DEFAULT 0')
     this.safeAddColumn('kanban_tickets', 'condition_gate_result', 'TEXT DEFAULT NULL')
+    this.safeAddColumn('kanban_tickets', 'verify_overrides', 'TEXT DEFAULT NULL')
     this.safeAddColumn('sessions', 'session_type', "TEXT NOT NULL DEFAULT 'default'")
     this.safeAddColumn(
       'discord_resources',
@@ -2853,6 +2865,10 @@ export class DatabaseService {
     if (data.condition_gate_result !== undefined) {
       updates.push('condition_gate_result = ?')
       values.push(data.condition_gate_result ? JSON.stringify(data.condition_gate_result) : null)
+    }
+    if (data.verify_overrides !== undefined) {
+      updates.push('verify_overrides = ?')
+      values.push(data.verify_overrides ? JSON.stringify(data.verify_overrides) : null)
     }
     if (data.review_seen_at !== undefined) {
       updates.push('review_seen_at = ?')

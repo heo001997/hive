@@ -60,6 +60,39 @@ export type ConditionGateVerdictKind = (typeof CONDITION_GATE_VERDICTS)[number]
 /** Where a Stage-2 verdict came from: the agent's own file, or the LLM over the transcript. */
 export type ConditionGateVerdictSource = 'review-gate.json' | 'llm-transcript'
 
+/**
+ * Which slice of the finished review session is extracted and fed to the Stage-2
+ * review-judge CLI as its "Context:" tail:
+ *   - `transcript`   — the clean, structured transcript (claude-jsonl → db messages),
+ *                      falling back to the raw pty tail when no transcript exists.
+ *   - `terminal-tail` — the raw ANSI-stripped PTY tail only (what the terminal showed).
+ * Default `transcript`. User-selectable (global `kanbanReviewJudgeContextSource`).
+ */
+export const REVIEW_JUDGE_CONTEXT_SOURCES = ['transcript', 'terminal-tail'] as const
+export type ReviewJudgeContextSource = (typeof REVIEW_JUDGE_CONTEXT_SOURCES)[number]
+
+/** Default char budget for the review-session context tail fed to the judge. */
+export const DEFAULT_REVIEW_JUDGE_CONTEXT_CHARS = 10000
+
+/**
+ * Result envelope for `completionOps.extractReviewContext` — the Stage-2 pre-spawn
+ * step. Pulls the tail of the finished review session (per {@link ReviewJudgeContextSource})
+ * to feed the judge CLI, and (optionally) clears any stale `.hive/review-gate.json`
+ * left by a previous round so the judge's fresh write is unambiguous.
+ */
+export interface ReviewContextResult {
+  success: boolean
+  /** The extracted, char-capped review-session context tail (the judge's "Context:"). */
+  context?: string
+  /** Absolute worktree path the judge runs in (also the repo root for `.hive/review-gate.json`). */
+  cwd?: string
+  /** Which source actually produced the context (may differ from requested on fallback). */
+  source?: ReviewJudgeContextSource
+  /** True when a stale `.hive/review-gate.json` was found and removed before the judge runs. */
+  clearedStaleGateFile?: boolean
+  error?: string
+}
+
 export interface ConditionGateVerdict {
   verdict: ConditionGateVerdictKind
   /** One-sentence justification (no newlines). */
@@ -82,6 +115,39 @@ export interface ConditionGateCheckResult {
   success: boolean
   verdict?: ConditionGateVerdict
   error?: string
+  /**
+   * Set true (with no `verdict`) ONLY on the `fileOnly` gate path when
+   * `<cwd>/.hive/review-gate.json` is absent. The gate must NEVER LLM-guess a
+   * pass, so instead of falling back to the transcript LLM it reports "no file"
+   * — the store retries a few times (write-race) then escalates to the human.
+   */
+  noFile?: boolean
+}
+
+/**
+ * Per-ticket overrides for the three separable verification components. Persisted
+ * on the ticket (`verify_overrides` column, JSON). Each field is tri-state:
+ *   - `undefined` / `null` → use the resolved global default (gate tickets auto-off
+ *     the LLM Reviewer; see `resolveVerifyConfig`).
+ *   - `true` / `false`     → force that component on/off for THIS ticket.
+ * `frozenIdleSeconds` overrides the global frozen-silence window for this ticket.
+ */
+export interface VerifyOverrides {
+  /** Component 1 — deterministic tty-stillness frozen check. */
+  frozenCheck?: boolean | null
+  /** Component 2 — the LLM Strict Reviewer (AI Watcher). */
+  llmReviewer?: boolean | null
+  /** Component 3 — the two-stage Condition Gate / review→fix loop (Stage-2). */
+  gateLoop?: boolean | null
+  /** Frozen-silence window override (seconds; clamped to ≥2 on resolve). */
+  frozenIdleSeconds?: number | null
+  /**
+   * Per-ticket override for the Stage-2 review-judge standard prompt. `null` /
+   * omitted → use the global `kanbanReviewJudgePrompt` (which itself defaults to
+   * `DEFAULT_REVIEW_JUDGE_PROMPT`). This is the user-editable "review standard"
+   * the spawned judge CLI is fed, ahead of the review-session context tail.
+   */
+  judgePrompt?: string | null
 }
 
 /** The branch `decideConditionGate` chose, plus `error` for the pre-verdict failure paths. */
@@ -153,6 +219,49 @@ Rules:
 - "pass" means the review is clean; do not invent work.
 - Output the JSON object and nothing else.`
 
+/**
+ * Default standard prompt for the Stage-2 REVIEW JUDGE — a fresh, interactive
+ * Claude Code CLI that Hive spawns in the reviewed worktree once the review
+ * session has gone frozen. Unlike the (legacy) headless gate above, this judge
+ * cannot return structured stdout, so its verdict transport is a FILE: it writes
+ * `<repo-root>/.hive/review-gate.json` and Hive reads + routes it.
+ *
+ * Hive appends the review-session context tail to this prompt as:
+ *
+ *     {this prompt, or the user's edited override}
+ *
+ *     Context:
+ *     {last N chars of the review session…}
+ *
+ * The user is free to edit this text (globally via `kanbanReviewJudgePrompt` or
+ * per-ticket via `verify_overrides.judgePrompt`) to define THEIR review standard —
+ * but a custom prompt MUST keep the "write `.hive/review-gate.json`" contract
+ * below or the gate has no verdict to read (it then blocks for the human — no
+ * fail-open).
+ */
+export const DEFAULT_REVIEW_JUDGE_PROMPT = `You are the review JUDGE for an automated code-review gate. A separate review agent has just finished reviewing a body of work; the TAIL of its session is given to you below under "Context:". Your job is to read what the review FOUND and decide what happens next, then RECORD your decision to a file.
+
+You are running inside the reviewed repository — you MAY open files, run read-only commands (\`git diff\`, \`git log\`, test output), and read the review's own report (e.g. \`review.md\`) to confirm the findings before you judge. Do NOT make code changes; you only judge and record.
+
+Decide exactly one verdict:
+- "pass": the review reports the work is good — no blocking issues, nothing that must be fixed. The gate stops and waits for the human.
+- "fix": the review found concrete, fixable problems (bugs, failing tests, missing requirements, unaddressed review comments) that a coding agent can resolve in another round.
+- "needs-human": the situation is ambiguous, the review is blocked on a human decision or an open question, or the findings can't be safely auto-routed.
+
+Then WRITE your verdict to the file \`.hive/review-gate.json\` at the repository root (create the \`.hive\` directory if needed). The file MUST be exactly this JSON shape and nothing else:
+
+{
+  "verdict": "pass" | "fix" | "needs-human",
+  "reason": "one short sentence, no newlines, justifying the route",
+  "fixes": ["concrete issue the next round must address", "..."]
+}
+
+Rules:
+- "fixes" MUST be a non-empty array ONLY when "verdict" is "fix" (list the concrete issues to address); use an empty array \`[]\` for "pass" and "needs-human".
+- Prefer "fix" over "needs-human" whenever the findings are concrete and actionable by a coding agent.
+- "pass" means the review is clean — do not invent work.
+- The ONLY file you may write is \`.hive/review-gate.json\`. Write valid JSON. Then stop.`
+
 export interface CompletionVerdict {
   /** True only if the ticket's goal is convincingly satisfied. */
   complete: boolean
@@ -206,8 +315,22 @@ export interface SessionFingerprint {
  *   checking         — the two gates are running (no fixed duration).
  *   bypass-countdown — D2 ticking; the auto-commit + advance run when it fires.
  *   finalizing       — committing the worktree / advancing to Done.
+ *   frozen-idle      — SHORT-LIVED result: the frozen check confirmed the tty went
+ *                      silent (idle-confirmed). Self-clears after a few seconds.
+ *   frozen-active    — SHORT-LIVED result: the tty was still emitting → bounced back
+ *                      to In Progress. Self-clears after a few seconds.
+ *   judging          — the Stage-2 review-judge CLI is running: a fresh Claude Code
+ *                      session reading the review-session context tail against the
+ *                      configured standard, writing `.hive/review-gate.json`.
  */
-export type VerifyPhase = 'verify-countdown' | 'checking' | 'bypass-countdown' | 'finalizing'
+export type VerifyPhase =
+  | 'verify-countdown'
+  | 'checking'
+  | 'bypass-countdown'
+  | 'finalizing'
+  | 'frozen-idle'
+  | 'frozen-active'
+  | 'judging'
 
 export interface VerifyProgress {
   phase: VerifyPhase
@@ -224,6 +347,13 @@ export interface CompletionCheckResult {
 
 /** Verdict plus the bookkeeping the renderer keeps to render badges and avoid re-checks. */
 export interface StoredCompletionVerdict extends CompletionVerdict {
+  /**
+   * How this verdict was produced. `'frozen'` = a SYNTHETIC verified-complete
+   * verdict stored when the LLM Reviewer component was skipped and only the frozen
+   * check ran (so auto-approve's re-verify guard still passes). Omitted for the
+   * normal LLM Watcher / gate paths.
+   */
+  source?: 'frozen'
   /** Session the verdict was computed from (re-check only when a newer settle occurs). */
   sessionId: string | null
   /** ms timestamp (Date.now) the verdict was recorded. */

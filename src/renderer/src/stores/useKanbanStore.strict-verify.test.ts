@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KanbanTicket, KanbanTicketColumn } from '../../../main/db/types'
-import type { CompletionCheckResult, SessionFingerprint } from '@shared/types/completion'
+import type {
+  CompletionCheckResult,
+  ConditionGateCheckResult,
+  SessionFingerprint
+} from '@shared/types/completion'
+import { buildConditionGateConfig } from '@shared/lib/condition-gate'
 
 // Mock the kanban RPC API so moveTicket doesn't hit a real client.
 vi.mock('@/api/kanban-api', () => ({
@@ -34,7 +39,12 @@ const hoisted = vi.hoisted(() => ({
     kanbanStrictVerifyModel: '',
     kanbanStrictVerifyChars: 6000,
     kanbanStrictVerifyConfidenceThreshold: 0.6,
-    kanbanInProgressRescueEnabled: false
+    kanbanInProgressRescueEnabled: false,
+    // Stage-2 review-judge (redesign): the gate spawns a judge CLI that reads the
+    // review session tail + this standard prompt and WRITES the verdict file.
+    kanbanReviewJudgePrompt: 'JUDGE STANDARD',
+    kanbanReviewJudgeContextSource: 'transcript' as const,
+    kanbanReviewJudgeContextChars: 10000
   },
   sessionStatuses: {} as Record<string, { status: string; timestamp: number } | null>,
   followUpQueue: new Map<string, string[]>(),
@@ -45,7 +55,13 @@ const hoisted = vi.hoisted(() => ({
   pendingApprovals: [] as unknown[],
   pendingPlan: null as unknown,
   detect: vi.fn<(...args: unknown[]) => Promise<CompletionCheckResult>>(),
+  detectVerdict: vi.fn<(...args: unknown[]) => Promise<ConditionGateCheckResult>>(),
   fingerprint: vi.fn<(...args: unknown[]) => Promise<SessionFingerprint>>(),
+  // Stage-2 redesign: the gate extracts the review-session context then spawns a
+  // judge CLI. Both are mocked so the gate reaches the verdict-poll loop.
+  extractCtx:
+    vi.fn<(...args: unknown[]) => Promise<{ success: boolean; context?: string; source?: string; error?: string }>>(),
+  dispatchJudge: vi.fn<(...args: unknown[]) => Promise<{ success: boolean; sessionId?: string; error?: string }>>(),
   toastError: vi.fn(),
   notifyNeedsInput: vi.fn()
 }))
@@ -136,8 +152,17 @@ vi.mock('./useCommandApprovalStore', () => ({
 vi.mock('@/api/completion-api', () => ({
   completionApi: {
     detectTicketCompletion: (...args: unknown[]) => hoisted.detect(...args),
-    getSessionFingerprint: (...args: unknown[]) => hoisted.fingerprint(...args)
+    detectTicketVerdict: (...args: unknown[]) => hoisted.detectVerdict(...args),
+    getSessionFingerprint: (...args: unknown[]) => hoisted.fingerprint(...args),
+    extractReviewContext: (...args: unknown[]) => hoisted.extractCtx(...args)
   }
+}))
+
+// The Stage-2 gate dynamic-imports run-review-judge to spawn the judge CLI. Mock it
+// so no real session/PTY is created; buildJudgePrompt keeps the real format.
+vi.mock('../lib/run-review-judge', () => ({
+  buildJudgePrompt: (standard: string, ctx: string) => `${standard.trim()}\n\nContext:\n${ctx.trim()}`,
+  dispatchReviewJudge: (...args: unknown[]) => hoisted.dispatchJudge(...args)
 }))
 
 import { useKanbanStore, ticketKey } from './useKanbanStore'
@@ -227,9 +252,15 @@ beforeEach(() => {
   hoisted.pendingApprovals = []
   hoisted.pendingPlan = null
   hoisted.detect.mockReset()
+  hoisted.detectVerdict.mockReset()
   hoisted.fingerprint.mockReset()
+  hoisted.extractCtx.mockReset()
+  hoisted.dispatchJudge.mockReset()
   // Default: output is frozen (S0 === S1) so Gate 1 passes through to the Watcher.
   hoisted.fingerprint.mockResolvedValue(STABLE_FP)
+  // Default Stage-2 happy path: context extracts cleanly, the judge CLI launches.
+  hoisted.extractCtx.mockResolvedValue({ success: true, context: 'review reported findings', source: 'transcript' })
+  hoisted.dispatchJudge.mockResolvedValue({ success: true, sessionId: 'judge-1' })
   useKanbanStore.setState({
     tickets: new Map(),
     dependencyMap: new Map(),
@@ -1145,5 +1176,196 @@ describe('Auto Review Bypass holds on a pending user interaction', () => {
     await vi.runAllTimersAsync()
 
     expect(columnOf('ticket-1')).toBe('review')
+  })
+})
+
+// ── Frozen-first components + Condition Gate (WS1/WS3/WS5) ──────────────────
+// A gate/review ticket must SKIP the LLM Watcher (its "CHANGES REQUESTED" prose
+// reads as incomplete and bounced the ticket — the 2822 bug) and instead run the
+// Stage-2 gate off the deterministic frozen check. Per-ticket overrides re-shape
+// which components run.
+function makeGateTicket(overrides: Partial<KanbanTicket> = {}): KanbanTicket {
+  // Real gate/review tickets always run in a worktree — the Stage-2 judge is spawned
+  // there — so give the fixture one.
+  return makeTicket({
+    column: 'in_progress',
+    worktree_id: 'wt-1',
+    lifecycle_callbacks: buildConditionGateConfig({}),
+    ...overrides
+  })
+}
+
+describe('Frozen-first — gate ticket skips the Watcher, judge writes the verdict (2822 fix)', () => {
+  it('extracts context, spawns the judge, and routes its `fix` verdict WITHOUT calling the Watcher', async () => {
+    // Frozen (STABLE_FP) → gate arms → context extracted → judge spawned → the judge's
+    // review-gate.json (read via the judge session) carries a `fix` verdict.
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'fix', reason: 'CHANGES REQUESTED: tests', source: 'review-gate.json', fixes: ['add tests'] }
+    })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    // The 2822 fix: the LLM Watcher never runs on a gate ticket…
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    // …the redesigned Stage-2 does: extract the review context, spawn the judge…
+    expect(hoisted.extractCtx).toHaveBeenCalledTimes(1)
+    expect(hoisted.dispatchJudge).toHaveBeenCalledTimes(1)
+    // …then poll the JUDGE session's verdict file (file-only, judge session id).
+    expect(hoisted.detectVerdict).toHaveBeenCalled()
+    expect(hoisted.detectVerdict.mock.calls[0][0]).toMatchObject({ fileOnly: true, sessionId: 'judge-1' })
+  })
+
+  it('spawns the judge with the standard prompt + extracted context, inheriting the reviewed session', async () => {
+    hoisted.extractCtx.mockResolvedValue({ success: true, context: 'the review found X', source: 'transcript' })
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'pass', reason: 'ok', source: 'review-gate.json' }
+    })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    const spawn = hoisted.dispatchJudge.mock.calls[0][0] as {
+      prompt: string
+      reviewedSessionId: string
+      worktreeId: string
+    }
+    // Composed as `{standard}\n\nContext:\n{ctx}` and fed the reviewed session for model inherit.
+    expect(spawn.prompt).toContain('JUDGE STANDARD')
+    expect(spawn.prompt).toContain('Context:\nthe review found X')
+    expect(spawn.reviewedSessionId).toBe(SESSION_ID)
+    expect(spawn.worktreeId).toBe('wt-1')
+  })
+
+  it('per-ticket judgePrompt override wins over the global standard prompt', async () => {
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'pass', reason: 'ok', source: 'review-gate.json' }
+    })
+    seed(makeGateTicket({ verify_overrides: { judgePrompt: 'TICKET-SPECIFIC STANDARD' } }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    const spawn = hoisted.dispatchJudge.mock.calls[0][0] as { prompt: string }
+    expect(spawn.prompt).toContain('TICKET-SPECIFIC STANDARD')
+    expect(spawn.prompt).not.toContain('JUDGE STANDARD')
+  })
+
+  it('judge finishes (frozen) without a valid verdict → blocks for a human (never guesses a pass)', async () => {
+    // The judge session goes frozen (STABLE_FP) but never writes a parseable file.
+    hoisted.detectVerdict.mockResolvedValue({ success: true, noFile: true })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    // Two consecutive frozen-empty polls (JUDGE_FROZEN_GRACE) → give up.
+    expect(hoisted.detectVerdict).toHaveBeenCalledTimes(2)
+    // Blocked → stays in Review with a needs-human (lifecycleStuck) verdict.
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')?.lifecycleStuck).toBe(true)
+  })
+
+  it('context extraction failure blocks for a human and never spawns the judge', async () => {
+    hoisted.extractCtx.mockResolvedValue({ success: false, error: 'no session' })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.dispatchJudge).not.toHaveBeenCalled()
+    expect(hoisted.detectVerdict).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')?.lifecycleStuck).toBe(true)
+  })
+
+  it('clean pass verdict routes to a verified-complete verdict (stays in Review, no Watcher)', async () => {
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'pass', reason: 'looks good', source: 'review-gate.json' }
+    })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(hoisted.dispatchJudge).toHaveBeenCalledTimes(1)
+    expect(columnOf('ticket-1')).toBe('review') // standalone + autoDone off → left for the human
+    expect(verdictOf('ticket-1')?.complete).toBe(true)
+  })
+
+  it('per-ticket llmReviewer override ON re-enables the Watcher before the gate', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'pass', reason: 'ok', source: 'review-gate.json' }
+    })
+    seed(makeGateTicket({ verify_overrides: { llmReviewer: true } }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).toHaveBeenCalledTimes(1) // opted back in
+    expect(hoisted.dispatchJudge).toHaveBeenCalledTimes(1) // gate still ran after
+  })
+})
+
+describe('Frozen-first — reviewer-off stores a synthetic verdict (WS1)', () => {
+  it('a normal ticket with the Reviewer overridden OFF is verified from the frozen check alone', async () => {
+    // No model call — the frozen check is the whole gate; a synthetic verdict is
+    // stored so auto-approve still works and the badge reflects the result.
+    seed(makeTicket({ column: 'in_progress', verify_overrides: { llmReviewer: false } }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('review')
+    const v = verdictOf('ticket-1')
+    expect(v?.complete).toBe(true)
+    expect(v?.source).toBe('frozen')
+  })
+})
+
+describe('Frozen-first — per-ticket idle window (WS2/WS3)', () => {
+  // A pty whose last byte was ~3s ago: frozen under a 2s window, still active under 5s.
+  const threeSecFp = (): SessionFingerprint => ({
+    length: 100,
+    hash: 'x',
+    source: 'pty',
+    lastOutputAt: Date.now() - 3_000
+  })
+
+  it('bounces under the default 5s window (3s of silence is not yet frozen)', async () => {
+    hoisted.fingerprint.mockResolvedValue(threeSecFp())
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('in_progress')
+  })
+
+  it('a per-ticket 2s override makes the same 3s of silence count as frozen', async () => {
+    hoisted.fingerprint.mockResolvedValue(threeSecFp())
+    // Reviewer off too, so a synthetic verdict is stored without needing the Watcher.
+    seed(makeTicket({ column: 'in_progress', verify_overrides: { frozenIdleSeconds: 2, llmReviewer: false } }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review') // frozen → not bounced
+    expect(verdictOf('ticket-1')?.source).toBe('frozen')
   })
 })
