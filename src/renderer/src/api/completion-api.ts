@@ -46,6 +46,12 @@ export const completionApi = {
     provider?: CompletionCheckProvider
     model?: string
     systemPrompt?: string
+    /**
+     * Gate path (Stage-2): read ONLY `<cwd>/.hive/review-gate.json`. When absent,
+     * resolve `{ success: true, noFile: true }` instead of falling back to the
+     * transcript LLM — the gate must never LLM-guess a pass.
+     */
+    fileOnly?: boolean
   }): Promise<ConditionGateCheckResult> =>
     getRendererRpcClient().request<ConditionGateCheckResult>(
       'completionOps.detectTicketVerdict',

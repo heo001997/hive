@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { KanbanTicket, KanbanTicketColumn } from '../../../main/db/types'
-import type { CompletionCheckResult, SessionFingerprint } from '@shared/types/completion'
+import type {
+  CompletionCheckResult,
+  ConditionGateCheckResult,
+  SessionFingerprint
+} from '@shared/types/completion'
+import { buildConditionGateConfig } from '@shared/lib/condition-gate'
 
 // Mock the kanban RPC API so moveTicket doesn't hit a real client.
 vi.mock('@/api/kanban-api', () => ({
@@ -45,6 +50,7 @@ const hoisted = vi.hoisted(() => ({
   pendingApprovals: [] as unknown[],
   pendingPlan: null as unknown,
   detect: vi.fn<(...args: unknown[]) => Promise<CompletionCheckResult>>(),
+  detectVerdict: vi.fn<(...args: unknown[]) => Promise<ConditionGateCheckResult>>(),
   fingerprint: vi.fn<(...args: unknown[]) => Promise<SessionFingerprint>>(),
   toastError: vi.fn(),
   notifyNeedsInput: vi.fn()
@@ -136,6 +142,7 @@ vi.mock('./useCommandApprovalStore', () => ({
 vi.mock('@/api/completion-api', () => ({
   completionApi: {
     detectTicketCompletion: (...args: unknown[]) => hoisted.detect(...args),
+    detectTicketVerdict: (...args: unknown[]) => hoisted.detectVerdict(...args),
     getSessionFingerprint: (...args: unknown[]) => hoisted.fingerprint(...args)
   }
 }))
@@ -227,6 +234,7 @@ beforeEach(() => {
   hoisted.pendingApprovals = []
   hoisted.pendingPlan = null
   hoisted.detect.mockReset()
+  hoisted.detectVerdict.mockReset()
   hoisted.fingerprint.mockReset()
   // Default: output is frozen (S0 === S1) so Gate 1 passes through to the Watcher.
   hoisted.fingerprint.mockResolvedValue(STABLE_FP)
@@ -1145,5 +1153,132 @@ describe('Auto Review Bypass holds on a pending user interaction', () => {
     await vi.runAllTimersAsync()
 
     expect(columnOf('ticket-1')).toBe('review')
+  })
+})
+
+// ── Frozen-first components + Condition Gate (WS1/WS3/WS5) ──────────────────
+// A gate/review ticket must SKIP the LLM Watcher (its "CHANGES REQUESTED" prose
+// reads as incomplete and bounced the ticket — the 2822 bug) and instead run the
+// Stage-2 gate off the deterministic frozen check. Per-ticket overrides re-shape
+// which components run.
+function makeGateTicket(overrides: Partial<KanbanTicket> = {}): KanbanTicket {
+  return makeTicket({ column: 'in_progress', lifecycle_callbacks: buildConditionGateConfig({}), ...overrides })
+}
+
+describe('Frozen-first — gate ticket skips the Watcher (2822 fix)', () => {
+  it('routes to the Stage-2 gate WITHOUT ever calling the Watcher', async () => {
+    // Frozen (STABLE_FP) → gate arms → detectTicketVerdict reads a `fix` verdict.
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'fix', reason: 'CHANGES REQUESTED: tests', source: 'review-gate.json', fixes: ['add tests'] }
+    })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    // The 2822 fix: the LLM Watcher never runs on a gate ticket…
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    // …the Stage-2 gate does (file-only verdict read).
+    expect(hoisted.detectVerdict).toHaveBeenCalledTimes(1)
+    expect(hoisted.detectVerdict.mock.calls[0][0]).toMatchObject({ fileOnly: true })
+  })
+
+  it('no review-gate.json → retries 3× then blocks for a human (never LLM-guesses)', async () => {
+    hoisted.detectVerdict.mockResolvedValue({ success: true, noFile: true })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(hoisted.detectVerdict).toHaveBeenCalledTimes(3) // 3 attempts, no file each
+    // Blocked → stays in Review with a needs-human (lifecycleStuck) verdict.
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(verdictOf('ticket-1')?.lifecycleStuck).toBe(true)
+  })
+
+  it('clean pass verdict routes to a verified-complete verdict (stays in Review, no Watcher)', async () => {
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'pass', reason: 'looks good', source: 'review-gate.json' }
+    })
+    seed(makeGateTicket())
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(hoisted.detectVerdict).toHaveBeenCalledTimes(1)
+    expect(columnOf('ticket-1')).toBe('review') // standalone + autoDone off → left for the human
+    expect(verdictOf('ticket-1')?.complete).toBe(true)
+  })
+
+  it('per-ticket llmReviewer override ON re-enables the Watcher before the gate', async () => {
+    hoisted.detect.mockResolvedValue({
+      success: true,
+      verdict: { complete: true, needsInput: false, confidence: 0.95, reason: 'done' }
+    })
+    hoisted.detectVerdict.mockResolvedValue({
+      success: true,
+      verdict: { verdict: 'pass', reason: 'ok', source: 'review-gate.json' }
+    })
+    seed(makeGateTicket({ verify_overrides: { llmReviewer: true } }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).toHaveBeenCalledTimes(1) // opted back in
+    expect(hoisted.detectVerdict).toHaveBeenCalledTimes(1) // gate still ran after
+  })
+})
+
+describe('Frozen-first — reviewer-off stores a synthetic verdict (WS1)', () => {
+  it('a normal ticket with the Reviewer overridden OFF is verified from the frozen check alone', async () => {
+    // No model call — the frozen check is the whole gate; a synthetic verdict is
+    // stored so auto-approve still works and the badge reflects the result.
+    seed(makeTicket({ column: 'in_progress', verify_overrides: { llmReviewer: false } }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('review')
+    const v = verdictOf('ticket-1')
+    expect(v?.complete).toBe(true)
+    expect(v?.source).toBe('frozen')
+  })
+})
+
+describe('Frozen-first — per-ticket idle window (WS2/WS3)', () => {
+  // A pty whose last byte was ~3s ago: frozen under a 2s window, still active under 5s.
+  const threeSecFp = (): SessionFingerprint => ({
+    length: 100,
+    hash: 'x',
+    source: 'pty',
+    lastOutputAt: Date.now() - 3_000
+  })
+
+  it('bounces under the default 5s window (3s of silence is not yet frozen)', async () => {
+    hoisted.fingerprint.mockResolvedValue(threeSecFp())
+    seed(makeTicket({ column: 'in_progress' }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(hoisted.detect).not.toHaveBeenCalled()
+    expect(columnOf('ticket-1')).toBe('in_progress')
+  })
+
+  it('a per-ticket 2s override makes the same 3s of silence count as frozen', async () => {
+    hoisted.fingerprint.mockResolvedValue(threeSecFp())
+    // Reviewer off too, so a synthetic verdict is stored without needing the Watcher.
+    seed(makeTicket({ column: 'in_progress', verify_overrides: { frozenIdleSeconds: 2, llmReviewer: false } }))
+
+    await useKanbanStore.getState().moveTicket('ticket-1', PROJECT_ID, 'review', 0)
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review') // frozen → not bounced
+    expect(verdictOf('ticket-1')?.source).toBe('frozen')
   })
 })

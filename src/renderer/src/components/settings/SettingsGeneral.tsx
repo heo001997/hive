@@ -166,6 +166,7 @@ export function SettingsGeneral(): React.JSX.Element {
     kanbanStrictVerifyReviewerEnabled,
     kanbanStrictVerifyPrompt,
     kanbanStrictVerifyDelaySeconds,
+    kanbanStrictVerifyFrozenIdleSeconds,
     kanbanStrictVerifyProvider,
     kanbanStrictVerifyModel,
     kanbanStrictVerifyChars,
@@ -600,6 +601,33 @@ export function SettingsGeneral(): React.JSX.Element {
                   />
                 </button>
               </div>
+
+              {kanbanStrictVerifySnapshotEnabled && (
+                <div className="space-y-2 border-t border-border pt-3">
+                  <label className="text-sm font-medium">Frozen after</label>
+                  <div className="flex items-center gap-3">
+                    <Input
+                      type="number"
+                      min={2}
+                      max={30}
+                      value={kanbanStrictVerifyFrozenIdleSeconds}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10)
+                        if (!isNaN(val) && val >= 2 && val <= 30) {
+                          updateSetting('kanbanStrictVerifyFrozenIdleSeconds', val)
+                        }
+                      }}
+                      className="w-20 font-mono text-sm"
+                      data-testid="strict-verify-frozen-idle"
+                    />
+                    <span className="text-xs text-muted-foreground">seconds (2-30)</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Counts as frozen after this many seconds of terminal silence. Must exceed the
+                    CLI&apos;s 1s clock tick — 2s is the floor.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* ── Gate 2 · Ticket Reviewer (LLM) ─────────────────────────────── */}
@@ -612,7 +640,10 @@ export function SettingsGeneral(): React.JSX.Element {
                     incomplete. If it&apos;s waiting on you, not done, or below the confidence
                     threshold, the ticket goes back to <strong>In Progress</strong> (with a
                     &quot;Questions&quot; badge when it&apos;s waiting on you). Turn off to treat a
-                    ticket that clears the snapshot as verified.
+                    ticket that clears the snapshot as verified.{' '}
+                    <strong>Auto-skipped on gate/review tickets</strong> — they use the review→fix
+                    loop, whose &quot;CHANGES REQUESTED&quot; prose the Reviewer would misread as
+                    incomplete. Override per ticket in its Verification section.
                   </p>
                 </div>
                 <button

@@ -1,9 +1,9 @@
 import type { CustomProjectCommand } from '@shared/lib/custom-commands'
 import type { AgentSdk } from '@shared/types/agent-sdk'
 import type { TicketLifecycleConfig, LifecycleState } from '@shared/types/ticket-lifecycle'
-import type { ConditionGateResult } from '@shared/types/completion'
+import type { ConditionGateResult, VerifyOverrides } from '@shared/types/completion'
 
-export type { ConditionGateResult } from '@shared/types/completion'
+export type { ConditionGateResult, VerifyOverrides } from '@shared/types/completion'
 
 // Re-export the lifecycle-callback types from the kanban types barrel so consumers
 // that already import KanbanTicket from here can grab them in one place.
@@ -573,6 +573,14 @@ export interface KanbanTicket {
    * map is lost on reload). NULL until the gate first evaluates. Stored as JSON TEXT.
    */
   condition_gate_result?: ConditionGateResult | null
+  /**
+   * Per-ticket overrides for the three separable verification components (frozen
+   * check / LLM Reviewer / gate loop) + a frozen-idle-window override. NULL = use
+   * the resolved global defaults. Optional in the type (like `condition_gate_result`)
+   * so existing KanbanTicket literals need no update; the DB mapper always sets it.
+   * Stored as JSON TEXT.
+   */
+  verify_overrides?: VerifyOverrides | null
 }
 
 /** One column's slice of tickets plus the total active count in that column. */
@@ -636,6 +644,7 @@ export interface KanbanTicketUpdate {
   lifecycle_state?: LifecycleState | null
   lifecycle_iteration?: number
   condition_gate_result?: ConditionGateResult | null
+  verify_overrides?: VerifyOverrides | null
 }
 
 export interface BoardAssistantDraft {

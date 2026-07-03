@@ -349,6 +349,17 @@ const conditionGateResultSchema = z
     error: z.string().optional()
   })
   .strict()
+// Per-ticket verification-component overrides. Tri-state: a field omitted or null
+// means "use the resolved global default". `.strict()` mirrors the update schema's
+// no-unknown-keys contract (the drift class that broke ticket saves before).
+const verifyOverridesSchema = z
+  .object({
+    frozenCheck: z.boolean().nullable().optional(),
+    llmReviewer: z.boolean().nullable().optional(),
+    gateLoop: z.boolean().nullable().optional(),
+    frozenIdleSeconds: z.number().nullable().optional()
+  })
+  .strict()
 
 const kanbanTicketUpdateSchema = z
   .object({
@@ -375,7 +386,8 @@ const kanbanTicketUpdateSchema = z
     lifecycle_callbacks: ticketLifecycleConfigSchema.nullable().optional(),
     lifecycle_state: ticketColumnSchema.nullable().optional(),
     lifecycle_iteration: z.number().optional(),
-    condition_gate_result: conditionGateResultSchema.nullable().optional()
+    condition_gate_result: conditionGateResultSchema.nullable().optional(),
+    verify_overrides: verifyOverridesSchema.nullable().optional()
   })
   .strict() satisfies z.ZodType<KanbanTicketUpdate>
 const ticketIdProjectParamsSchema = z

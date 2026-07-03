@@ -112,6 +112,12 @@ export interface DetectTicketVerdictParams {
   model?: string
   /** Optional condition-gate system prompt override (blank → built-in default). */
   systemPrompt?: string
+  /**
+   * Gate path: consult ONLY `<cwd>/.hive/review-gate.json`. When absent, return
+   * `{ success: true, noFile: true }` rather than the `llm-transcript` fallback —
+   * the gate must NEVER LLM-guess a pass (the store retries then escalates to Tu).
+   */
+  fileOnly?: boolean
 }
 
 export interface GetSessionFingerprintParams {
@@ -364,7 +370,8 @@ const detectVerdictParamsSchema = z
     maxChars: z.number().int().positive().optional(),
     provider: z.enum(COMPLETION_CHECK_PROVIDERS).optional(),
     model: z.string().optional(),
-    systemPrompt: z.string().optional()
+    systemPrompt: z.string().optional(),
+    fileOnly: z.boolean().optional()
   })
   .strict()
 
@@ -498,6 +505,17 @@ export const makeLiveCompletionOpsRpcService = (
               source: fileVerdict.source
             })
             return { success: true, verdict: fileVerdict }
+          }
+
+          // Gate path — never LLM-guess a pass. No file → report `noFile` so the
+          // store can retry (write-race) then escalate to the human, instead of
+          // falling through to the transcript LLM (the old auto-pass footgun).
+          if (params.fileOnly) {
+            log.info('[ConditionGate] NO FILE (fileOnly)', {
+              ticketId: params.ticketId,
+              cwd: cwd ?? '(none)'
+            })
+            return { success: true, noFile: true }
           }
 
           const messages = await resolveTranscriptMessages(db, session, worktree, params, deps)

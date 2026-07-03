@@ -82,6 +82,32 @@ export interface ConditionGateCheckResult {
   success: boolean
   verdict?: ConditionGateVerdict
   error?: string
+  /**
+   * Set true (with no `verdict`) ONLY on the `fileOnly` gate path when
+   * `<cwd>/.hive/review-gate.json` is absent. The gate must NEVER LLM-guess a
+   * pass, so instead of falling back to the transcript LLM it reports "no file"
+   * — the store retries a few times (write-race) then escalates to the human.
+   */
+  noFile?: boolean
+}
+
+/**
+ * Per-ticket overrides for the three separable verification components. Persisted
+ * on the ticket (`verify_overrides` column, JSON). Each field is tri-state:
+ *   - `undefined` / `null` → use the resolved global default (gate tickets auto-off
+ *     the LLM Reviewer; see `resolveVerifyConfig`).
+ *   - `true` / `false`     → force that component on/off for THIS ticket.
+ * `frozenIdleSeconds` overrides the global frozen-silence window for this ticket.
+ */
+export interface VerifyOverrides {
+  /** Component 1 — deterministic tty-stillness frozen check. */
+  frozenCheck?: boolean | null
+  /** Component 2 — the LLM Strict Reviewer (AI Watcher). */
+  llmReviewer?: boolean | null
+  /** Component 3 — the two-stage Condition Gate / review→fix loop (Stage-2). */
+  gateLoop?: boolean | null
+  /** Frozen-silence window override (seconds; clamped to ≥2 on resolve). */
+  frozenIdleSeconds?: number | null
 }
 
 /** The branch `decideConditionGate` chose, plus `error` for the pre-verdict failure paths. */
@@ -206,8 +232,18 @@ export interface SessionFingerprint {
  *   checking         — the two gates are running (no fixed duration).
  *   bypass-countdown — D2 ticking; the auto-commit + advance run when it fires.
  *   finalizing       — committing the worktree / advancing to Done.
+ *   frozen-idle      — SHORT-LIVED result: the frozen check confirmed the tty went
+ *                      silent (idle-confirmed). Self-clears after a few seconds.
+ *   frozen-active    — SHORT-LIVED result: the tty was still emitting → bounced back
+ *                      to In Progress. Self-clears after a few seconds.
  */
-export type VerifyPhase = 'verify-countdown' | 'checking' | 'bypass-countdown' | 'finalizing'
+export type VerifyPhase =
+  | 'verify-countdown'
+  | 'checking'
+  | 'bypass-countdown'
+  | 'finalizing'
+  | 'frozen-idle'
+  | 'frozen-active'
 
 export interface VerifyProgress {
   phase: VerifyPhase
@@ -224,6 +260,13 @@ export interface CompletionCheckResult {
 
 /** Verdict plus the bookkeeping the renderer keeps to render badges and avoid re-checks. */
 export interface StoredCompletionVerdict extends CompletionVerdict {
+  /**
+   * How this verdict was produced. `'frozen'` = a SYNTHETIC verified-complete
+   * verdict stored when the LLM Reviewer component was skipped and only the frozen
+   * check ran (so auto-approve's re-verify guard still passes). Omitted for the
+   * normal LLM Watcher / gate paths.
+   */
+  source?: 'frozen'
   /** Session the verdict was computed from (re-check only when a newer settle occurs). */
   sessionId: string | null
   /** ms timestamp (Date.now) the verdict was recorded. */

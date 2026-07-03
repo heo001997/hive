@@ -117,6 +117,8 @@ export interface AppSettings {
   kanbanStrictVerifyPrompt: string
   /** Kanban: settle delay (seconds) the ticket must sit idle in Review before Strict Verify (Feature A / D1) runs. */
   kanbanStrictVerifyDelaySeconds: number
+  /** Kanban: frozen check — seconds of total terminal silence that count as "frozen" (stopped). ANY byte (spinner/clock/tokens) within the window means still-running. Must exceed the CLI's 1s clock tick; default 5, floored to 2. */
+  kanbanStrictVerifyFrozenIdleSeconds: number
   /** Kanban: which AI provider runs the Strict Verify Watcher (claude-code | codex | opencode). */
   kanbanStrictVerifyProvider: CompletionCheckProvider
   /** Kanban: optional model id forwarded to the Watcher provider (empty → provider default). */
@@ -309,11 +311,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   kanbanAutoApproveReview: false,
   kanbanAutoCommitOnReview: false,
   kanbanAutoApproveDelaySeconds: 10,
-  kanbanStrictVerifyEnabled: false,
+  kanbanStrictVerifyEnabled: true,
   kanbanStrictVerifySnapshotEnabled: true,
   kanbanStrictVerifyReviewerEnabled: true,
   kanbanStrictVerifyPrompt: DEFAULT_STRICT_VERIFY_PROMPT,
   kanbanStrictVerifyDelaySeconds: 8,
+  kanbanStrictVerifyFrozenIdleSeconds: 5,
   kanbanStrictVerifyProvider: 'claude-code',
   kanbanStrictVerifyModel: '',
   kanbanStrictVerifyChars: 6000,
@@ -586,6 +589,7 @@ function extractSettings(state: SettingsState): AppSettings {
     kanbanStrictVerifyReviewerEnabled: state.kanbanStrictVerifyReviewerEnabled,
     kanbanStrictVerifyPrompt: state.kanbanStrictVerifyPrompt,
     kanbanStrictVerifyDelaySeconds: state.kanbanStrictVerifyDelaySeconds,
+    kanbanStrictVerifyFrozenIdleSeconds: state.kanbanStrictVerifyFrozenIdleSeconds,
     kanbanStrictVerifyProvider: state.kanbanStrictVerifyProvider,
     kanbanStrictVerifyModel: state.kanbanStrictVerifyModel,
     kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
@@ -1000,6 +1004,7 @@ export const useSettingsStore = create<SettingsState>()(
         kanbanStrictVerifyReviewerEnabled: state.kanbanStrictVerifyReviewerEnabled,
         kanbanStrictVerifyPrompt: state.kanbanStrictVerifyPrompt,
         kanbanStrictVerifyDelaySeconds: state.kanbanStrictVerifyDelaySeconds,
+        kanbanStrictVerifyFrozenIdleSeconds: state.kanbanStrictVerifyFrozenIdleSeconds,
         kanbanStrictVerifyProvider: state.kanbanStrictVerifyProvider,
         kanbanStrictVerifyModel: state.kanbanStrictVerifyModel,
         kanbanStrictVerifyChars: state.kanbanStrictVerifyChars,
