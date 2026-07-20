@@ -4669,7 +4669,9 @@ describe('rpc router', () => {
           }),
         getOpenAIEmail: () => Effect.succeed(null),
         listSaved: () => Effect.succeed([]),
-        removeSaved: () => Effect.succeed(false)
+        removeSaved: () => Effect.succeed(false),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 
@@ -4701,7 +4703,9 @@ describe('rpc router', () => {
           }),
         getOpenAIEmail: () => Effect.succeed(null),
         listSaved: () => Effect.succeed([]),
-        removeSaved: () => Effect.succeed(false)
+        removeSaved: () => Effect.succeed(false),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 
@@ -4733,7 +4737,9 @@ describe('rpc router', () => {
             return 'openai-user@example.com'
           }),
         listSaved: () => Effect.succeed([]),
-        removeSaved: () => Effect.succeed(false)
+        removeSaved: () => Effect.succeed(false),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 
@@ -4765,7 +4771,9 @@ describe('rpc router', () => {
             return null
           }),
         listSaved: () => Effect.succeed([]),
-        removeSaved: () => Effect.succeed(false)
+        removeSaved: () => Effect.succeed(false),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 
@@ -4809,7 +4817,9 @@ describe('rpc router', () => {
             calls.push(provider ?? 'all')
             return accounts
           }),
-        removeSaved: () => Effect.succeed(false)
+        removeSaved: () => Effect.succeed(false),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 
@@ -4841,7 +4851,9 @@ describe('rpc router', () => {
             calls.push(provider ?? 'all')
             return []
           }),
-        removeSaved: () => Effect.succeed(false)
+        removeSaved: () => Effect.succeed(false),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 
@@ -4873,7 +4885,9 @@ describe('rpc router', () => {
           Effect.sync(() => {
             calls.push(accountId)
             return true
-          })
+          }),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 
@@ -4905,7 +4919,9 @@ describe('rpc router', () => {
           Effect.sync(() => {
             calls.push(accountId)
             return false
-          })
+          }),
+        mintOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' }),
+        rotateOwnerToken: () => Effect.succeed({ ownerToken: 'test-owner-token' })
       }
     })
 

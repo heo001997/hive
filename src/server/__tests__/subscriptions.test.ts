@@ -65,7 +65,17 @@ class TestWebSocketClient {
 
   async readEvent(timeoutMs = 200): Promise<ServerEvent> {
     const payload = await this.readFrame(timeoutMs)
-    return JSON.parse(payload.toString('utf8')) as ServerEvent
+    const parsed = JSON.parse(payload.toString('utf8')) as ServerEvent
+    // Resumable subscriptions stamp every delivered event with a monotonic
+    // `seq` (nondeterministic here because `publishUntilReceived` may re-publish
+    // before delivery). These per-channel delivery assertions only care about
+    // { channel, payload }, so drop the resumability metadata. Replay/resync/seq
+    // semantics are covered directly in events/event-bus.test.ts.
+    const { seq: _seq, resync: _resync, reason: _reason, ...rest } = parsed
+    void _seq
+    void _resync
+    void _reason
+    return rest
   }
 
   destroy(): void {
