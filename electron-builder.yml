@@ -7,16 +7,19 @@ files:
   - out/**/*
   - resources/**/*
 
-# The `hive-ticket` CLI must be reachable by a plain `node` OUTSIDE Electron (the
-# app injects it as $HIVE_TICKET_CLI and agents shell out to it). Files inside
-# app.asar can't be read that way, so copy the CLI to Contents/Resources/cli/
-# (unpacked) → process.resourcesPath/cli/hive-ticket.mjs at runtime. It is
-# dependency-free (Node built-in WebSocket), so no node_modules ride along.
+# The CLIs (`resources/cli`) and MCP servers (`resources/mcp`) must be reachable
+# by a plain `node` OUTSIDE Electron (the app injects paths like $HIVE_TICKET_CLI
+# and agents shell out to them). Files inside app.asar can't be read that way, so
+# copy them to Contents/Resources/cli/ and Contents/Resources/mcp/ (unpacked) →
+# process.resourcesPath/{cli,mcp}/*.mjs at runtime. They are dependency-free (Node
+# built-in WebSocket), so no node_modules ride along.
 # NOTE: platform-specific extraResources REPLACE this top-level list, so `mac`
-# repeats the cli entry below (win/linux have none, so they inherit this).
+# repeats the cli+mcp entries below (win/linux have none, so they inherit this).
 extraResources:
   - from: resources/cli
     to: cli
+  - from: resources/mcp
+    to: mcp
 
 # Native .node binaries cannot be loaded from inside an ASAR archive.
 # This extracts them to app.asar.unpacked/ at build time.
@@ -33,6 +36,8 @@ mac:
       to: native/ghostty.node
     - from: resources/cli
       to: cli
+    - from: resources/mcp
+      to: mcp
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
