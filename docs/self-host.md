@@ -41,6 +41,7 @@ machine-parseable readiness line to stdout:
 | `HIVE_SERVER_REQUIRE_AUTH` | `true` | `false`/`0` disables auth (loopback only). Required `true` for any non-loopback bind. |
 | `HIVE_SERVER_BASE_DIR` | `~/.hive` | Data dir (DB, attachments, logs). Also honored: `HIVE_DATA_DIR` (dev override, highest precedence). |
 | `HIVE_SERVER_STATIC_DIR` | _(unset)_ | Directory of the built web UI to serve. Set to `out/renderer-web` to serve the browser client. |
+| `HIVE_SERVER_CSP` | _(unset)_ | Override the `Content-Security-Policy` sent with served HTML/assets. Verbatim value; set to `off` to omit the header. Use only if the hardened default (see §7) breaks a customized build. |
 | `HIVE_OWNER_TOKEN` | _(unset)_ | Plaintext owner token for remote single-owner auth. Never persisted; accepted in addition to any minted (hashed) token. **Secret.** |
 | `HIVE_SERVER_TLS_CERT` | _(unset)_ | Path to the TLS certificate (PEM). Enables `https`/`wss` when paired with the key. |
 | `HIVE_SERVER_TLS_KEY` | _(unset)_ | Path to the TLS private key (PEM). |
@@ -239,13 +240,15 @@ the WebSocket RPC channel:
    `GET /.well-known/hive/environment` → `httpBaseUrl`, `wsBaseUrl`,
    `hasOwnerToken`.
 2. **Exchange** the owner token for an auth session:
-   `POST /api/auth/owner-exchange` with `{ "token": "<HIVE_OWNER_TOKEN>" }`
-   → returns an `AuthSession` (access token).
+   `POST /api/auth/owner-exchange` with `{ "ownerToken": "<HIVE_OWNER_TOKEN>" }`
+   → `{ "session": { "accessToken": "…", "tokenType": "Bearer", "issuedAt": "…", "expiresAt": "…" } }`.
+   Use `session.accessToken` as the bearer token below.
 3. **Mint a WS token** using the access token:
-   `POST /api/auth/ws-token` (Authorization: Bearer `<accessToken>`)
-   → `{ "webSocketToken": "…" }`.
+   `POST /api/auth/ws-token` (Authorization: Bearer `<session.accessToken>`)
+   → `{ "webSocketToken": { "token": "…", "issuedAt": "…", "expiresAt": "…" } }`.
+   Present `webSocketToken.token` when connecting.
 4. **Connect** to `wsBaseUrl` (e.g. `wss://host:3773/ws`), presenting the
-   WebSocket token. All RPC traffic flows over this socket.
+   WebSocket token (`webSocketToken.token`). All RPC traffic flows over this socket.
 
 Over the network this is always `https`/`wss` (TLS enforced by the startup
 invariants in §2). On loopback with auth disabled, a browser may connect to
@@ -253,3 +256,98 @@ invariants in §2). On loopback with auth disabled, a browser may connect to
 
 Generate an owner token with e.g. `openssl rand -hex 32` and pass it via
 `HIVE_OWNER_TOKEN`. Treat it as a password: it grants full access.
+
+---
+
+## 7. Web (browser) deployment
+
+To let people open Hive in a browser (instead of the desktop app), build the web
+bundle and point the server at it. The server hosts the SPA and the API on the
+**same origin/port**, so there is no CORS hop for the app itself.
+
+### Build the web bundle
+
+```bash
+pnpm build:server   # out/main/server.js (the standalone backend)
+pnpm build:web      # out/renderer-web/  (the browser SPA)
+```
+
+(`pnpm build:headless` runs both.)
+
+### Run the server hosting the SPA
+
+A network-exposed deployment must set auth **and** TLS (or run behind a
+TLS-terminating proxy — see §4/§5). A minimal in-process-TLS example:
+
+```bash
+HIVE_SERVER_MODE=browser \
+HIVE_SERVER_HOST=0.0.0.0 \
+HIVE_SERVER_PORT=3773 \
+HIVE_SERVER_REQUIRE_AUTH=true \
+HIVE_SERVER_STATIC_DIR=out/renderer-web \
+HIVE_SERVER_TLS_CERT=/etc/hive/certs/fullchain.pem \
+HIVE_SERVER_TLS_KEY=/etc/hive/certs/privkey.pem \
+HIVE_SERVER_ALLOWED_ORIGINS=https://hive.example.com \
+HIVE_OWNER_TOKEN="$(openssl rand -hex 32)" \
+node out/main/server.js
+```
+
+Behind a proxy that terminates TLS, drop the `HIVE_SERVER_TLS_*` pair and set
+`HIVE_SERVER_ALLOW_INSECURE=true` instead (plain http inside, https at the edge).
+
+- **`HIVE_SERVER_MODE=browser`** — serve the web UI / accept remote clients.
+- **`HIVE_SERVER_STATIC_DIR=out/renderer-web`** — the built SPA to host.
+- **`HIVE_SERVER_REQUIRE_AUTH=true`** — required for any non-loopback bind; the
+  page loads publicly but every RPC requires an authenticated session.
+- **TLS** (`HIVE_SERVER_TLS_CERT`/`_KEY`, or a TLS-terminating proxy) — required
+  off-loopback so the owner token is never sent in the clear (see §2 invariants).
+- **`HIVE_SERVER_ALLOWED_ORIGINS`** — the exact browser origin(s) users load the
+  app from (`https://hive.example.com`). Loopback origins are always allowed;
+  every other Origin is rejected for both HTTP CORS and the WebSocket upgrade,
+  which closes cross-site request forgery / WebSocket hijacking. Since the SPA is
+  served same-origin, this is only needed if the app is loaded from a different
+  origin than the API.
+
+### How static files are served
+
+- **SPA fallback.** A `GET` that is not an `/api`, `/ws`, `/health`, or
+  `/.well-known` route and does not resolve to a real file under the static dir
+  returns `index.html`, so a browser refresh (or a deep link) on any in-app route
+  boots the app. A **missing file that has an extension** (e.g. a stale hashed
+  asset) still returns `404` rather than the HTML shell.
+- **Path traversal.** Request paths are resolved against the static root and any
+  candidate that escapes it (`../`, encoded `..%2f`, …) is refused — nothing
+  outside the static dir is ever served.
+- **API/WS priority.** The API, WebSocket upgrade, and health/`.well-known`
+  routes are excluded from static serving, so hosting the SPA never shadows an
+  endpoint.
+
+### Security headers
+
+Every served HTML/asset response carries:
+
+- **`Content-Security-Policy`** — a hardened default:
+  `default-src 'self'`; `object-src 'none'`; `frame-ancestors 'none'`;
+  `base-uri 'self'`; `img-src 'self' data: blob:`; `font-src 'self' data:`;
+  `script-src 'self' blob:` (**no** `'unsafe-inline'` — the Vite production build
+  emits external module scripts only); `style-src 'self' 'unsafe-inline'`
+  (Vite/React/Tailwind inject `<style>` tags and inline style attributes at
+  runtime — this is not a script-execution vector); `worker-src 'self' blob:`;
+  and `connect-src 'self' <same-origin ws/wss>` so the RPC socket can connect
+  while cross-origin exfiltration is blocked.
+  Override the whole value with `HIVE_SERVER_CSP` (or set it to `off` to omit the
+  header) if a customized build needs a looser policy.
+- **`X-Content-Type-Options: nosniff`** — no MIME sniffing.
+- **`Referrer-Policy: strict-origin-when-cross-origin`**.
+- **`Cache-Control`** — `no-cache` for `index.html` (a redeploy is picked up
+  immediately), `public, max-age=31536000, immutable` for content-hashed build
+  assets, and a short revalidated cache otherwise.
+
+### Owner-token login flow
+
+The browser client authenticates with the **owner token** exactly as described in
+§6: discover `/.well-known/hive/environment`, `POST /api/auth/owner-exchange`
+with `{ "ownerToken": "<HIVE_OWNER_TOKEN>" }` to get `session.accessToken`, `POST
+/api/auth/ws-token` to mint a WebSocket token (`webSocketToken.token`), then
+connect to `wss://…/ws`. Hand each browser user the owner token out of band;
+treat it as a password.

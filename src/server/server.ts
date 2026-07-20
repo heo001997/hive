@@ -20,7 +20,8 @@ import {
 } from './config'
 import { makeRpcRouter } from './rpc/router'
 import { attachWebSocketRpcServer } from './rpc/ws-server'
-import { resolveStaticFile, serveStaticFile } from './static'
+import { resolveStaticFile, serveStaticFile, type ResolvedStaticFile } from './static'
+import { basename, sep } from 'node:path'
 import { isDesktopBackendEventMessage } from '../shared/desktop-command'
 import {
   disposeTerminalOutput,
@@ -313,16 +314,22 @@ export const startHiveServer = (
             }
 
             // Serve the built web UI (public — the page loads before any session
-            // exists). API routes keep priority: /health and /.well-known are handled
-            // above, and `/api/*` is excluded so it never shadows an API endpoint.
+            // exists). API/WS/health routes keep priority: they are excluded here so
+            // static serving never shadows an endpoint nor swallows a non-upgrade
+            // GET /ws into the SPA fallback. resolveStaticFile() applies the
+            // traversal guard (never serves outside staticDir) and the SPA fallback
+            // (an in-app route that resolves to no real file returns index.html so a
+            // browser refresh on any path still boots the app); a missing file with
+            // an extension (e.g. a stale hashed asset) stays a 404 rather than
+            // returning HTML.
             if (
               request.method === 'GET' &&
               config.staticDir &&
-              !url.pathname.startsWith('/api/')
+              !isReservedNonStaticRoute(url.pathname)
             ) {
               const resolved = resolveStaticFile(url.pathname, config.staticDir)
               if (resolved) {
-                serveStaticFile(resolved, response, makeCorsHeaders(corsOrigin))
+                serveStaticFile(resolved, response, makeStaticHeaders(resolved, corsOrigin, request, config))
               } else {
                 writeJson(response, 404, { error: 'Not Found' }, corsOrigin)
               }
@@ -490,6 +497,93 @@ const getAllowedCorsOrigin = (
 ): string | null => {
   if (!origin) return null
   return isAllowedBrowserOrigin(origin, allowedOrigins, allowNullOrigin) ? origin : null
+}
+
+// Routes that the static file server must never handle: the JSON/WS API, the
+// WebSocket upgrade path (a non-upgrade GET /ws must not be answered with the SPA
+// shell), the health probe, and the .well-known descriptor namespace. Everything
+// else under a configured staticDir is a candidate for a built asset or the SPA
+// fallback.
+const isReservedNonStaticRoute = (pathname: string): boolean =>
+  pathname === '/health' ||
+  pathname === '/ws' ||
+  pathname.startsWith('/ws/') ||
+  pathname.startsWith('/api/') ||
+  pathname.startsWith('/.well-known/')
+
+// A content-hashed asset name (Vite emits e.g. `index-a1b2c3d4.js`). Combined
+// with an `assets/` path segment to decide the immutable long-cache policy.
+const HASHED_ASSET_NAME = /[.-][0-9a-f]{8,}\.[a-z0-9]+$/i
+
+// Cache-Control per served file: HTML (index.html, incl. the SPA fallback) must
+// always be revalidated so a redeploy is picked up immediately; content-hashed
+// build assets are immutable and safe to cache for a year; anything else gets a
+// short, revalidated cache.
+const cacheControlFor = (resolved: ResolvedStaticFile): string => {
+  if (resolved.contentType.startsWith('text/html')) return 'no-cache'
+  const inAssetsDir = resolved.filePath.includes(`${sep}assets${sep}`)
+  if (inAssetsDir || HASHED_ASSET_NAME.test(basename(resolved.filePath))) {
+    return 'public, max-age=31536000, immutable'
+  }
+  return 'public, max-age=3600'
+}
+
+// Content-Security-Policy for statically served HTML/assets. Operators can
+// override the whole value via HIVE_SERVER_CSP (or set it to "off" to omit the
+// header) when a customized build needs a looser policy — see docs/self-host.md.
+//
+// The default is intentionally strict:
+// - script-src is 'self' (plus blob: for module workers) with NO 'unsafe-inline':
+//   the Vite production build emits external module scripts only, so inline
+//   scripts are never needed and are blocked.
+// - style-src keeps 'unsafe-inline' because Vite/React/Tailwind inject <style>
+//   tags and inline style attributes at runtime; dropping it would break rendering
+//   and inline styles are not a script-execution vector.
+// - connect-src is scoped to 'self' plus the same-origin WebSocket URL (derived
+//   from the request Host and the TLS scheme), so the RPC socket can connect while
+//   cross-origin exfiltration is blocked.
+const resolveContentSecurityPolicy = (
+  request: IncomingMessage,
+  config: ServerConfig
+): string | null => {
+  const override = config.cspOverride
+  if (override) return override.toLowerCase() === 'off' ? null : override
+
+  const wsScheme = config.tlsEnabled ? 'wss' : 'ws'
+  const host = request.headers.host ?? `${config.host}:${config.port}`
+  const wsOrigin = `${wsScheme}://${host}`
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self' blob:",
+    "worker-src 'self' blob:",
+    `connect-src 'self' ${wsOrigin}`,
+    "manifest-src 'self'"
+  ].join('; ')
+}
+
+// Headers for a statically served file: CORS (shared with the API), the security
+// baseline (CSP, nosniff, referrer policy), and a per-file Cache-Control.
+const makeStaticHeaders = (
+  resolved: ResolvedStaticFile,
+  corsOrigin: string | null,
+  request: IncomingMessage,
+  config: ServerConfig
+): Record<string, string> => {
+  const headers: Record<string, string> = {
+    ...makeCorsHeaders(corsOrigin),
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Cache-Control': cacheControlFor(resolved)
+  }
+  const csp = resolveContentSecurityPolicy(request, config)
+  if (csp) headers['Content-Security-Policy'] = csp
+  return headers
 }
 
 const isPublicHttpRoute = (method: string | undefined, pathname: string): boolean =>

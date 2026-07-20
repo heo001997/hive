@@ -21,6 +21,11 @@ export interface ServerConfig extends ServerDerivedPaths {
   readonly baseDir: string
   readonly devUrl: string | null
   readonly staticDir: string | null
+  // Verbatim Content-Security-Policy override for statically served HTML/assets
+  // (HIVE_SERVER_CSP). null = emit the hardened built-in default. The literal
+  // value "off" disables the CSP header entirely (escape hatch when a stricter
+  // policy breaks a customized build).
+  readonly cspOverride: string | null
   readonly desktopBootstrapToken: string | null
   // Plaintext owner-token override from HIVE_OWNER_TOKEN (headless/CI). Never
   // persisted; accepted in addition to any minted (hashed) owner token.
@@ -58,6 +63,7 @@ export interface ServerConfigInput {
   readonly baseDir?: string
   readonly devUrl?: string | null
   readonly staticDir?: string | null
+  readonly cspOverride?: string | null
   readonly desktopBootstrapToken?: string | null
   readonly ownerTokenEnv?: string | null
   readonly requireAuth?: boolean
@@ -212,6 +218,7 @@ export const resolveServerConfig = (
         baseDir,
         devUrl: input.devUrl ?? env.HIVE_SERVER_DEV_URL ?? null,
         staticDir: input.staticDir ?? env.HIVE_SERVER_STATIC_DIR ?? null,
+        cspOverride: input.cspOverride ?? (env.HIVE_SERVER_CSP?.trim() || null),
         desktopBootstrapToken:
           input.desktopBootstrapToken ?? env.HIVE_DESKTOP_BOOTSTRAP_TOKEN ?? null,
         ownerTokenEnv: input.ownerTokenEnv ?? (env.HIVE_OWNER_TOKEN?.trim() || null),
