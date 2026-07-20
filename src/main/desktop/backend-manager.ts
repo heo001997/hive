@@ -87,7 +87,7 @@ import {
 } from './backend-config'
 import { getCurrentBackend, setCurrentBackend } from './backend-event-publisher'
 import { removeCliConnectionFile, writeCliConnectionFile } from './cli-connection-file'
-import { setHiveCliConnection } from '../services/hive-cli-connection'
+import { resolveHiveTicketCliPath, setHiveCliConnection } from '../services/hive-cli-connection'
 
 export interface DesktopBackendBootstrap {
   readonly httpBaseUrl: string
@@ -649,13 +649,25 @@ export const startDesktopBackend = async (
   } catch (error) {
     log.warn('Failed to write CLI connection file', { error })
   }
+  // Resolve the shipped `hive-ticket` CLI once, here, where Electron's app paths
+  // are known. Packaged builds carry it at `process.resourcesPath/cli/`; a dev run
+  // has it in the repo's `resources/cli/`. `process.resourcesPath` in dev points at
+  // Electron's own Resources (no cli there), so that candidate simply misses and we
+  // fall through to the dev repo dir — then to the global-skill fallback.
+  const cliSearchDirs = [
+    process.resourcesPath ? join(process.resourcesPath, 'cli') : null,
+    app.isPackaged ? null : join(app.getAppPath(), 'resources', 'cli')
+  ].filter((d): d is string => Boolean(d))
+  const ticketCliPath = resolveHiveTicketCliPath(cliSearchDirs)
+
   // Hand the same connection details to the in-process Claude CLI spawner so every
   // agent it launches gets HIVE_* injected (right instance, pre-authed).
   setHiveCliConnection({
     host: config.host,
     port: config.port,
     bootstrapToken: config.bootstrapToken,
-    baseDir
+    baseDir,
+    ticketCliPath
   })
 
   const started: StartedDesktopBackend = {
