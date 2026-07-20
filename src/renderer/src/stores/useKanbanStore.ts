@@ -710,6 +710,34 @@ const FROZEN_STABILITY_MS = 1200
 const FROZEN_IDLE_MS = 2500
 
 /**
+ * Sustained terminal-silence a *build* ticket must show before the board promotes it
+ * In Progress → Review. DELIBERATELY much longer than FROZEN_IDLE_MS.
+ *
+ * FROZEN_IDLE_MS (2.5s) answers "is the CLI still *animating*?" — the right question
+ * for the Strict-Verify / gate liveness gate, which only ever runs on a ticket ALREADY
+ * in Review. But the In Progress ⟺ Review *promotion* runs off `session_completed`,
+ * which fires at the end of EVERY turn of a live session. A multi-turn / interactive /
+ * human-in-the-loop session goes genuinely quiet BETWEEN turns for far longer than 2.5s
+ * (the human reads & types, a queued follow-up is pending, the next step is spawning) —
+ * yet the CLI process is alive and about to resume. Promoting on 2.5s of silence there
+ * flip-flops the ticket to Review and straight back on every turn (observed: a single
+ * ticket flapped 29× in one day). The authority rule is "if the tty is still running it
+ * should ALWAYS be In Progress", so the promotion waits for a silence long enough to
+ * tell "the agent finished / walked away" apart from "between turns". A resumption emits
+ * a byte (spinner/clock/prose) that restamps `lastOutputAt`, so ANY activity inside the
+ * window keeps the ticket In Progress; only unbroken silence of this length promotes.
+ * (`session_working` independently cancels the pending promotion — see `cancelAll`.)
+ *
+ * The user's frozen-idle setting (`kanbanStrictVerifyFrozenIdleSeconds`) can only
+ * LENGTHEN this (resolved as `max(REVIEW_PROMOTE_IDLE_MS, frozenIdleMs)`), never shorten
+ * it below the flap-proof floor.
+ */
+const REVIEW_PROMOTE_IDLE_MS = 30_000
+
+/** Poll cadence while a build ticket waits out `REVIEW_PROMOTE_IDLE_MS` of silence. */
+const REVIEW_PROMOTE_POLL_MS = 5_000
+
+/**
  * Strict Review rule: the AI Watcher must NEVER judge a ticket until its session
  * is confirmed frozen — a session still emitting output (or actively working) is
  * still In Progress, not finished. Every path that would judge with AI calls this
@@ -1154,11 +1182,13 @@ async function moveTicketBackToInProgress(
  * whole process may still be alive: a subagent working on the same tty, a multi-turn
  * agent between turns, or a queued follow-up about to fire. So instead of trusting
  * that event to move the ticket, we confirm the session is actually frozen first:
- *   - `'active'`  → still emitting (subagent/spinner/next turn) → the WHOLE process is
- *                   running → keep the ticket In Progress and poll again after one
- *                   idle window. A genuine resume cancels the poll via `cancelAll`.
- *   - `'frozen'`  → the terminal has gone silent for FROZEN_IDLE_MS → truly quiescent
- *                   → promote to Review.
+ *   - `'active'`  → still emitting, OR merely idle BETWEEN turns (silent < the sustained
+ *                   `REVIEW_PROMOTE_IDLE_MS` window) → the tty is alive → keep the ticket
+ *                   In Progress and poll again after one interval. A genuine resume
+ *                   cancels the poll via `cancelAll`.
+ *   - `'frozen'`  → the terminal has gone UNBROKEN-silent for the whole sustained window
+ *                   (`REVIEW_PROMOTE_IDLE_MS`, ≥ the user's frozen-idle setting) → truly
+ *                   quiescent → promote to Review.
  *   - `'unknown'` → the fingerprint round-trip failed, which for a session that just
  *                   reported completed almost always means the PTY/session is gone
  *                   (exited) → also promote (leaving it In Progress forever would
@@ -1191,39 +1221,50 @@ async function promoteToReviewWhenQuiescent(
     return t
   }
 
-  if (!stillPromotable()) return
+  const ticket = stillPromotable()
+  if (!ticket) return
 
-  const frozen = await confirmSessionFrozen(sessionId)
+  // Sustained-idle window for the In Progress ⟺ Review boundary: the flap-proof floor
+  // (`REVIEW_PROMOTE_IDLE_MS`), lengthened by the user's frozen-idle setting if larger —
+  // NOT the raw 2.5s animation floor, which would promote a live session between turns
+  // and flip-flop it right back on the next turn.
+  const { useSettingsStore } = await import('./useSettingsStore')
+  const { frozenIdleMs } = resolveVerifyConfig(ticket, useSettingsStore.getState())
+  const promoteIdleMs = Math.max(REVIEW_PROMOTE_IDLE_MS, frozenIdleMs)
+
+  const frozen = await confirmSessionFrozen(sessionId, { idleMs: promoteIdleMs })
 
   // Re-validate after the await — the ticket may have resumed / moved meanwhile.
   if (!stillPromotable()) return
 
   if (frozen === 'active') {
-    // Still running (incl. a subagent on the same tty) → stays In Progress; re-check
-    // after one idle window. Self-driving: no further event is needed to eventually
-    // promote once the terminal goes quiet.
+    // Still emitting (subagent/spinner/next turn) OR merely idle between turns (silent
+    // < promoteIdleMs) → the tty is alive → stays In Progress; re-check after one poll
+    // interval. Self-driving: no further event is needed to promote once the terminal
+    // goes quiet for the whole window. A resume (session_working → cancelAll) cancels it.
     logToMain(
-      'info',
+      'debug',
       'Kanban',
-      `promote-defer ticket ${ticketId}: session still active, holding In Progress`,
-      { ticketId, sessionId }
+      `promote-defer ticket ${ticketId}: not idle for ${promoteIdleMs}ms yet, holding In Progress`,
+      { ticketId, sessionId, promoteIdleMs }
     )
     const timer = setTimeout(() => {
       pendingReviewPromotion.delete(key)
       void promoteToReviewWhenQuiescent(get, projectId, ticketId, sessionId)
-    }, FROZEN_IDLE_MS)
+    }, REVIEW_PROMOTE_POLL_MS)
     pendingReviewPromotion.set(key, timer)
     return
   }
 
-  // 'frozen' (idle) or 'unknown' (PTY/session likely gone) → the process is no
-  // longer emitting → promote to Review.
+  // 'frozen' (idle for the whole promoteIdleMs window) or 'unknown' (PTY/session likely
+  // gone) → the process is no longer emitting → promote to Review.
   cancelReviewPromotion(key)
-  logToMain('info', 'Kanban', `promote ticket ${ticketId} → Review (frozen=${frozen})`, {
-    ticketId,
-    sessionId,
-    frozen
-  })
+  logToMain(
+    'info',
+    'Kanban',
+    `promote ticket ${ticketId} → Review (frozen=${frozen}, idleMs=${promoteIdleMs})`,
+    { ticketId, sessionId, frozen, promoteIdleMs }
+  )
   get()
     .moveTicket(ticketId, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
     .catch(() => {})
