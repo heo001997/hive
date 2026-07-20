@@ -245,10 +245,14 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
         .setSessionStatus(sessionId, isPlanLike(config.mode) ? 'planning' : 'working')
     }
 
-    // 4. Apply model override
+    // 4. Apply model override — this is the per-ticket model captured in the
+    // pending launch config, so keep it scoped to the session (skipGlobalUpdate)
+    // instead of overwriting the global per-SDK default for future tickets.
     const effectiveModel = config.model ?? undefined
     if (config.model) {
-      await useSessionStore.getState().setSessionModel(sessionId, config.model)
+      await useSessionStore
+        .getState()
+        .setSessionModel(sessionId, config.model, { skipGlobalUpdate: true })
     }
 
     // 5. Update ticket: clear pending config, set session + worktree, and move the

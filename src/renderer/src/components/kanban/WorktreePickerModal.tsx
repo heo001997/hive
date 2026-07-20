@@ -652,9 +652,13 @@ export function WorktreePickerModal({
             .setSessionStatus(sessionId, isPlanLike(mode) ? 'planning' : 'working')
         }
 
-        // Apply model override
+        // Apply model override — scoped to THIS ticket's session only.
+        // skipGlobalUpdate keeps the per-ticket pick from rewriting the global
+        // per-SDK default (which would otherwise leak into every future ticket).
         if (selectedModel) {
-          await useSessionStore.getState().setSessionModel(sessionId, selectedModel)
+          await useSessionStore
+            .getState()
+            .setSessionModel(sessionId, selectedModel, { skipGlobalUpdate: true })
         }
 
         // Update ticket — worktree_id stays null for connection sessions
@@ -1060,9 +1064,13 @@ export function WorktreePickerModal({
           .setSessionStatus(sessionId, isPlanLike(mode) ? 'planning' : 'working')
       }
 
-      // Apply user's model override to the session if they explicitly picked one
+      // Apply user's model override to the session if they explicitly picked one.
+      // skipGlobalUpdate keeps this per-ticket pick scoped to the session and off
+      // the global per-SDK default, so it can't bleed into future tickets.
       if (selectedModel) {
-        await useSessionStore.getState().setSessionModel(sessionId, selectedModel)
+        await useSessionStore
+          .getState()
+          .setSessionModel(sessionId, selectedModel, { skipGlobalUpdate: true })
       }
 
       // ── Resolve where the head + chain land in In Progress ──────

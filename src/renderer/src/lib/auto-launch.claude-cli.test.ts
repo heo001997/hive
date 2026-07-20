@@ -244,14 +244,19 @@ describe('autoLaunchTicket Claude CLI', () => {
           modelID: 'opus',
           variant: 'high'
         },
+        skipKanbanAutoAttach: true,
         pendingMessage: 'Implement the ticket'
       }
     )
-    expect(setSessionModel).toHaveBeenCalledWith('session-1', {
-      providerID: 'anthropic',
-      modelID: 'opus',
-      variant: 'high'
-    })
+    expect(setSessionModel).toHaveBeenCalledWith(
+      'session-1',
+      {
+        providerID: 'anthropic',
+        modelID: 'opus',
+        variant: 'high'
+      },
+      { skipGlobalUpdate: true }
+    )
     expect(updateTicket).toHaveBeenCalledWith(
       'ticket-1',
       'project-1',
@@ -372,7 +377,8 @@ describe('autoLaunchTicket Claude CLI', () => {
     // The raw prompt is NOT enqueued at createSession when gating — the injected
     // prompt is delivered only after setup resolves.
     expect(createSession).toHaveBeenCalledWith('worktree-1', 'project-1', 'claude-code-cli', 'build', {
-      autoFocus: false
+      autoFocus: false,
+      skipKanbanAutoAttach: true
     })
     expect(worktreeContextMocks.prepareWorktreeContextLaunch).toHaveBeenCalledWith({
       worktreeId: 'worktree-1',
