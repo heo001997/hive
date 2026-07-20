@@ -41,6 +41,7 @@ vi.mock('@/api/completion-api', () => ({
 
 import { useKanbanStore } from './useKanbanStore'
 import { kanbanApi } from '@/api/kanban-api'
+import { completionApi } from '@/api/completion-api'
 
 const SESSION_ID = 'sess-1'
 const PROJECT_ID = 'proj-1'
@@ -224,5 +225,63 @@ describe('syncTicketWithSession — non-done paths unchanged', () => {
 
     expect(columnOf('ticket-1')).toBe('in_progress')
     expect(kanbanApi.ticket.move).toHaveBeenCalledWith(PROJECT_ID, 'ticket-1', 'in_progress', 0)
+  })
+})
+
+describe('syncTicketWithSession — sustained-idle promote gate (anti-flap)', () => {
+  // The In Progress ⟺ Review promotion must wait for UNBROKEN silence longer than a
+  // between-turns pause (REVIEW_PROMOTE_IDLE_MS = 30s, floored by the frozen-idle
+  // setting), NOT the 2.5s animation floor. A live session idle between turns emits a
+  // byte within that window (lastOutputAt recent) → confirmSessionFrozen → 'active' →
+  // the ticket stays In Progress instead of flip-flopping to Review and back.
+  it('does NOT promote a build ticket that went quiet only briefly (idle between turns)', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build' }))
+    // Last terminal byte 5s ago — inside the 30s sustained window → still "running".
+    vi.mocked(completionApi.getSessionFingerprint).mockResolvedValueOnce({
+      length: 10,
+      hash: 'recent',
+      source: 'pty',
+      lastOutputAt: Date.now() - 5_000
+    })
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, {
+      type: 'session_completed',
+      sessionMode: 'build'
+    })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalled()
+
+    // A resume cancels the pending promote poll and keeps it In Progress (no flap).
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_working' })
+    await flush()
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalledWith(
+      PROJECT_ID,
+      'ticket-1',
+      'review',
+      expect.anything()
+    )
+  })
+
+  it('DOES promote a build ticket once the terminal is silent past the sustained window', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build' }))
+    // Last terminal byte 31s ago — past the 30s window → truly quiescent.
+    vi.mocked(completionApi.getSessionFingerprint).mockResolvedValueOnce({
+      length: 10,
+      hash: 'stale',
+      source: 'pty',
+      lastOutputAt: Date.now() - 31_000
+    })
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, {
+      type: 'session_completed',
+      sessionMode: 'build'
+    })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('review')
+    expect(kanbanApi.ticket.move).toHaveBeenCalledWith(PROJECT_ID, 'ticket-1', 'review', 0)
   })
 })
