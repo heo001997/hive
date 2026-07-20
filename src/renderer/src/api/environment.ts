@@ -1,3 +1,4 @@
+import type { ClientConfig } from '@hive/client'
 import type { DesktopBridge, LocalEnvironmentBootstrap } from './desktop-bridge'
 
 export type BackendTargetSource = 'desktop' | 'vite' | 'browser'
@@ -88,3 +89,13 @@ export const resolveBackendTarget = async (
     source: 'browser'
   }
 }
+
+// Bridge from the renderer-resolved `BackendTarget` to the platform-neutral
+// `ClientConfig` consumed by `@hive/client`'s `HiveClient`. All host detection
+// (desktop bridge / Vite env / window.location) stays above in this file; the
+// SDK itself receives only the resolved URLs + bootstrap token.
+export const backendTargetToClientConfig = (target: BackendTarget): ClientConfig => ({
+  baseUrl: target.wsBaseUrl,
+  httpBaseUrl: target.httpBaseUrl,
+  bootstrapToken: target.bootstrapToken
+})

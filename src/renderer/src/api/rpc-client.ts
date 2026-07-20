@@ -1,20 +1,10 @@
-import type { HiveClient } from './hive-client'
-
-export type RendererRpcClient = Pick<HiveClient, 'request' | 'subscribe'>
-
-let rendererRpcClient: RendererRpcClient | null = null
-
-export const setRendererRpcClient = (client: RendererRpcClient): void => {
-  rendererRpcClient = client
-}
-
-export const getRendererRpcClient = (): RendererRpcClient => {
-  if (!rendererRpcClient) {
-    throw new Error('Renderer RPC client has not been initialized')
-  }
-  return rendererRpcClient
-}
-
-export const resetRendererRpcClientForTests = (): void => {
-  rendererRpcClient = null
-}
+// Thin shim. The process-wide RPC client registry now lives in the
+// platform-neutral @hive/client SDK. It is re-exported here under the historical
+// renderer names so the ~60 existing `@/api/rpc-client` imports keep working
+// unchanged. Prefer importing from @hive/client directly in new code.
+export {
+  getHiveClient as getRendererRpcClient,
+  setHiveClient as setRendererRpcClient,
+  resetHiveClientForTests as resetRendererRpcClientForTests,
+  type HiveRpcClient as RendererRpcClient
+} from '@hive/client'
