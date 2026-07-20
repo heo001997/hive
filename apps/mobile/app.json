@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Hive",
+    "slug": "hive-mobile",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "scheme": "hive",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0b0b0f"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.hive.mobile"
+    },
+    "android": {
+      "package": "dev.hive.mobile",
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "color": "#ffffff"
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "00000000-0000-0000-0000-000000000000"
+      }
+    }
+  }
+}
