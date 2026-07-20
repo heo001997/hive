@@ -617,10 +617,14 @@ describe('buildFixRoundPrompt', () => {
     verdict: { reason: 'missing error handling', fixes: ['wrap the handler'] }
   }
 
-  it('embeds the exact batch JSON and the CLI batch command', () => {
+  it('embeds the exact batch JSON and runs the CLI on an out-of-repo temp file', () => {
     const prompt = buildFixRoundPrompt(params)
-    expect(prompt).toContain('round-1.json')
-    expect(prompt).toContain('node "$HIVE_TICKET_CLI" batch round-1.json')
+    // The batch file is created OUTSIDE the repo (temp dir) and cleaned up — it must
+    // never be written into the working tree (no `round-1.json` in the current dir).
+    expect(prompt).toContain('mktemp')
+    expect(prompt).toContain('node "$HIVE_TICKET_CLI" batch "$BATCH_FILE"')
+    expect(prompt).toContain('rm -f "$BATCH_FILE"')
+    expect(prompt).not.toContain('round-1.json')
     // The embedded JSON must be the same batch the store built (agent = dumb executor).
     expect(prompt).toContain(JSON.stringify(buildFixRoundBatch(params), null, 2))
   })

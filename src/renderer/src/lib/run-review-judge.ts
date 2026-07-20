@@ -5,21 +5,39 @@ import type { SelectedModel } from '@/stores/useSettingsStore'
 
 /**
  * Compose the full prompt handed to the Stage-2 review-judge CLI: the user-editable
- * "review standard" prompt, followed by the extracted review-session context tail
- * under a `Context:` header. This is the exact format the user specified:
+ * "review standard" prompt, the extracted review-session context tail under a
+ * `Context:` header, and — when Hive supplies one — an authoritative OUTPUT
+ * directive naming the EXACT absolute file the judge must write its verdict to:
  *
  *     {standard prompt}
  *
  *     Context:
  *     {last N chars of the review session…}
  *
- * The judge reads the context, decides pass/fix/needs-human against the standard,
- * and writes `.hive/review-gate.json` (see `DEFAULT_REVIEW_JUDGE_PROMPT`).
+ *     --- OUTPUT (write verdict JSON to <gateFilePath>)
+ *
+ * `gateFilePath` lives OUTSIDE the reviewed repo (under the Hive data dir), so the
+ * verdict file never pollutes the user's `git status`. The directive is stated as
+ * authoritative so it overrides any path a custom standard prompt happens to name;
+ * omitting it (legacy callers / tests) yields the plain `{standard}\n\nContext:`.
  */
-export function buildJudgePrompt(standardPrompt: string, context: string): string {
+export function buildJudgePrompt(
+  standardPrompt: string,
+  context: string,
+  gateFilePath?: string
+): string {
   const standard = standardPrompt.trim()
   const ctx = context.trim()
-  return `${standard}\n\nContext:\n${ctx}`
+  const base = `${standard}\n\nContext:\n${ctx}`
+  const target = gateFilePath?.trim()
+  if (!target) return base
+  return (
+    `${base}\n\n` +
+    `--- OUTPUT (Hive gate contract — this overrides any file path named above)\n` +
+    `Write your verdict JSON to EXACTLY this absolute path, and to NO other file ` +
+    `(create parent directories if they do not exist):\n${target}\n` +
+    `Do NOT write any file inside the repository. Write only the JSON object, then stop.`
+  )
 }
 
 /**
@@ -42,8 +60,9 @@ function inheritedModelOverride(reviewedSessionId: string | null): SelectedModel
 /**
  * Spawn a brand-new interactive Claude Code CLI ("the judge") in the reviewed
  * worktree and hand it the composed judge prompt. The judge reads the review
- * session's context, decides the verdict, and WRITES `<repo-root>/.hive/review-gate.json`
- * — which the Condition Gate then reads and routes.
+ * session's context, decides the verdict, and WRITES the Hive-owned verdict file
+ * named in the prompt's OUTPUT directive (an absolute path OUTSIDE the repo) —
+ * which the Condition Gate then reads and routes.
  *
  * This is the SAME interactive CLI Hive already uses everywhere (createSession →
  * createClaudeCli PTY path), NOT a headless `claude -p` — an interactive CLI can't

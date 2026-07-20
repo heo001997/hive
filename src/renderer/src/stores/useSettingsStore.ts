@@ -158,7 +158,7 @@ export interface AppSettings {
   kanbanConditionGateKeyPattern: string
   /** Kanban: Condition Gate — case-insensitive regex tested against a draft's description to seed the gate. Default `/speckit-review(?![\w-])`. Invalid patterns fall back to the default. */
   kanbanConditionGateWordPattern: string
-  /** Kanban: Review Judge (Stage-2) — user-editable "review standard" prompt fed to the judge CLI Hive spawns after a review session goes frozen. Hive appends the review-session context tail below it and the judge writes `.hive/review-gate.json`. Seeds from `DEFAULT_REVIEW_JUDGE_PROMPT`; a custom prompt MUST keep the write-`.hive/review-gate.json` contract. Per-ticket overridable via `verify_overrides.judgePrompt`. */
+  /** Kanban: Review Judge (Stage-2) — user-editable "review standard" prompt fed to the judge CLI Hive spawns after a review session goes frozen. Hive appends the review-session context tail AND an authoritative OUTPUT directive naming the Hive-owned, out-of-repo verdict file below it. Seeds from `DEFAULT_REVIEW_JUDGE_PROMPT`; a custom prompt need not name a path (Hive's directive is authoritative). Per-ticket overridable via `verify_overrides.judgePrompt`. */
   kanbanReviewJudgePrompt: string
   /** Kanban: Review Judge — which slice of the finished review session is extracted as the judge's context: the clean `transcript` (+ raw tail fallback) or the raw `terminal-tail`. Default `transcript`. */
   kanbanReviewJudgeContextSource: ReviewJudgeContextSource

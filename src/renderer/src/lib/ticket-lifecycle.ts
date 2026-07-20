@@ -237,9 +237,13 @@ export function buildFixRoundBatch(
 /**
  * Compose the prompt for the agent-driven fix round (P3). The agent runs in the
  * reviewed ticket's OWN worktree with `HIVE_*` env pre-injected (so the CLI needs
- * zero flags). It writes the pre-built batch JSON to a file and runs the
- * `hive-ticket` CLI once, then STOPS — it CRUDs the next round's tickets, it does
- * NOT implement the fixes itself (the fix ticket's own agent does that on launch).
+ * zero flags). It writes the pre-built batch JSON to a TEMP file OUTSIDE the repo,
+ * runs the `hive-ticket` CLI once, deletes the temp file, then STOPS — it CRUDs the
+ * next round's tickets, it does NOT implement the fixes itself (the fix ticket's own
+ * agent does that on launch).
+ *
+ * The batch file is deliberately kept out of the working tree (an OS temp file) so
+ * this Hive-generated CLI input never shows up in the user's project `git status`.
  */
 export function buildFixRoundPrompt(p: FixRoundPromptParams): string {
   const batch = buildFixRoundBatch(p)
@@ -249,19 +253,18 @@ export function buildFixRoundPrompt(p: FixRoundPromptParams): string {
 You are running inside the reviewed ticket's git worktree. The Hive CLI is pre-authed via injected \`HIVE_*\` env (project, worktree, port, token all set) — call it with no connection flags.
 
 Do exactly this, in order:
-1. Write the following JSON to a file \`round-${p.round}.json\` in the current directory:
-
-\`\`\`json
-${json}
-\`\`\`
-
-2. Run the Hive CLI to create the batch (it resolves the \`dependsOn\` chain by \`draftKey\` and threads the shared worktree so all three share one branch = one PR):
+1. Create the batch file OUTSIDE the repository (so it never shows up in the project's git status), run the Hive CLI on it, then delete it — run this exact shell block (the CLI resolves the \`dependsOn\` chain by \`draftKey\` and threads the shared worktree so all three share one branch = one PR):
 
 \`\`\`bash
-node "$HIVE_TICKET_CLI" batch round-${p.round}.json
+BATCH_FILE="$(mktemp "\${TMPDIR:-/tmp}/hive-round-${p.round}-XXXXXX")"
+cat > "$BATCH_FILE" <<'HIVE_BATCH_EOF'
+${json}
+HIVE_BATCH_EOF
+node "$HIVE_TICKET_CLI" batch "$BATCH_FILE"
+rm -f "$BATCH_FILE"
 \`\`\`
 
-3. Confirm the CLI printed three \`Created:\` lines. If it errored, report the exact error and stop. Do NOT edit code, do NOT implement the fixes — creating the three tickets is your only job. Once the three tickets exist, you are done.`
+2. Confirm the CLI printed three \`Created:\` lines. If it errored, report the exact error and stop. Do NOT edit code, do NOT implement the fixes, do NOT write any file into the repository — creating the three tickets is your only job. Once the three tickets exist, you are done.`
 }
 
 /**

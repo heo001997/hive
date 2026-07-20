@@ -77,18 +77,25 @@ export const DEFAULT_REVIEW_JUDGE_CONTEXT_CHARS = 10000
 /**
  * Result envelope for `completionOps.extractReviewContext` — the Stage-2 pre-spawn
  * step. Pulls the tail of the finished review session (per {@link ReviewJudgeContextSource})
- * to feed the judge CLI, and (optionally) clears any stale `.hive/review-gate.json`
- * left by a previous round so the judge's fresh write is unambiguous.
+ * to feed the judge CLI, resolves the Hive-owned OUT-OF-REPO `gateFilePath` the
+ * judge must write to, and (optionally) clears any stale verdict file left by a
+ * previous round so the judge's fresh write is unambiguous.
  */
 export interface ReviewContextResult {
   success: boolean
   /** The extracted, char-capped review-session context tail (the judge's "Context:"). */
   context?: string
-  /** Absolute worktree path the judge runs in (also the repo root for `.hive/review-gate.json`). */
+  /** Absolute worktree path the judge runs in (the reviewed repo root). */
   cwd?: string
+  /**
+   * Absolute path — OUTSIDE the reviewed repo, under the Hive data dir — the judge
+   * MUST write its verdict to (and the ONLY path Hive reads back). Kept out of the
+   * repo so Hive-generated verdict files never pollute the user's `git status`.
+   */
+  gateFilePath?: string
   /** Which source actually produced the context (may differ from requested on fallback). */
   source?: ReviewJudgeContextSource
-  /** True when a stale `.hive/review-gate.json` was found and removed before the judge runs. */
+  /** True when a stale review-gate.json was found and removed before the judge runs. */
   clearedStaleGateFile?: boolean
   error?: string
 }
@@ -104,8 +111,8 @@ export interface ConditionGateVerdict {
   fixes?: string[]
   /**
    * Verdict provenance (Part E). `review-gate.json` = read verbatim from the
-   * agent's deterministic `<cwd>/.hive/review-gate.json`; `llm-transcript` = the
-   * fallback LLM read over the reviewed transcript. Omitted on legacy payloads.
+   * judge's deterministic Hive-owned verdict file; `llm-transcript` = the fallback
+   * LLM read over the reviewed transcript. Omitted on legacy payloads.
    */
   source?: ConditionGateVerdictSource
 }
@@ -116,8 +123,8 @@ export interface ConditionGateCheckResult {
   verdict?: ConditionGateVerdict
   error?: string
   /**
-   * Set true (with no `verdict`) ONLY on the `fileOnly` gate path when
-   * `<cwd>/.hive/review-gate.json` is absent. The gate must NEVER LLM-guess a
+   * Set true (with no `verdict`) ONLY on the `fileOnly` gate path when the
+   * Hive-owned verdict file is absent. The gate must NEVER LLM-guess a
    * pass, so instead of falling back to the transcript LLM it reports "no file"
    * — the store retries a few times (write-race) then escalates to the human.
    */
@@ -223,23 +230,26 @@ Rules:
  * Default standard prompt for the Stage-2 REVIEW JUDGE — a fresh, interactive
  * Claude Code CLI that Hive spawns in the reviewed worktree once the review
  * session has gone frozen. Unlike the (legacy) headless gate above, this judge
- * cannot return structured stdout, so its verdict transport is a FILE: it writes
- * `<repo-root>/.hive/review-gate.json` and Hive reads + routes it.
+ * cannot return structured stdout, so its verdict transport is a FILE. Hive tells
+ * it the EXACT absolute path to write (an OUTPUT section it appends after the
+ * context) — deliberately OUTSIDE the reviewed repo, under Hive's own data dir, so
+ * the verdict file never shows up in the user's project `git status`.
  *
- * Hive appends the review-session context tail to this prompt as:
+ * Hive appends the review-session context tail AND the output-file directive as:
  *
  *     {this prompt, or the user's edited override}
  *
  *     Context:
  *     {last N chars of the review session…}
  *
+ *     --- (OUTPUT: write your verdict JSON to <absolute Hive-owned path>)
+ *
  * The user is free to edit this text (globally via `kanbanReviewJudgePrompt` or
- * per-ticket via `verify_overrides.judgePrompt`) to define THEIR review standard —
- * but a custom prompt MUST keep the "write `.hive/review-gate.json`" contract
- * below or the gate has no verdict to read (it then blocks for the human — no
- * fail-open).
+ * per-ticket via `verify_overrides.judgePrompt`) to define THEIR review standard.
+ * The appended OUTPUT directive is authoritative and overrides any path a custom
+ * prompt names, so Hive always knows where to read the verdict (no fail-open).
  */
-export const DEFAULT_REVIEW_JUDGE_PROMPT = `You are the review JUDGE for an automated code-review gate. A separate review agent has just finished reviewing a body of work; the TAIL of its session is given to you below under "Context:". Your job is to read what the review FOUND and decide what happens next, then RECORD your decision to a file.
+export const DEFAULT_REVIEW_JUDGE_PROMPT = `You are the review JUDGE for an automated code-review gate. A separate review agent has just finished reviewing a body of work; the TAIL of its session is given to you below under "Context:". Your job is to read what the review FOUND and decide what happens next, then RECORD your decision to the output file Hive specifies below.
 
 You are running inside the reviewed repository — you MAY open files, run read-only commands (\`git diff\`, \`git log\`, test output), and read the review's own report (e.g. \`review.md\`) to confirm the findings before you judge. Do NOT make code changes; you only judge and record.
 
@@ -248,7 +258,7 @@ Decide exactly one verdict:
 - "fix": the review found concrete, fixable problems (bugs, failing tests, missing requirements, unaddressed review comments) that a coding agent can resolve in another round.
 - "needs-human": the situation is ambiguous, the review is blocked on a human decision or an open question, or the findings can't be safely auto-routed.
 
-Then WRITE your verdict to the file \`.hive/review-gate.json\` at the repository root (create the \`.hive\` directory if needed). The file MUST be exactly this JSON shape and nothing else:
+Then WRITE your verdict to the OUTPUT file Hive names below. The file MUST be exactly this JSON shape and nothing else:
 
 {
   "verdict": "pass" | "fix" | "needs-human",
@@ -260,7 +270,7 @@ Rules:
 - "fixes" MUST be a non-empty array ONLY when "verdict" is "fix" (list the concrete issues to address); use an empty array \`[]\` for "pass" and "needs-human".
 - Prefer "fix" over "needs-human" whenever the findings are concrete and actionable by a coding agent.
 - "pass" means the review is clean — do not invent work.
-- The ONLY file you may write is \`.hive/review-gate.json\`. Write valid JSON. Then stop.`
+- Write ONLY the verdict file at the OUTPUT path below (never inside the repository). Write valid JSON. Then stop.`
 
 export interface CompletionVerdict {
   /** True only if the ticket's goal is convincingly satisfied. */
@@ -321,7 +331,7 @@ export interface SessionFingerprint {
  *                      to In Progress. Self-clears after a few seconds.
  *   judging          — the Stage-2 review-judge CLI is running: a fresh Claude Code
  *                      session reading the review-session context tail against the
- *                      configured standard, writing `.hive/review-gate.json`.
+ *                      configured standard, writing the Hive-owned verdict file.
  */
 export type VerifyPhase =
   | 'verify-countdown'

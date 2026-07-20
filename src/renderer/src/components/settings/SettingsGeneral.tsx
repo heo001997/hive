@@ -1306,7 +1306,8 @@ export function SettingsGeneral(): React.JSX.Element {
                 reviewer that knows nothing about Hive. Once its session goes idle,
                 Hive spawns a fresh interactive judge CLI (inheriting the ticket's
                 model), feeds it the standard prompt + the review context, and the
-                judge WRITES `.hive/review-gate.json`, which the gate reads + routes.
+                judge WRITES a Hive-owned verdict file (kept out of the reviewed repo),
+                which the gate reads + routes.
                 The "Routing …" controls above are the legacy transcript-LLM path. */}
             <div className="space-y-2 border-t border-border pt-4">
               <label className="text-sm font-medium">Review judge — context source</label>
@@ -1386,11 +1387,11 @@ export function SettingsGeneral(): React.JSX.Element {
               />
               <p className="text-xs text-muted-foreground">
                 Your review <strong>standard</strong> — this is the prompt the spawned judge is fed,
-                ahead of the review context. Edit it to define what &quot;good&quot; means. It{' '}
-                <strong>must</strong> keep the instruction to write{' '}
-                <code>.hive/review-gate.json</code> (<code>verdict</code>, <code>reason</code>,{' '}
-                <code>fixes</code>) or the gate has no verdict to read — it then blocks for you (never
-                a fail-open pass). Overridable per-ticket in the ticket&apos;s Verification section.
+                ahead of the review context. Edit it to define what &quot;good&quot; means. Hive
+                appends an authoritative <code>OUTPUT</code> directive telling the judge the exact
+                file to write (<code>verdict</code>, <code>reason</code>, <code>fixes</code>) — kept
+                outside the reviewed repo — so you never need to name a path here; if you do, Hive&apos;s
+                directive overrides it. Overridable per-ticket in the ticket&apos;s Verification section.
               </p>
             </div>
           </div>
