@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { detectWebMode } from '@/api/environment'
+import { WebSignOut } from '@/components/auth/WebSignOut'
 import { isHiveTelemetryEnabled, refreshHiveEnterpriseOrg } from '@/api/hive-enterprise/client'
 import { AppLayout } from '@/components/layout'
 import { ErrorBoundary } from '@/components/error'
@@ -12,6 +14,7 @@ import { PetStatusBridge } from '@/components/pet/PetStatusBridge'
 
 function App(): React.JSX.Element {
   const [ready, setReady] = useState(false)
+  const isWebMode = useMemo(() => detectWebMode(), [])
   const didRefreshHiveOrg = useRef(false)
   const hiveAuthToken = useSettingsStore((state) => state.hiveAuthToken)
   const hiveOrganizationId = useSettingsStore((state) => state.hiveOrganizationId)
@@ -50,6 +53,7 @@ function App(): React.JSX.Element {
       <TooltipProvider delayDuration={350}>
         <PetStatusBridge />
         <AppLayout />
+        {isWebMode ? <WebSignOut /> : null}
       </TooltipProvider>
     </ErrorBoundary>
   )

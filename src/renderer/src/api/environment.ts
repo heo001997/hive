@@ -1,5 +1,6 @@
 import type { ClientConfig } from '@hive/client'
 import type { DesktopBridge, LocalEnvironmentBootstrap } from './desktop-bridge'
+import { clearWebAuth, createLocalStorageTokenStore, readStoredOwnerToken } from './web-auth'
 
 export type BackendTargetSource = 'desktop' | 'vite' | 'browser'
 
@@ -90,12 +91,61 @@ export const resolveBackendTarget = async (
   }
 }
 
+// Synchronous WEB-mode detection, mirroring `resolveBackendTarget`'s precedence
+// without awaiting the desktop bridge: a desktop preload bridge OR a Vite-dev
+// backend env means we are NOT a hosted web client. Everything else (a plain
+// browser served the built UI by the server) is web mode, where the owner-token
+// login gate applies. Used by the renderer bootstrap to decide whether to show
+// the Login screen; desktop + dev bridge return `false` and stay unchanged.
+export const detectWebMode = (
+  options: Pick<ResolveBackendTargetOptions, 'desktopBridge' | 'env'> = {}
+): boolean => {
+  const desktopBridge =
+    options.desktopBridge === undefined ? getDefaultDesktopBridge() : options.desktopBridge
+  if (desktopBridge) return false
+
+  const env = options.env ?? getDefaultEnv()
+  if (env.VITE_HIVE_HTTP_BASE_URL ?? env.VITE_HIVE_BACKEND_HTTP_BASE_URL) return false
+
+  return typeof window !== 'undefined'
+}
+
 // Bridge from the renderer-resolved `BackendTarget` to the platform-neutral
 // `ClientConfig` consumed by `@hive/client`'s `HiveClient`. All host detection
 // (desktop bridge / Vite env / window.location) stays above in this file; the
 // SDK itself receives only the resolved URLs + bootstrap token.
-export const backendTargetToClientConfig = (target: BackendTarget): ClientConfig => ({
-  baseUrl: target.wsBaseUrl,
-  httpBaseUrl: target.httpBaseUrl,
-  bootstrapToken: target.bootstrapToken
-})
+//
+// In `browser` (hosted web) mode we additionally carry the durable owner token
+// read from localStorage plus a localStorage-backed session `tokenStore`, so the
+// SDK authenticates via `/api/auth/owner-exchange`. Desktop / Vite targets are
+// unchanged (no owner token, default in-memory token store, no `onAuthError`).
+// Web-mode terminal-auth recovery: clear the stored owner + session tokens and
+// reload, which drops back to the WebLogin gate (no stored owner token now).
+// Guarded so a non-browser host without `window` is a no-op.
+const onWebAuthError = (): void => {
+  clearWebAuth()
+  if (typeof window !== 'undefined') window.location.reload()
+}
+
+export const backendTargetToClientConfig = (target: BackendTarget): ClientConfig => {
+  if (target.source === 'browser') {
+    return {
+      baseUrl: target.wsBaseUrl,
+      httpBaseUrl: target.httpBaseUrl,
+      bootstrapToken: target.bootstrapToken,
+      ownerToken: readStoredOwnerToken(),
+      tokenStore: createLocalStorageTokenStore(),
+      // Terminal auth failure (a rotated / rejected owner token surfaced as a
+      // 401/403): the SDK has already stopped auto-reconnecting, so drop the
+      // stored credentials and reload back to the WebLogin gate. This only wires
+      // up for a hosted-web target — desktop / Vite-dev never reach here.
+      onAuthError: onWebAuthError
+    }
+  }
+
+  return {
+    baseUrl: target.wsBaseUrl,
+    httpBaseUrl: target.httpBaseUrl,
+    bootstrapToken: target.bootstrapToken
+  }
+}
