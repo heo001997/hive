@@ -803,49 +803,6 @@ const handleDesktopBackendCommand = (
     return
   }
 
-  if (message.command === 'telegramClaudeCliQuestionReply') {
-    const success = claudeCliTelegramBridge.hasPendingQuestion(message.payload.requestId)
-    if (success) {
-      claudeCliTelegramBridge.resolveQuestion(message.payload.requestId, message.payload.answers)
-    }
-    sendDesktopBackendCommandResult(
-      child,
-      makeDesktopCommandResult(message.id, { ok: true, value: { success } }),
-      log
-    )
-    return
-  }
-
-  if (message.command === 'telegramClaudeCliQuestionReject') {
-    const success = claudeCliTelegramBridge.hasPendingQuestion(message.payload.requestId)
-    if (success) {
-      claudeCliTelegramBridge.rejectQuestion(message.payload.requestId)
-    }
-    sendDesktopBackendCommandResult(
-      child,
-      makeDesktopCommandResult(message.id, { ok: true, value: { success } }),
-      log
-    )
-    return
-  }
-
-  if (message.command === 'telegramClaudeCliPlanReply') {
-    const success = claudeCliTelegramBridge.hasPendingPlan(message.payload.requestId)
-    if (success) {
-      claudeCliTelegramBridge.resolvePlan(
-        message.payload.requestId,
-        message.payload.approve,
-        message.payload.feedback
-      )
-    }
-    sendDesktopBackendCommandResult(
-      child,
-      makeDesktopCommandResult(message.id, { ok: true, value: { success } }),
-      log
-    )
-    return
-  }
-
   if (message.command === 'projectShowInFolder') {
     try {
       shell.showItemInFolder(message.payload.path)

@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { ServerResponse } from 'node:http'
 import type { OpenCodeStreamEvent } from '@shared/types/opencode'
-import { agentEventBus } from './agent-event-bus'
 import { CliHookHoldCore, type ClaudeHookBody } from './cli-hook-hold-core'
 
 class ClaudeCliDiscordBridge {
@@ -9,7 +8,6 @@ class ClaudeCliDiscordBridge {
   private readonly emitter = new EventEmitter()
   private readonly core = new CliHookHoldCore({
     name: 'Discord',
-    emitShared: (event) => agentEventBus.publish(event),
     emitTransport: (event) => this.emitter.emit('event', event)
   })
 
@@ -32,30 +30,6 @@ class ClaudeCliDiscordBridge {
 
   onHook(sessionId: string, body: ClaudeHookBody, res: ServerResponse): boolean {
     return this.core.onHook(sessionId, body, res)
-  }
-
-  hasPendingQuestion(requestId: string): boolean {
-    return this.core.hasPendingQuestion(requestId)
-  }
-
-  hasPendingPlan(requestId: string): boolean {
-    return this.core.hasPendingPlan(requestId)
-  }
-
-  hasPendingPlanForSession(sessionId: string): boolean {
-    return this.core.hasPendingPlanForSession(sessionId)
-  }
-
-  resolveQuestion(requestId: string, answers: string[][]): void {
-    this.core.resolveQuestion(requestId, answers)
-  }
-
-  rejectQuestion(requestId: string): void {
-    this.core.rejectQuestion(requestId)
-  }
-
-  resolvePlan(requestId: string, approve: boolean, feedback?: string): void {
-    this.core.resolvePlan(requestId, approve, feedback)
   }
 
   cancelSession(sessionId: string): void {

@@ -103,9 +103,6 @@ export type DesktopCommandName =
   | 'opencodeFork'
   | 'telegramClaudeCliRegister'
   | 'telegramClaudeCliCancel'
-  | 'telegramClaudeCliQuestionReply'
-  | 'telegramClaudeCliQuestionReject'
-  | 'telegramClaudeCliPlanReply'
 
 export interface OpenInAppPayload {
   readonly appName: string
@@ -348,21 +345,6 @@ export interface TerminalCreateResult {
 
 export interface TelegramClaudeCliSessionPayload {
   readonly sessionId: string
-}
-
-export interface TelegramClaudeCliQuestionReplyPayload {
-  readonly requestId: string
-  readonly answers: string[][]
-}
-
-export interface TelegramClaudeCliQuestionRejectPayload {
-  readonly requestId: string
-}
-
-export interface TelegramClaudeCliPlanReplyPayload {
-  readonly requestId: string
-  readonly approve: boolean
-  readonly feedback?: string
 }
 
 export interface TelegramClaudeCliReplyResult {
@@ -944,9 +926,6 @@ export type DesktopCommandRequest =
   | OpenCodeForkDesktopCommandRequest
   | TelegramClaudeCliRegisterDesktopCommandRequest
   | TelegramClaudeCliCancelDesktopCommandRequest
-  | TelegramClaudeCliQuestionReplyDesktopCommandRequest
-  | TelegramClaudeCliQuestionRejectDesktopCommandRequest
-  | TelegramClaudeCliPlanReplyDesktopCommandRequest
 
 export interface QuitAppDesktopCommandRequest {
   readonly type: typeof DESKTOP_COMMAND_REQUEST_TYPE
@@ -1612,27 +1591,6 @@ export interface TelegramClaudeCliCancelDesktopCommandRequest {
   readonly payload: TelegramClaudeCliSessionPayload
 }
 
-export interface TelegramClaudeCliQuestionReplyDesktopCommandRequest {
-  readonly type: typeof DESKTOP_COMMAND_REQUEST_TYPE
-  readonly id: string
-  readonly command: 'telegramClaudeCliQuestionReply'
-  readonly payload: TelegramClaudeCliQuestionReplyPayload
-}
-
-export interface TelegramClaudeCliQuestionRejectDesktopCommandRequest {
-  readonly type: typeof DESKTOP_COMMAND_REQUEST_TYPE
-  readonly id: string
-  readonly command: 'telegramClaudeCliQuestionReject'
-  readonly payload: TelegramClaudeCliQuestionRejectPayload
-}
-
-export interface TelegramClaudeCliPlanReplyDesktopCommandRequest {
-  readonly type: typeof DESKTOP_COMMAND_REQUEST_TYPE
-  readonly id: string
-  readonly command: 'telegramClaudeCliPlanReply'
-  readonly payload: TelegramClaudeCliPlanReplyPayload
-}
-
 export interface DesktopCommandResult {
   readonly type: typeof DESKTOP_COMMAND_RESULT_TYPE
   readonly id: string
@@ -2111,21 +2069,6 @@ export function makeDesktopCommandRequest(
 ): TelegramClaudeCliCancelDesktopCommandRequest
 export function makeDesktopCommandRequest(
   id: string,
-  command: 'telegramClaudeCliQuestionReply',
-  payload: TelegramClaudeCliQuestionReplyPayload
-): TelegramClaudeCliQuestionReplyDesktopCommandRequest
-export function makeDesktopCommandRequest(
-  id: string,
-  command: 'telegramClaudeCliQuestionReject',
-  payload: TelegramClaudeCliQuestionRejectPayload
-): TelegramClaudeCliQuestionRejectDesktopCommandRequest
-export function makeDesktopCommandRequest(
-  id: string,
-  command: 'telegramClaudeCliPlanReply',
-  payload: TelegramClaudeCliPlanReplyPayload
-): TelegramClaudeCliPlanReplyDesktopCommandRequest
-export function makeDesktopCommandRequest(
-  id: string,
   command: DesktopCommandName,
   payload?:
     | OpenInAppPayload
@@ -2203,9 +2146,6 @@ export function makeDesktopCommandRequest(
     | OpenCodeCapabilitiesPayload
     | OpenCodeForkPayload
     | TelegramClaudeCliSessionPayload
-    | TelegramClaudeCliQuestionReplyPayload
-    | TelegramClaudeCliQuestionRejectPayload
-    | TelegramClaudeCliPlanReplyPayload
 ): DesktopCommandRequest {
   if (command === 'projectShowInFolder') {
     if (!payload) {
@@ -3262,45 +3202,6 @@ export function makeDesktopCommandRequest(
     } as TelegramClaudeCliRegisterDesktopCommandRequest | TelegramClaudeCliCancelDesktopCommandRequest
   }
 
-  if (command === 'telegramClaudeCliQuestionReply') {
-    if (!payload) {
-      throw new Error('Missing telegramClaudeCliQuestionReply payload')
-    }
-
-    return {
-      type: DESKTOP_COMMAND_REQUEST_TYPE,
-      id,
-      command,
-      payload
-    } as TelegramClaudeCliQuestionReplyDesktopCommandRequest
-  }
-
-  if (command === 'telegramClaudeCliQuestionReject') {
-    if (!payload) {
-      throw new Error('Missing telegramClaudeCliQuestionReject payload')
-    }
-
-    return {
-      type: DESKTOP_COMMAND_REQUEST_TYPE,
-      id,
-      command,
-      payload
-    } as TelegramClaudeCliQuestionRejectDesktopCommandRequest
-  }
-
-  if (command === 'telegramClaudeCliPlanReply') {
-    if (!payload) {
-      throw new Error('Missing telegramClaudeCliPlanReply payload')
-    }
-
-    return {
-      type: DESKTOP_COMMAND_REQUEST_TYPE,
-      id,
-      command,
-      payload
-    } as TelegramClaudeCliPlanReplyDesktopCommandRequest
-  }
-
   return {
     type: DESKTOP_COMMAND_REQUEST_TYPE,
     id,
@@ -3449,13 +3350,7 @@ export const isDesktopCommandRequest = (value: unknown): value is DesktopCommand
       (value.command === 'opencodeFork' && isOpenCodeForkPayload(value.payload)) ||
       ((value.command === 'telegramClaudeCliRegister' ||
         value.command === 'telegramClaudeCliCancel') &&
-        isTelegramClaudeCliSessionPayload(value.payload)) ||
-      (value.command === 'telegramClaudeCliQuestionReply' &&
-        isTelegramClaudeCliQuestionReplyPayload(value.payload)) ||
-      (value.command === 'telegramClaudeCliQuestionReject' &&
-        isTelegramClaudeCliQuestionRejectPayload(value.payload)) ||
-      (value.command === 'telegramClaudeCliPlanReply' &&
-        isTelegramClaudeCliPlanReplyPayload(value.payload)))
+        isTelegramClaudeCliSessionPayload(value.payload)))
   )
 }
 
@@ -3974,27 +3869,3 @@ const isTelegramClaudeCliSessionPayload = (
   value: unknown
 ): value is TelegramClaudeCliSessionPayload =>
   isRecord(value) && typeof value.sessionId === 'string'
-
-const isTelegramClaudeCliQuestionReplyPayload = (
-  value: unknown
-): value is TelegramClaudeCliQuestionReplyPayload =>
-  isRecord(value) &&
-  typeof value.requestId === 'string' &&
-  Array.isArray(value.answers) &&
-  value.answers.every(
-    (answerGroup) =>
-      Array.isArray(answerGroup) && answerGroup.every((answer) => typeof answer === 'string')
-  )
-
-const isTelegramClaudeCliQuestionRejectPayload = (
-  value: unknown
-): value is TelegramClaudeCliQuestionRejectPayload =>
-  isRecord(value) && typeof value.requestId === 'string'
-
-const isTelegramClaudeCliPlanReplyPayload = (
-  value: unknown
-): value is TelegramClaudeCliPlanReplyPayload =>
-  isRecord(value) &&
-  typeof value.requestId === 'string' &&
-  typeof value.approve === 'boolean' &&
-  (value.feedback === undefined || typeof value.feedback === 'string')
