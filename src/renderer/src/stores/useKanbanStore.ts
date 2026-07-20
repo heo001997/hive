@@ -34,13 +34,17 @@ import {
   actionsForSlot,
   branchesForState,
   buildDefaultLoopConfig,
+  buildShardGateConfig,
+  buildShardPhaseDraft,
   combineVerdicts,
   conditionGateConfigOf,
   decideBranch,
   decideConditionGate,
+  decideShardGate,
   isConditionGate,
   isLifecycleEnabled,
   parseGateRound,
+  parseShardRun,
   renderTemplate,
   retryMaxForState,
   verdictToLifecycle
@@ -2209,6 +2213,326 @@ async function launchConditionGateFixRound(
 }
 
 /**
+ * Run a shard gate's DETERMINISTIC predicate — a shell command executed in the
+ * ticket's worktree whose stdout carries the verdict (`DONE`/`CONTINUE`/`BLOCK`).
+ * Uses the managed bash runner (a separate process, not typed into the CLI PTY, so
+ * it never disturbs the reviewed session) and polls its snapshot to completion.
+ * Returns `null` if the command never starts or never finishes within the budget
+ * (the caller then blocks for the human — never fails open).
+ */
+async function runShardPredicate(
+  sessionId: string,
+  cwd: string,
+  command: string
+): Promise<{ output: string; exitCode: number | undefined } | null> {
+  const { bashApi } = await import('@/api/bash-api')
+  const { unwrapEnvelope } = await import('@/lib/ipc-envelope')
+  let runId: string
+  try {
+    const result = unwrapEnvelope(await bashApi.run(sessionId, command, cwd))
+    runId = result.runId
+  } catch (err) {
+    logToMain('warn', 'ShardGate', 'predicate failed to start', {
+      sessionId,
+      error: err instanceof Error ? err.message : String(err)
+    })
+    return null
+  }
+  const POLL_MS = 1000
+  const MAX_MS = 60 * 1000
+  const deadline = Date.now() + MAX_MS
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, POLL_MS))
+    let snap: Awaited<ReturnType<typeof bashApi.getRun>>
+    try {
+      snap = await bashApi.getRun(sessionId)
+    } catch {
+      continue
+    }
+    // getRun returns the latest run for the session; only trust the snapshot for OUR run.
+    if (!snap || snap.id !== runId) continue
+    if (snap.status === 'running') continue
+    // Only a clean `exited` yields a trustworthy verdict. `killed`/`error`/`truncated`
+    // mean the predicate did NOT run to a clean finish → null so the caller blocks for
+    // the human (never fails open on a broken/cut-off predicate). Exit code is returned
+    // as-is (incl. undefined) and gated by the caller.
+    if (snap.status !== 'exited') {
+      logToMain('warn', 'ShardGate', `predicate ended abnormally (${snap.status})`, {
+        sessionId,
+        runId
+      })
+      return null
+    }
+    return { output: snap.outputBuffer ?? '', exitCode: snap.exitCode }
+  }
+  logToMain('warn', 'ShardGate', 'predicate did not finish within budget', { sessionId, runId })
+  return null
+}
+
+/**
+ * Guards {@link runShardGate} against concurrent / duplicate invocations for the same
+ * ticket (two rapid settle events, or a re-settle after a failed move-to-Done). Without
+ * it a second run would spawn a DUPLICATE continuation into the shared worktree, and two
+ * agents would clobber each other's on-disk shard state.
+ */
+const shardGateInFlight = new Set<string>()
+
+/**
+ * SHARD gate (`config.mode === 'shard'`) — the DETERMINISTIC sibling of
+ * {@link runConditionGate}. Reached after the same Stage-1 frozen check, for the
+ * sharded `/speckit-e2e-{spec,execute,report}` phases whose run-count is unknown
+ * until the registry is written. Instead of an LLM judge it runs the gate's shell
+ * {@link ConditionGateActionConfig.predicate} in the worktree and routes:
+ *   - `CONTINUE` (under cap) → spawn a numbered `(run N+1)` ticket re-running the SAME
+ *     command in the SAME worktree (a fresh session resumes from disk), then move this
+ *     run to Done. The board shows `run 1 → run 2 → …` — a full, linked audit trail.
+ *   - `DONE` → spawn the NEXT phase (`config.next`, self-describing incl. its own gate),
+ *     or, when there is no `next`, complete the chain. Then move this run to Done.
+ *   - `BLOCK` / cap reached / any failure → block for the human (never fails open).
+ * Never commits: e2e artifacts (spec files, screenshots) are the user's to commit.
+ */
+async function runShardGate(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  current: KanbanTicket,
+  settings: StrictVerifySettings
+): Promise<ConditionGateOutcome> {
+  const key = ticketKey(projectId, ticketId)
+  // Idempotency: never let two settle events (or a re-settle after a failed move) both
+  // reach the spawn path and create a duplicate continuation in the shared worktree.
+  if (shardGateInFlight.has(key)) {
+    logToMain('info', 'ShardGate', `ticket ${ticketId} skipped — gate already in flight`, {
+      ticketId
+    })
+    return 'pass'
+  }
+  shardGateInFlight.add(key)
+  try {
+    return await runShardGateInner(get, ticketId, projectId, current, settings, key)
+  } finally {
+    shardGateInFlight.delete(key)
+  }
+}
+
+async function runShardGateInner(
+  get: () => KanbanState,
+  ticketId: string,
+  projectId: string,
+  current: KanbanTicket,
+  _settings: StrictVerifySettings,
+  key: string
+): Promise<ConditionGateOutcome> {
+  const sessionId = current.current_session_id
+  const gateCfg = conditionGateConfigOf(current.lifecycle_callbacks)
+  const round = parseShardRun(current.title)
+  // Generous default: a many-file execute needs many runs; the scaffolder can override.
+  const SHARD_MAX_DEFAULT = 50
+  const maxRounds = gateCfg.maxRounds ?? SHARD_MAX_DEFAULT
+
+  // Persist WHAT happened onto the ticket (like the judge gate's recordGateResult) — the
+  // in-memory completionVerdicts map is lost on reload, so a stalled shard phase would
+  // otherwise show no reason in the detail view.
+  const recordShardResult = (
+    decision: 'pass' | 'fix' | 'block',
+    reason: string,
+    action: string
+  ): void => {
+    const result: ConditionGateResult = {
+      ranAt: Date.now(),
+      trigger: 'auto',
+      verdict: null,
+      source: null,
+      reason,
+      fixes: [],
+      round,
+      maxRounds,
+      decision,
+      outcome: decision === 'block' ? 'blocked' : decision,
+      action,
+      sessionId,
+      ...(decision === 'block' ? { error: reason } : {})
+    }
+    void get()
+      .updateTicket(ticketId, projectId, { condition_gate_result: result })
+      .catch((err) => console.warn(`[ShardGate] persist result for ${ticketId} failed`, err))
+  }
+
+  const block = (reason: string): ConditionGateOutcome => {
+    const prior = get().completionVerdicts.get(key)
+    get().setCompletionVerdict(key, {
+      ...(prior ?? { complete: false, needsInput: false, confidence: 0, reason }),
+      // A blocked ticket is NEVER complete — force it even if a prior verdict was
+      // complete:true (else the queue-advance gate would dispatch follow-ups into the
+      // session that was meant to be frozen/escalated).
+      complete: false,
+      needsInput: false,
+      reason,
+      sessionId,
+      checkedAt: Date.now(),
+      movedBack: false,
+      lifecycleStuck: true
+    })
+    get().setVerifyProgress(key, null)
+    logToMain('warn', 'ShardGate', `ticket ${ticketId} BLOCKED: ${reason}`, { ticketId, sessionId })
+    recordShardResult('block', reason, 'Blocked — left in Review, you were notified')
+    void import('../lib/ticket-telegram-notify')
+      .then((m) =>
+        m.notifyTicketEvent('question', {
+          ticketId,
+          title: current.title,
+          dedupeKey: `shard_gate_block:${ticketId}:${sessionId ?? 'none'}`
+        })
+      )
+      .catch(() => {})
+    return 'blocked'
+  }
+
+  const worktreeId = current.worktree_id
+  if (!worktreeId) return block('shard gate: ticket has no worktree')
+  const { useWorktreeStore } = await import('./useWorktreeStore')
+  const worktree = Array.from(useWorktreeStore.getState().worktreesByProject.values())
+    .flat()
+    .find((w) => w.id === worktreeId)
+  if (!worktree) return block(`shard gate: worktree ${worktreeId} no longer exists`)
+  if (!gateCfg.predicate) return block('shard gate: no predicate configured')
+  if (!gateCfg.command || !gateCfg.label || !gateCfg.key) {
+    return block('shard gate: config missing command/label/key')
+  }
+  if (!sessionId) return block('shard gate: ticket has no session to run the predicate in')
+
+  get().setVerifyProgress(key, { phase: 'judging' })
+  const pred = await runShardPredicate(sessionId, worktree.path, gateCfg.predicate)
+  if (!pred) return block('shard gate: predicate did not produce a verdict')
+  // Fail-safe: a predicate that exited non-zero (or with no exit code) is broken —
+  // its stdout token cannot be trusted, so block rather than route off stale output.
+  if (pred.exitCode !== 0) {
+    return block(`shard gate: predicate exited ${pred.exitCode ?? 'with no code'} (untrusted)`)
+  }
+
+  const decision = decideShardGate(pred.output, round, maxRounds)
+  logToMain('info', 'ShardGate', `ticket ${ticketId} predicate → ${decision.kind}`, {
+    ticketId,
+    sessionId,
+    round,
+    maxRounds,
+    exitCode: pred.exitCode
+  })
+
+  if (decision.kind === 'block') return block(`shard gate → ${decision.reason}`)
+
+  // Build the draft to spawn: the next numbered run (CONTINUE) or the next phase (DONE).
+  let draft: Record<string, unknown> | null = null
+  if (decision.kind === 'continue') {
+    draft = buildShardPhaseDraft({
+      projectId,
+      worktreeId,
+      round: decision.round,
+      command: gateCfg.command,
+      label: gateCfg.label,
+      key: gateCfg.key,
+      // Re-carry THIS gate verbatim so the continuation re-arms the same loop.
+      gateConfig: current.lifecycle_callbacks as NonNullable<KanbanTicket['lifecycle_callbacks']>
+    })
+  } else if (gateCfg.next) {
+    draft = buildShardPhaseDraft({
+      projectId,
+      worktreeId,
+      round: 0,
+      command: gateCfg.next.command,
+      label: gateCfg.next.label,
+      key: gateCfg.next.key,
+      gateConfig: buildShardGateConfig(gateCfg.next)
+    })
+  } else {
+    // DONE with no parsed next. Distinguish a genuinely terminal phase from a `next`
+    // blob that was dropped by the lenient parse (a malformed/incomplete spec) — the
+    // latter would silently end the chain early, so block instead.
+    const rawEvaluate = (current.lifecycle_callbacks?.states?.review?.during ?? []).find(
+      (a) => a.type === 'evaluate'
+    )
+    if ((rawEvaluate?.config as Record<string, unknown> | undefined)?.next != null) {
+      return block('shard gate: next-phase spec is present but malformed (unparseable) — not advancing')
+    }
+  }
+
+  if (draft) {
+    const expectedTitle = draft.title as string
+    // Idempotent spawn: if the continuation/next ticket already exists on this worktree
+    // (e.g. from a prior partial run), do NOT create a duplicate — just advance.
+    const already = (get().tickets.get(projectId) ?? []).some(
+      (t) => t.title === expectedTitle && t.worktree_id === worktreeId
+    )
+    if (already) {
+      logToMain('info', 'ShardGate', `ticket ${ticketId} next ticket "${expectedTitle}" already exists — skipping duplicate spawn`, {
+        ticketId
+      })
+    } else {
+      let newId: string | undefined
+      try {
+        const res = await kanban.ticket.createBatch<
+          { tickets?: Array<{ id: string; title: string }> },
+          { drafts: Array<Record<string, unknown>> }
+        >(projectId, { drafts: [draft] })
+        newId = res?.tickets?.[0]?.id
+      } catch (err) {
+        return block(
+          `shard gate: could not create the next ticket: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+      if (!newId) return block('shard gate: createBatch returned no ticket id')
+      // Best-effort visible link (new run depends on this one) — for board traceability
+      // only; the loop is correct without it, so a failure here never blocks.
+      try {
+        await kanban.dependency.add(projectId, newId, ticketId)
+      } catch {
+        /* link is cosmetic */
+      }
+      logToMain('info', 'ShardGate', `ticket ${ticketId} ${decision.kind} → spawned ${newId}`, {
+        ticketId,
+        spawned: newId,
+        nextRound: decision.kind === 'continue' ? decision.round : 1
+      })
+    }
+  } else {
+    logToMain('info', 'ShardGate', `ticket ${ticketId} DONE (terminal phase) — chain complete`, {
+      ticketId
+    })
+  }
+
+  // Record a synthetic verified verdict AFTER the spawn succeeded (so a failed spawn
+  // never leaves a complete:true behind), then move this run to Done. A failed move is
+  // NOT swallowed: it would strand the whole pipeline (this run stuck in Review, the
+  // spawned continuation blocked on it, no escalation), so surface it via block().
+  get().setCompletionVerdict(key, {
+    complete: true,
+    needsInput: false,
+    confidence: 1,
+    reason: `shard gate: ${decision.kind}`,
+    sessionId,
+    checkedAt: Date.now(),
+    movedBack: false
+  })
+  try {
+    const sortOrder = topOfColumnSortOrder(get, projectId, 'done')
+    await get().moveTicket(ticketId, projectId, 'done', sortOrder)
+  } catch (err) {
+    return block(
+      `shard gate: spawned the next run but could not move this run to Done: ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  recordShardResult(
+    decision.kind === 'continue' ? 'fix' : 'pass',
+    `shard predicate: ${decision.kind}`,
+    draft
+      ? `Spawned ${decision.kind === 'continue' ? `run ${decision.round}` : 'the next phase'} — this run moved to Done`
+      : 'Phase complete (terminal) — this run moved to Done'
+  )
+  get().setVerifyProgress(key, null)
+  return decision.kind === 'continue' ? 'fix' : 'pass'
+}
+
+/**
  * Stage 2 — the CONDITION GATE. Reached ONLY after
  * a Stage-1 Strict-Verify pass on a gate ticket. Sends the review agent's return to
  * a routing LLM (`completionApi.detectTicketVerdict`) that TRUSTS the transcript and
@@ -2653,11 +2977,19 @@ async function onStrictVerifySettled(
   // Stage 2 = runConditionGate, which routes pass/fix/needs-human and is TERMINAL
   // (never falls through to the verified-complete tail / auto-bypass).
   if (resolved.gateLoop) {
-    logToMain('info', 'ConditionGate', `ticket ${ticketId} ARMED — frozen confirmed`, {
+    // A shard gate (`mode: 'shard'`) routes to the DETERMINISTIC loop, never the LLM
+    // judge. Both are `evaluate` actions (so both set `gateLoop`); the mode splits them.
+    const isShard = conditionGateConfigOf(current.lifecycle_callbacks).mode === 'shard'
+    logToMain('info', isShard ? 'ShardGate' : 'ConditionGate', `ticket ${ticketId} ARMED — frozen confirmed`, {
       ticketId,
       sessionId,
+      mode: isShard ? 'shard' : 'judge',
       llmReviewer: resolved.llmReviewer
     })
+    if (isShard) {
+      await runShardGate(get, ticketId, projectId, current, settings)
+      return // terminal — the shard gate fully handled continue / advance / block
+    }
     if (resolved.llmReviewer) {
       const outcome = await runStrictVerify(get, ticketId, projectId, current, settings, true)
       if (outcome === 'bounced') return // genuine incomplete → bounced to In Progress
