@@ -52,5 +52,17 @@ export type {
   SavedUsageAccountUpsert,
   SavedUsageAccountUsageUpdate,
   SavedUsageProvider,
-  SavedUsageStatus
+  SavedUsageStatus,
+  WarRoom,
+  WarRoomCreate,
+  WarRoomUpdate,
+  WarRoomStatus,
+  WarRoomOrchestrationMode,
+  WarRoomOutcome,
+  WarRoomMember,
+  WarRoomMemberCreate,
+  WarRoomMemberUpdate,
+  WarRoomMessage,
+  WarRoomMessageCreate,
+  WarRoomMessageRole
 } from './types'

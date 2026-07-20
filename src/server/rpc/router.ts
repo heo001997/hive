@@ -86,6 +86,11 @@ import {
   type KanbanRpcService
 } from './domains/kanban'
 import {
+  makeWarRoomOpsRpcHandlers,
+  makeLiveWarRoomOpsRpcService,
+  type WarRoomOpsRpcService
+} from './domains/war-room-ops'
+import {
   makeLiveSettingsOpsRpcService,
   makeSettingsOpsRpcHandlers,
   type SettingsOpsRpcService
@@ -161,6 +166,7 @@ export interface RpcContext {
   readonly fileTreeOps?: FileTreeOpsRpcService
   readonly gitOps?: GitOpsRpcService
   readonly kanban?: KanbanRpcService
+  readonly warRoomOps?: WarRoomOpsRpcService
   readonly loggingOps?: LoggingOpsRpcService
   readonly opencodeOps?: OpenCodeOpsRpcService
   readonly perfDiagnosticsOps?: PerfDiagnosticsOpsRpcService
@@ -222,6 +228,7 @@ const makeDefaultRpcHandlers = (context: RpcContext): ReadonlyMap<string, RpcHan
       context.gitOps ?? makeLiveGitOpsRpcService({ eventBus: context.eventBus })
     ),
     ...makeKanbanRpcHandlers(context.kanban ?? makeLiveKanbanRpcService()),
+    ...makeWarRoomOpsRpcHandlers(context.warRoomOps ?? makeLiveWarRoomOpsRpcService()),
     ...makeLoggingOpsRpcHandlers(context.loggingOps ?? makeLiveLoggingOpsRpcService()),
     ...makeOpenCodeOpsRpcHandlers(context.opencodeOps ?? makeLiveOpenCodeOpsRpcService()),
     ...makePerfDiagnosticsOpsRpcHandlers(

@@ -22,11 +22,13 @@ import { useConnectionStore } from '@/stores/useConnectionStore'
 import { useFileViewerStore } from '@/stores/useFileViewerStore'
 import { useLayoutStore } from '@/stores/useLayoutStore'
 import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useWarRoomStore } from '@/stores/useWarRoomStore'
 import { useProjectStore } from '@/stores/useProjectStore'
 import { usePinnedStore } from '@/stores/usePinnedStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useClaudeCliSessionPortal } from '@/contexts/ClaudeCliSessionPortalContext'
 import { KanbanBoard } from '@/components/kanban/KanbanBoard'
+import { WarRoomView } from '@/components/war-room/WarRoomView'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { BoardAssistantView } from '@/components/kanban/BoardAssistantView'
 import { PRNotificationStack } from '@/components/pr/PRNotificationStack'
@@ -131,6 +133,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   )
   const isBoardViewActive = useKanbanStore((state) => state.isBoardViewActive)
   const isPinnedBoardActive = useKanbanStore((state) => state.isPinnedBoardActive)
+  const isWarRoomViewActive = useWarRoomStore((state) => state.isWarRoomViewActive)
   const connectionsLoaded = useConnectionStore((state) => state.loaded)
   const pinnedStoreLoaded = usePinnedStore((state) => state.loaded)
   const boardMode = useSettingsStore((s) => s.boardMode)
@@ -243,7 +246,12 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     // When the board, pinned board, or board assistant is occupying the main
     // pane, hide all stateful terminal sessions — otherwise the always-mounted
     // terminal would render as flex-1 alongside the board and split the pane.
-    if (isBoardViewActive || isPinnedBoardActive || activeBoardAssistantProjectId) {
+    if (
+      isBoardViewActive ||
+      isPinnedBoardActive ||
+      isWarRoomViewActive ||
+      activeBoardAssistantProjectId
+    ) {
       return null
     }
 
@@ -292,6 +300,12 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
   const renderContent = () => {
     if (children) {
       return children
+    }
+
+    // War Room takes over the full pane when active (project-scoped, or standalone
+    // when no project is selected). Highest priority so its toggle always wins.
+    if (isWarRoomViewActive) {
+      return <WarRoomView projectId={selectedProjectId} />
     }
 
     // Board assistant tab is active — render the focused chat's BoardAssistantView

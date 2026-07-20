@@ -58,7 +58,19 @@ import type {
   SavedUsageAccount,
   SavedUsageAccountUpsert,
   SavedUsageAccountUsageUpdate,
-  SavedUsageProvider
+  SavedUsageProvider,
+  WarRoom,
+  WarRoomCreate,
+  WarRoomUpdate,
+  WarRoomMember,
+  WarRoomMemberCreate,
+  WarRoomMemberUpdate,
+  WarRoomMessage,
+  WarRoomMessageCreate,
+  WarRoomOutcome,
+  WarRoomStatus,
+  WarRoomOrchestrationMode,
+  WarRoomMessageRole
 } from './types'
 
 export function resolveDatabasePath(options?: {
@@ -768,6 +780,61 @@ export class DatabaseService {
       CREATE INDEX IF NOT EXISTS idx_kanban_tickets_session ON kanban_tickets(current_session_id);
       CREATE INDEX IF NOT EXISTS idx_kanban_tickets_worktree ON kanban_tickets(worktree_id);
     `)
+
+    // War Room tables + indexes (idempotent repair for v43 migration)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS war_rooms (
+        id TEXT PRIMARY KEY,
+        project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        topic TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        orchestration_mode TEXT NOT NULL DEFAULT 'round_robin',
+        max_rounds INTEGER NOT NULL DEFAULT 3,
+        current_round INTEGER NOT NULL DEFAULT 0,
+        current_turn INTEGER NOT NULL DEFAULT 0,
+        seed_ticket_id TEXT REFERENCES kanban_tickets(id) ON DELETE SET NULL,
+        outcome TEXT DEFAULT NULL,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        concluded_at TEXT DEFAULT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_war_rooms_project ON war_rooms(project_id);
+
+      CREATE TABLE IF NOT EXISTS war_room_members (
+        id TEXT PRIMARY KEY,
+        war_room_id TEXT NOT NULL REFERENCES war_rooms(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        role TEXT,
+        system_prompt TEXT,
+        stance TEXT,
+        color TEXT,
+        agent_sdk TEXT,
+        model_id TEXT,
+        model_variant TEXT,
+        speaking_order INTEGER NOT NULL DEFAULT 0,
+        is_moderator INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_war_room_members_room ON war_room_members(war_room_id);
+
+      CREATE TABLE IF NOT EXISTS war_room_messages (
+        id TEXT PRIMARY KEY,
+        war_room_id TEXT NOT NULL REFERENCES war_rooms(id) ON DELETE CASCADE,
+        member_id TEXT REFERENCES war_room_members(id) ON DELETE SET NULL,
+        round INTEGER NOT NULL DEFAULT 0,
+        role TEXT NOT NULL DEFAULT 'member',
+        content TEXT NOT NULL,
+        needs_ceo INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_war_room_messages_room ON war_room_messages(war_room_id, created_at);
+    `)
+    // v44: agent_sdk added to existing war_room_members (idempotent for DBs created at v43).
+    this.safeAddColumn('war_room_members', 'agent_sdk', 'TEXT')
 
     // Ticket followup messages table + index (idempotent repair for v13/v14 migrations)
     db.exec(`
@@ -3395,6 +3462,369 @@ export class DatabaseService {
   transaction<T>(fn: () => T): T {
     const db = this.getDb()
     return db.transaction(fn)()
+  }
+
+  // ── War Room ───────────────────────────────────────────────────────────
+
+  private mapWarRoomRow(row: Record<string, unknown>): WarRoom {
+    let outcome: WarRoomOutcome | null = null
+    try {
+      const raw = row.outcome as string
+      if (raw) {
+        outcome = JSON.parse(raw)
+      }
+    } catch {
+      outcome = null
+    }
+    return {
+      id: row.id as string,
+      project_id: (row.project_id as string) ?? null,
+      title: row.title as string,
+      topic: (row.topic as string) ?? null,
+      status: row.status as WarRoomStatus,
+      orchestration_mode: row.orchestration_mode as WarRoomOrchestrationMode,
+      max_rounds: row.max_rounds as number,
+      current_round: row.current_round as number,
+      current_turn: row.current_turn as number,
+      seed_ticket_id: (row.seed_ticket_id as string) ?? null,
+      outcome,
+      total_tokens: (row.total_tokens as number) ?? 0,
+      created_at: row.created_at as string,
+      updated_at: row.updated_at as string,
+      concluded_at: (row.concluded_at as string) ?? null
+    }
+  }
+
+  private mapWarRoomMemberRow(row: Record<string, unknown>): WarRoomMember {
+    return {
+      id: row.id as string,
+      war_room_id: row.war_room_id as string,
+      name: row.name as string,
+      role: (row.role as string) ?? null,
+      system_prompt: (row.system_prompt as string) ?? null,
+      stance: (row.stance as string) ?? null,
+      color: (row.color as string) ?? null,
+      agent_sdk: (row.agent_sdk as string) ?? null,
+      model_id: (row.model_id as string) ?? null,
+      model_variant: (row.model_variant as string) ?? null,
+      speaking_order: (row.speaking_order as number) ?? 0,
+      is_moderator: row.is_moderator === 1,
+      is_active: row.is_active === 1,
+      created_at: row.created_at as string,
+      updated_at: row.updated_at as string
+    }
+  }
+
+  private mapWarRoomMessageRow(row: Record<string, unknown>): WarRoomMessage {
+    return {
+      id: row.id as string,
+      war_room_id: row.war_room_id as string,
+      member_id: (row.member_id as string) ?? null,
+      round: (row.round as number) ?? 0,
+      role: row.role as WarRoomMessageRole,
+      content: row.content as string,
+      needs_ceo: row.needs_ceo === 1,
+      created_at: row.created_at as string
+    }
+  }
+
+  createWarRoom(data: WarRoomCreate): WarRoom {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const id = data.id ?? randomUUID()
+    const projectId = data.project_id ?? null
+    const topic = data.topic ?? null
+    const status = data.status ?? 'draft'
+    const orchestrationMode = data.orchestration_mode ?? 'round_robin'
+    const maxRounds = data.max_rounds ?? 3
+    const seedTicketId = data.seed_ticket_id ?? null
+
+    db.prepare(
+      `INSERT INTO war_rooms (id, project_id, title, topic, status, orchestration_mode, max_rounds, current_round, current_turn, seed_ticket_id, outcome, total_tokens, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, NULL, 0, ?, ?)`
+    ).run(
+      id,
+      projectId,
+      data.title,
+      topic,
+      status,
+      orchestrationMode,
+      maxRounds,
+      seedTicketId,
+      now,
+      now
+    )
+
+    return this.mapWarRoomRow({
+      id,
+      project_id: projectId,
+      title: data.title,
+      topic,
+      status,
+      orchestration_mode: orchestrationMode,
+      max_rounds: maxRounds,
+      current_round: 0,
+      current_turn: 0,
+      seed_ticket_id: seedTicketId,
+      outcome: null,
+      total_tokens: 0,
+      created_at: now,
+      updated_at: now,
+      concluded_at: null
+    })
+  }
+
+  getWarRoom(id: string): WarRoom | null {
+    const db = this.getDb()
+    const row = db.prepare('SELECT * FROM war_rooms WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined
+    return row ? this.mapWarRoomRow(row) : null
+  }
+
+  /** List rooms for a project. Pass `null` for standalone (project-less) rooms. */
+  getWarRoomsByProject(projectId: string | null): WarRoom[] {
+    const db = this.getDb()
+    const query =
+      projectId === null
+        ? 'SELECT * FROM war_rooms WHERE project_id IS NULL ORDER BY updated_at DESC'
+        : 'SELECT * FROM war_rooms WHERE project_id = ? ORDER BY updated_at DESC'
+    const rows = (
+      projectId === null ? db.prepare(query).all() : db.prepare(query).all(projectId)
+    ) as Record<string, unknown>[]
+    return rows.map((row) => this.mapWarRoomRow(row))
+  }
+
+  updateWarRoom(id: string, data: WarRoomUpdate): WarRoom | null {
+    const db = this.getDb()
+    const existing = this.getWarRoom(id)
+    if (!existing) return null
+
+    const updates: string[] = ['updated_at = ?']
+    const values: (string | number | null)[] = [new Date().toISOString()]
+
+    if (data.title !== undefined) {
+      updates.push('title = ?')
+      values.push(data.title)
+    }
+    if (data.topic !== undefined) {
+      updates.push('topic = ?')
+      values.push(data.topic)
+    }
+    if (data.status !== undefined) {
+      updates.push('status = ?')
+      values.push(data.status)
+    }
+    if (data.max_rounds !== undefined) {
+      updates.push('max_rounds = ?')
+      values.push(data.max_rounds)
+    }
+    if (data.current_round !== undefined) {
+      updates.push('current_round = ?')
+      values.push(data.current_round)
+    }
+    if (data.current_turn !== undefined) {
+      updates.push('current_turn = ?')
+      values.push(data.current_turn)
+    }
+    if (data.outcome !== undefined) {
+      updates.push('outcome = ?')
+      values.push(data.outcome ? JSON.stringify(data.outcome) : null)
+    }
+    if (data.total_tokens !== undefined) {
+      updates.push('total_tokens = ?')
+      values.push(data.total_tokens)
+    }
+    if (data.concluded_at !== undefined) {
+      updates.push('concluded_at = ?')
+      values.push(data.concluded_at)
+    }
+
+    if (updates.length === 1) return existing
+
+    values.push(id)
+    db.prepare(`UPDATE war_rooms SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+    return this.getWarRoom(id)
+  }
+
+  deleteWarRoom(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM war_rooms WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  createWarRoomMember(data: WarRoomMemberCreate): WarRoomMember {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const id = data.id ?? randomUUID()
+    let speakingOrder: number
+    if (data.speaking_order != null) {
+      speakingOrder = data.speaking_order
+    } else {
+      const maxRow = db
+        .prepare(
+          'SELECT MAX(speaking_order) as max_order FROM war_room_members WHERE war_room_id = ?'
+        )
+        .get(data.war_room_id) as { max_order: number | null } | undefined
+      speakingOrder = (maxRow?.max_order ?? -1) + 1
+    }
+    const isModerator = data.is_moderator ? 1 : 0
+    const isActive = data.is_active === false ? 0 : 1
+
+    db.prepare(
+      `INSERT INTO war_room_members (id, war_room_id, name, role, system_prompt, stance, color, agent_sdk, model_id, model_variant, speaking_order, is_moderator, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      data.war_room_id,
+      data.name,
+      data.role ?? null,
+      data.system_prompt ?? null,
+      data.stance ?? null,
+      data.color ?? null,
+      data.agent_sdk ?? null,
+      data.model_id ?? null,
+      data.model_variant ?? null,
+      speakingOrder,
+      isModerator,
+      isActive,
+      now,
+      now
+    )
+
+    return this.mapWarRoomMemberRow({
+      id,
+      war_room_id: data.war_room_id,
+      name: data.name,
+      role: data.role ?? null,
+      system_prompt: data.system_prompt ?? null,
+      stance: data.stance ?? null,
+      color: data.color ?? null,
+      agent_sdk: data.agent_sdk ?? null,
+      model_id: data.model_id ?? null,
+      model_variant: data.model_variant ?? null,
+      speaking_order: speakingOrder,
+      is_moderator: isModerator,
+      is_active: isActive,
+      created_at: now,
+      updated_at: now
+    })
+  }
+
+  getWarRoomMembers(warRoomId: string): WarRoomMember[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare(
+        'SELECT * FROM war_room_members WHERE war_room_id = ? ORDER BY speaking_order ASC, created_at ASC'
+      )
+      .all(warRoomId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapWarRoomMemberRow(row))
+  }
+
+  updateWarRoomMember(id: string, data: WarRoomMemberUpdate): WarRoomMember | null {
+    const db = this.getDb()
+    const existing = db.prepare('SELECT * FROM war_room_members WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined
+    if (!existing) return null
+
+    const updates: string[] = ['updated_at = ?']
+    const values: (string | number | null)[] = [new Date().toISOString()]
+
+    if (data.name !== undefined) {
+      updates.push('name = ?')
+      values.push(data.name)
+    }
+    if (data.role !== undefined) {
+      updates.push('role = ?')
+      values.push(data.role)
+    }
+    if (data.system_prompt !== undefined) {
+      updates.push('system_prompt = ?')
+      values.push(data.system_prompt)
+    }
+    if (data.stance !== undefined) {
+      updates.push('stance = ?')
+      values.push(data.stance)
+    }
+    if (data.color !== undefined) {
+      updates.push('color = ?')
+      values.push(data.color)
+    }
+    if (data.agent_sdk !== undefined) {
+      updates.push('agent_sdk = ?')
+      values.push(data.agent_sdk)
+    }
+    if (data.model_id !== undefined) {
+      updates.push('model_id = ?')
+      values.push(data.model_id)
+    }
+    if (data.model_variant !== undefined) {
+      updates.push('model_variant = ?')
+      values.push(data.model_variant)
+    }
+    if (data.speaking_order !== undefined) {
+      updates.push('speaking_order = ?')
+      values.push(data.speaking_order)
+    }
+    if (data.is_moderator !== undefined) {
+      updates.push('is_moderator = ?')
+      values.push(data.is_moderator ? 1 : 0)
+    }
+    if (data.is_active !== undefined) {
+      updates.push('is_active = ?')
+      values.push(data.is_active ? 1 : 0)
+    }
+
+    if (updates.length === 1) {
+      return this.mapWarRoomMemberRow(existing)
+    }
+
+    values.push(id)
+    db.prepare(`UPDATE war_room_members SET ${updates.join(', ')} WHERE id = ?`).run(...values)
+    const row = db.prepare('SELECT * FROM war_room_members WHERE id = ?').get(id) as
+      | Record<string, unknown>
+      | undefined
+    return row ? this.mapWarRoomMemberRow(row) : null
+  }
+
+  deleteWarRoomMember(id: string): boolean {
+    const db = this.getDb()
+    const result = db.prepare('DELETE FROM war_room_members WHERE id = ?').run(id)
+    return result.changes > 0
+  }
+
+  createWarRoomMessage(data: WarRoomMessageCreate): WarRoomMessage {
+    const db = this.getDb()
+    const now = new Date().toISOString()
+    const id = data.id ?? randomUUID()
+    const memberId = data.member_id ?? null
+    const round = data.round ?? 0
+    const needsCeo = data.needs_ceo ? 1 : 0
+
+    db.prepare(
+      `INSERT INTO war_room_messages (id, war_room_id, member_id, round, role, content, needs_ceo, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, data.war_room_id, memberId, round, data.role, data.content, needsCeo, now)
+
+    return this.mapWarRoomMessageRow({
+      id,
+      war_room_id: data.war_room_id,
+      member_id: memberId,
+      round,
+      role: data.role,
+      content: data.content,
+      needs_ceo: needsCeo,
+      created_at: now
+    })
+  }
+
+  getWarRoomMessages(warRoomId: string): WarRoomMessage[] {
+    const db = this.getDb()
+    const rows = db
+      .prepare('SELECT * FROM war_room_messages WHERE war_room_id = ? ORDER BY created_at ASC')
+      .all(warRoomId) as Record<string, unknown>[]
+    return rows.map((row) => this.mapWarRoomMessageRow(row))
   }
 }
 

@@ -818,3 +818,156 @@ export interface DiffCommentUpdate {
   anchor_context_after?: string | null
   is_outdated?: boolean
 }
+
+// ── War Room ───────────────────────────────────────────────────────────────
+// A room where several persona-driven AI agents discuss a topic round-table
+// style and converge on an agreement. The human is the CEO: sets the topic,
+// watches, injects, and answers `@CEO:` escalations. See war-room-orchestrator.
+
+// 'concluded' is legacy (auto-synthesis on round cap); new rooms never auto-stop.
+// 'achieved' is the ONLY terminal state and is set exclusively by the CEO.
+export type WarRoomStatus =
+  | 'draft'
+  | 'active'
+  | 'paused'
+  | 'awaiting_ceo'
+  | 'concluded'
+  | 'achieved'
+export type WarRoomOrchestrationMode = 'round_robin'
+export type WarRoomMessageRole = 'member' | 'ceo' | 'system'
+
+/** The synthesized agreement produced when a room concludes. Stored as JSON TEXT. */
+export interface WarRoomOutcome {
+  decision: string
+  rationale?: string | null
+  openQuestions?: string[]
+  actionItems?: string[]
+}
+
+export interface WarRoom {
+  id: string
+  /** NULL = standalone room (not bound to a project). */
+  project_id: string | null
+  title: string
+  /** The agenda / opening question the CEO set. Seeds round 1. */
+  topic: string | null
+  status: WarRoomStatus
+  orchestration_mode: WarRoomOrchestrationMode
+  max_rounds: number
+  /** Rounds completed so far (0-based cursor while running). */
+  current_round: number
+  /** Index into the active members list for the current round (resume cursor). */
+  current_turn: number
+  /** Optional kanban ticket this room was seeded from ("discuss this ticket"). */
+  seed_ticket_id: string | null
+  outcome: WarRoomOutcome | null
+  total_tokens: number
+  created_at: string
+  updated_at: string
+  concluded_at: string | null
+}
+
+export interface WarRoomCreate {
+  id?: string
+  project_id?: string | null
+  title: string
+  topic?: string | null
+  status?: WarRoomStatus
+  orchestration_mode?: WarRoomOrchestrationMode
+  max_rounds?: number
+  seed_ticket_id?: string | null
+}
+
+export interface WarRoomUpdate {
+  title?: string
+  topic?: string | null
+  status?: WarRoomStatus
+  max_rounds?: number
+  current_round?: number
+  current_turn?: number
+  outcome?: WarRoomOutcome | null
+  total_tokens?: number
+  concluded_at?: string | null
+}
+
+export interface WarRoomMember {
+  id: string
+  war_room_id: string
+  name: string
+  /** Persona role, e.g. "Architect", "Skeptic". */
+  role: string | null
+  /** Custom persona instructions injected as a prompt preamble each turn. */
+  system_prompt: string | null
+  /** Optional assigned position, e.g. "pro", "against". */
+  stance: string | null
+  /** UI accent (hex or token) for this member's bubbles. */
+  color: string | null
+  /** Which agent SDK powers this member: 'claude-code' | 'codex' | 'opencode' (null = claude-code). */
+  agent_sdk: string | null
+  /**
+   * Model id passed to the SDK. For claude: 'sonnet'/'opus'/'haiku'/'fable'.
+   * For codex: 'gpt-5.5' etc. For opencode: a 'providerID/modelID' string.
+   * null = the router's per-provider default.
+   */
+  model_id: string | null
+  /** Effort variant: 'low' | 'medium' | 'high' | 'xhigh' | 'max' (null = default). */
+  model_variant: string | null
+  speaking_order: number
+  is_moderator: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface WarRoomMemberCreate {
+  id?: string
+  war_room_id: string
+  name: string
+  role?: string | null
+  system_prompt?: string | null
+  stance?: string | null
+  color?: string | null
+  agent_sdk?: string | null
+  model_id?: string | null
+  model_variant?: string | null
+  speaking_order?: number
+  is_moderator?: boolean
+  is_active?: boolean
+}
+
+export interface WarRoomMemberUpdate {
+  name?: string
+  role?: string | null
+  system_prompt?: string | null
+  stance?: string | null
+  color?: string | null
+  agent_sdk?: string | null
+  model_id?: string | null
+  model_variant?: string | null
+  speaking_order?: number
+  is_moderator?: boolean
+  is_active?: boolean
+}
+
+export interface WarRoomMessage {
+  id: string
+  war_room_id: string
+  /** NULL = CEO or system message; otherwise the member who spoke. */
+  member_id: string | null
+  round: number
+  role: WarRoomMessageRole
+  content: string
+  /** True when the message contains an `@CEO:` escalation marker. */
+  needs_ceo: boolean
+  created_at: string
+}
+
+export interface WarRoomMessageCreate {
+  id?: string
+  war_room_id: string
+  member_id?: string | null
+  round?: number
+  role: WarRoomMessageRole
+  content: string
+  needs_ceo?: boolean
+}
