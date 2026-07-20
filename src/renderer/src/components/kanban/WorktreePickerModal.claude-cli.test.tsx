@@ -422,6 +422,7 @@ describe('WorktreePickerModal Claude CLI launch', () => {
       'claude-code-cli',
       'build',
       {
+        skipKanbanAutoAttach: true,
         modelOverride: {
           agentSdk: 'claude-code-cli',
           providerID: 'anthropic',
@@ -431,12 +432,16 @@ describe('WorktreePickerModal Claude CLI launch', () => {
         pendingMessage: expect.stringContaining('Please implement the following ticket.')
       }
     )
-    expect(setSessionModel).toHaveBeenCalledWith('session-1', {
-      agentSdk: 'claude-code-cli',
-      providerID: 'anthropic',
-      modelID: 'opus',
-      variant: 'high'
-    })
+    expect(setSessionModel).toHaveBeenCalledWith(
+      'session-1',
+      {
+        agentSdk: 'claude-code-cli',
+        providerID: 'anthropic',
+        modelID: 'opus',
+        variant: 'high'
+      },
+      { skipGlobalUpdate: true }
+    )
     expect(request).toHaveBeenCalledWith('terminalOps.createClaudeCli', {
       sessionId: 'session-1',
       opts: { pendingPrompt: expect.stringContaining('Please implement the following ticket.') }
@@ -467,12 +472,16 @@ describe('WorktreePickerModal Claude CLI launch', () => {
         pendingMessage: expect.stringContaining('Please implement the following ticket.')
       })
     )
-    expect(setSessionModel).toHaveBeenCalledWith('connection-session-1', {
-      agentSdk: 'claude-code-cli',
-      providerID: 'anthropic',
-      modelID: 'opus',
-      variant: 'high'
-    })
+    expect(setSessionModel).toHaveBeenCalledWith(
+      'connection-session-1',
+      {
+        agentSdk: 'claude-code-cli',
+        providerID: 'anthropic',
+        modelID: 'opus',
+        variant: 'high'
+      },
+      { skipGlobalUpdate: true }
+    )
     expect(updateTicket).toHaveBeenCalledWith('ticket-1', 'project-1', {
       current_session_id: 'connection-session-1',
       worktree_id: null,
