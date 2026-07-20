@@ -42,6 +42,22 @@ interface PendingRequest {
 interface ActiveSubscription {
   readonly listeners: Set<ServerEventListener>
   readonly request: SubscriptionRequest
+  /**
+   * Last per-channel sequence delivered by the server. `undefined` until the
+   * first seq-stamped event arrives; on reconnect it becomes the `sinceSeq`
+   * cursor so the server replays anything missed while the socket was down.
+   */
+  lastSeq?: number
+  /**
+   * Set once this channel has been (sub)scribed over a live connection. Lets a
+   * resubscribe after a drop request replay/resync even when no seq-stamped
+   * event was ever received (`lastSeq` still undefined): without it, a channel
+   * that dropped before its first event would resubscribe with no cursor and
+   * silently miss everything published during the downtime. A genuinely
+   * first-ever subscribe (flag still false) omits the cursor — nothing to
+   * replay.
+   */
+  hadPriorConnection?: boolean
 }
 
 export class WsTransport {
@@ -113,7 +129,7 @@ export class WsTransport {
     }
     subscription.listeners.add(listener)
 
-    if (subscription.listeners.size === 1) this.sendSubscribe(subscription.request)
+    if (subscription.listeners.size === 1) this.sendSubscribe(subscription)
     void this.connect().catch(() => undefined)
 
     return () => {
@@ -231,6 +247,16 @@ export class WsTransport {
 
     const subscription = this.eventListeners.get(message.channel)
     if (!subscription) return
+
+    // Advance the resume cursor from any seq-stamped message (real event or
+    // resync). Legacy events without a seq leave the cursor untouched, so a
+    // seq-less server is handled exactly as before (no sinceSeq ever sent).
+    if (typeof message.seq === 'number') subscription.lastSeq = message.seq
+
+    // A resync signal is surfaced to listeners unchanged (payload is empty and
+    // `resync` is set) so they can refetch state. We must not crash on it: the
+    // cursor was already advanced above, preventing a resync loop on the next
+    // reconnect.
     for (const listener of subscription.listeners) listener(message)
   }
 
@@ -256,15 +282,26 @@ export class WsTransport {
   }
 
   private sendSubscriptions(socket: WebSocketLike): void {
+    // Called on (re)connect: replay every active subscription, carrying each
+    // channel's cursor so the server backfills events missed while offline.
     for (const subscription of this.eventListeners.values()) {
-      socket.send(JSON.stringify(toSubscribeMessage(subscription.request)))
+      this.sendSubscribeMessage(socket, subscription)
     }
   }
 
-  private sendSubscribe(request: SubscriptionRequest): void {
+  private sendSubscribe(subscription: ActiveSubscription): void {
     if (this.socket?.readyState === this.webSocketImpl.OPEN) {
-      this.socket.send(JSON.stringify(toSubscribeMessage(request)))
+      this.sendSubscribeMessage(this.socket, subscription)
     }
+  }
+
+  private sendSubscribeMessage(socket: WebSocketLike, subscription: ActiveSubscription): void {
+    // Build the message from the CURRENT cursor state (so a first-ever subscribe
+    // omits sinceSeq) before recording that this channel has now connected. The
+    // flag flips only after a real send over an open socket, so a subscription
+    // queued while offline is not mistaken for one that already connected.
+    socket.send(JSON.stringify(toSubscribeMessage(subscription)))
+    subscription.hadPriorConnection = true
   }
 
   private sendUnsubscribe(channel: string): void {
@@ -275,7 +312,31 @@ export class WsTransport {
   }
 }
 
-const toSubscribeMessage = (request: SubscriptionRequest): WebSocketSubscribeMessage => ({
-  type: 'subscribe',
-  ...request
-})
+const toSubscribeMessage = (subscription: ActiveSubscription): WebSocketSubscribeMessage => {
+  // Resume cursor selection:
+  //  - lastSeq known           → resume exactly after the last event we saw.
+  //  - no lastSeq, but this
+  //    channel connected before → resubscribe after a drop that happened before
+  //                               any seq-stamped event arrived. Send sinceSeq=0
+  //                               to force the server to replay from the start
+  //                               of its buffer (or emit a resync if that window
+  //                               has already scrolled past), so events during
+  //                               the downtime are not silently missed.
+  //  - no lastSeq, never
+  //    connected                → genuine first-ever subscribe: omit sinceSeq so
+  //                               the server treats it as a fresh stream.
+  // A seq-less / replay-less server ignores sinceSeq entirely, so the added
+  // cursor stays backward compatible.
+  const sinceSeq =
+    subscription.lastSeq !== undefined
+      ? subscription.lastSeq
+      : subscription.hadPriorConnection
+        ? 0
+        : undefined
+
+  return {
+    type: 'subscribe',
+    ...subscription.request,
+    ...(sinceSeq !== undefined ? { sinceSeq } : {})
+  }
+}

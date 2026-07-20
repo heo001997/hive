@@ -29,6 +29,14 @@ export type RpcResponse =
 export interface SubscriptionRequest {
   readonly channel: string
   readonly filter?: unknown
+  /**
+   * Resumable-subscription cursor. On (re)subscribe the transport sets this to
+   * the last sequence it saw on the channel; the server replays buffered events
+   * with `seq > sinceSeq` before resuming live delivery, or emits a resync
+   * signal if the cursor is outside its buffer window. Omitted on a first
+   * subscribe (fresh stream — backward compatible).
+   */
+  readonly sinceSeq?: number
 }
 
 export interface WebSocketSubscribeMessage extends SubscriptionRequest {
@@ -43,4 +51,19 @@ export interface WebSocketUnsubscribeMessage {
 export interface ServerEvent {
   readonly channel: string
   readonly payload: unknown
+  /**
+   * Monotonic per-channel sequence assigned by the server event bus. Absent on
+   * emitters that predate resumable subscriptions — the transport treats its
+   * absence as "no resumability" and never advances its cursor for that event.
+   */
+  readonly seq?: number
+  /**
+   * When `true`, this is an out-of-band resync signal (empty `payload`): the
+   * transport's `sinceSeq` fell outside the server buffer window, so listeners
+   * should refetch channel state. `seq` carries the latest server sequence to
+   * adopt as the new cursor.
+   */
+  readonly resync?: boolean
+  /** Human-readable reason attached to a resync signal (e.g. `'gap'`). */
+  readonly reason?: string
 }
