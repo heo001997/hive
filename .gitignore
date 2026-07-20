@@ -85,3 +85,6 @@ scripts/*
 .envrc
 .hive-data/
 .hive-data-worktrees/
+
+# E2E pipeline artifacts (speckit-e2e-* chain) — screenshots/reports, never committable
+.hive-e2e/

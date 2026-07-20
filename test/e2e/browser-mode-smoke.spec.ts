@@ -120,7 +120,11 @@ const waitForVite = (child: ChildProcess): Promise<string> =>
 
     const onData = (chunk: Buffer | string): void => {
       output += chunk.toString()
-      const match = output.match(/Local:\s+(http:\/\/127\.0\.0\.1:\d+\/)/)
+      // Strip ANSI color codes — vite colorizes the "Local:" line when FORCE_COLOR is
+      // inherited, splicing escape codes between host and port.
+      // eslint-disable-next-line no-control-regex -- deliberately matching the ANSI ESC byte
+      const plain = output.replace(/\u001b?\[[0-9;]*m/g, '')
+      const match = plain.match(/Local:\s+(http:\/\/(?:127\.0\.0\.1|localhost):\d+\/)/)
       if (match?.[1]) {
         clearTimeout(timeout)
         resolve(match[1])
@@ -152,7 +156,9 @@ test('browser mode loads, authenticates, reads settings, and lists projects', as
     page.on('websocket', (socket) => {
       diagnostics.push(`websocket.open: ${socket.url()}`)
       socket.on('framesent', (event) => diagnostics.push(`websocket.sent: ${event.payload}`))
-      socket.on('framereceived', (event) => diagnostics.push(`websocket.received: ${event.payload}`))
+      socket.on('framereceived', (event) =>
+        diagnostics.push(`websocket.received: ${event.payload}`)
+      )
       socket.on('close', () => diagnostics.push(`websocket.close: ${socket.url()}`))
       socket.on('socketerror', (error) => diagnostics.push(`websocket.error: ${error}`))
     })
@@ -170,20 +176,35 @@ test('browser mode loads, authenticates, reads settings, and lists projects', as
     })
     const ready = await waitForHiveServer(backend)
 
-    vite = spawnChild('pnpm', ['exec', 'vite', '--config', 'vite.web.config.ts', '--host', '127.0.0.1', '--port', '0', '--clearScreen', 'false'], {
-      env: {
-        VITE_HIVE_BOOTSTRAP_TOKEN: bootstrapToken,
-        VITE_HIVE_HTTP_BASE_URL: ready.httpBaseUrl,
-        VITE_HIVE_WS_BASE_URL: ready.wsBaseUrl
+    vite = spawnChild(
+      'pnpm',
+      [
+        'exec',
+        'vite',
+        '--config',
+        'vite.web.config.ts',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        '0',
+        '--clearScreen',
+        'false'
+      ],
+      {
+        env: {
+          VITE_HIVE_BOOTSTRAP_TOKEN: bootstrapToken,
+          VITE_HIVE_HTTP_BASE_URL: ready.httpBaseUrl,
+          VITE_HIVE_WS_BASE_URL: ready.wsBaseUrl
+        }
       }
-    })
+    )
     const appUrl = await waitForVite(vite)
 
     const response = await page.goto(appUrl)
     expect(response?.ok()).toBe(true)
     await page.waitForLoadState('domcontentloaded')
 
-    const rpcProbe = await page.evaluate(
+    const rpcProbe = (await page.evaluate(
       async ({ httpBaseUrl, wsBaseUrl, token }) => {
         const bootstrapResponse = await fetch(`${httpBaseUrl}/api/auth/bootstrap`, {
           method: 'POST',
@@ -226,114 +247,120 @@ test('browser mode loads, authenticates, reads settings, and lists projects', as
         }
       },
       { httpBaseUrl: ready.httpBaseUrl, wsBaseUrl: ready.wsBaseUrl, token: bootstrapToken }
-    ) as RpcProbeResult
+    )) as RpcProbeResult
 
     expect(rpcProbe.bootstrapStatus).toBe(200)
     expect(rpcProbe.wsTokenStatus).toBe(200)
     expect(rpcProbe.rpcResponse).toEqual({ id: 'probe-1', ok: true, value: { ok: true } })
 
-    const settings = await page.evaluate(
-      async ({ httpBaseUrl, wsBaseUrl, token }) => {
-        const bootstrapResponse = await fetch(`${httpBaseUrl}/api/auth/bootstrap`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bootstrapToken: token })
-        })
-        const bootstrap = await bootstrapResponse.json()
-        const wsTokenResponse = await fetch(`${httpBaseUrl}/api/auth/ws-token`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${bootstrap.session.accessToken}` }
-        })
-        const wsToken = await wsTokenResponse.json()
-        const rpcResponse = await new Promise<unknown>((resolve, reject) => {
-          const socket = new WebSocket(
-            `${wsBaseUrl}?token=${encodeURIComponent(wsToken.webSocketToken.token)}`
-          )
-          const timeout = setTimeout(() => {
-            socket.close()
-            reject(new Error('Timed out reading settings through direct RPC'))
-          }, 5_000)
+    const settings = (await page
+      .evaluate(
+        async ({ httpBaseUrl, wsBaseUrl, token }) => {
+          const bootstrapResponse = await fetch(`${httpBaseUrl}/api/auth/bootstrap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bootstrapToken: token })
+          })
+          const bootstrap = await bootstrapResponse.json()
+          const wsTokenResponse = await fetch(`${httpBaseUrl}/api/auth/ws-token`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${bootstrap.session.accessToken}` }
+          })
+          const wsToken = await wsTokenResponse.json()
+          const rpcResponse = await new Promise<unknown>((resolve, reject) => {
+            const socket = new WebSocket(
+              `${wsBaseUrl}?token=${encodeURIComponent(wsToken.webSocketToken.token)}`
+            )
+            const timeout = setTimeout(() => {
+              socket.close()
+              reject(new Error('Timed out reading settings through direct RPC'))
+            }, 5_000)
 
-          socket.addEventListener('open', () => {
-            socket.send(JSON.stringify({ id: 'settings-1', method: 'db.setting.getAll', params: {} }))
+            socket.addEventListener('open', () => {
+              socket.send(
+                JSON.stringify({ id: 'settings-1', method: 'db.setting.getAll', params: {} })
+              )
+            })
+            socket.addEventListener('message', (event) => {
+              clearTimeout(timeout)
+              socket.close()
+              resolve(JSON.parse(event.data))
+            })
+            socket.addEventListener('error', () => {
+              clearTimeout(timeout)
+              reject(new Error('Direct settings RPC WebSocket failed'))
+            })
           })
-          socket.addEventListener('message', (event) => {
-            clearTimeout(timeout)
-            socket.close()
-            resolve(JSON.parse(event.data))
-          })
-          socket.addEventListener('error', () => {
-            clearTimeout(timeout)
-            reject(new Error('Direct settings RPC WebSocket failed'))
-          })
-        })
 
-        return {
-          bootstrapStatus: bootstrapResponse.status,
-          wsTokenStatus: wsTokenResponse.status,
-          rpcResponse
-        }
-      },
-      { httpBaseUrl: ready.httpBaseUrl, wsBaseUrl: ready.wsBaseUrl, token: bootstrapToken }
-    ).catch((error) => {
-      throw new Error(
-        [
-          error instanceof Error ? error.message : String(error),
-          ...diagnostics.slice(-40)
-        ].join('\n')
+          return {
+            bootstrapStatus: bootstrapResponse.status,
+            wsTokenStatus: wsTokenResponse.status,
+            rpcResponse
+          }
+        },
+        { httpBaseUrl: ready.httpBaseUrl, wsBaseUrl: ready.wsBaseUrl, token: bootstrapToken }
       )
-    }) as RpcCallResult<SettingRow[]>
-    const projects = await page.evaluate(
-      async ({ httpBaseUrl, wsBaseUrl, token }) => {
-        const bootstrapResponse = await fetch(`${httpBaseUrl}/api/auth/bootstrap`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ bootstrapToken: token })
-        })
-        const bootstrap = await bootstrapResponse.json()
-        const wsTokenResponse = await fetch(`${httpBaseUrl}/api/auth/ws-token`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${bootstrap.session.accessToken}` }
-        })
-        const wsToken = await wsTokenResponse.json()
-        const rpcResponse = await new Promise<unknown>((resolve, reject) => {
-          const socket = new WebSocket(
-            `${wsBaseUrl}?token=${encodeURIComponent(wsToken.webSocketToken.token)}`
+      .catch((error) => {
+        throw new Error(
+          [error instanceof Error ? error.message : String(error), ...diagnostics.slice(-40)].join(
+            '\n'
           )
-          const timeout = setTimeout(() => {
-            socket.close()
-            reject(new Error('Timed out listing projects through direct RPC'))
-          }, 5_000)
+        )
+      })) as RpcCallResult<SettingRow[]>
+    const projects = (await page
+      .evaluate(
+        async ({ httpBaseUrl, wsBaseUrl, token }) => {
+          const bootstrapResponse = await fetch(`${httpBaseUrl}/api/auth/bootstrap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bootstrapToken: token })
+          })
+          const bootstrap = await bootstrapResponse.json()
+          const wsTokenResponse = await fetch(`${httpBaseUrl}/api/auth/ws-token`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${bootstrap.session.accessToken}` }
+          })
+          const wsToken = await wsTokenResponse.json()
+          const rpcResponse = await new Promise<unknown>((resolve, reject) => {
+            const socket = new WebSocket(
+              `${wsBaseUrl}?token=${encodeURIComponent(wsToken.webSocketToken.token)}`
+            )
+            const timeout = setTimeout(() => {
+              socket.close()
+              reject(new Error('Timed out listing projects through direct RPC'))
+            }, 5_000)
 
-          socket.addEventListener('open', () => {
-            socket.send(JSON.stringify({ id: 'projects-1', method: 'db.project.getAll', params: {} }))
+            socket.addEventListener('open', () => {
+              socket.send(
+                JSON.stringify({ id: 'projects-1', method: 'db.project.getAll', params: {} })
+              )
+            })
+            socket.addEventListener('message', (event) => {
+              clearTimeout(timeout)
+              socket.close()
+              resolve(JSON.parse(event.data))
+            })
+            socket.addEventListener('error', () => {
+              clearTimeout(timeout)
+              reject(new Error('Direct projects RPC WebSocket failed'))
+            })
           })
-          socket.addEventListener('message', (event) => {
-            clearTimeout(timeout)
-            socket.close()
-            resolve(JSON.parse(event.data))
-          })
-          socket.addEventListener('error', () => {
-            clearTimeout(timeout)
-            reject(new Error('Direct projects RPC WebSocket failed'))
-          })
-        })
 
-        return {
-          bootstrapStatus: bootstrapResponse.status,
-          wsTokenStatus: wsTokenResponse.status,
-          rpcResponse
-        }
-      },
-      { httpBaseUrl: ready.httpBaseUrl, wsBaseUrl: ready.wsBaseUrl, token: bootstrapToken }
-    ).catch((error) => {
-      throw new Error(
-        [
-          error instanceof Error ? error.message : String(error),
-          ...diagnostics.slice(-40)
-        ].join('\n')
+          return {
+            bootstrapStatus: bootstrapResponse.status,
+            wsTokenStatus: wsTokenResponse.status,
+            rpcResponse
+          }
+        },
+        { httpBaseUrl: ready.httpBaseUrl, wsBaseUrl: ready.wsBaseUrl, token: bootstrapToken }
       )
-    }) as RpcCallResult<ProjectRow[]>
+      .catch((error) => {
+        throw new Error(
+          [error instanceof Error ? error.message : String(error), ...diagnostics.slice(-40)].join(
+            '\n'
+          )
+        )
+      })) as RpcCallResult<ProjectRow[]>
 
     expect(settings.bootstrapStatus).toBe(200)
     expect(settings.wsTokenStatus).toBe(200)
