@@ -242,9 +242,11 @@ async function handleHook(req: http.IncomingMessage, res: http.ServerResponse): 
     return
   }
 
-  // Read+parse the body before responding so the Telegram bridge can decide
-  // whether to hold the response open (to answer a question/plan remotely). The
-  // status publish below is unchanged and still drives the in-app badge.
+  // Read+parse the body before responding so a registered transport relay
+  // (Telegram/Discord) can mirror the hook stream. Interactive prompts —
+  // AskUserQuestion / ExitPlanMode — render in the native terminal; the response
+  // is never held open. The status publish below drives the in-app badge and
+  // plan-ready card.
   const route = parseHookPath(req.url)
   let owned = false
   try {
@@ -276,8 +278,9 @@ async function handleHook(req: http.IncomingMessage, res: http.ServerResponse): 
           data: { promptText: body.prompt }
         })
       }
-      // For forwarded CLI sessions a transport may take ownership of the
-      // response (held open until answered). Otherwise behavior is unchanged.
+      // Feed the hook to any registered transport relay so it can mirror the
+      // transcript (busy/idle/assistant text). It never takes ownership of the
+      // response — `routeHook` always returns false now that nothing is held.
       owned = cliHookTransportRouter.routeHook(route.sessionId, body, res)
     }
   } catch (error) {
@@ -305,10 +308,9 @@ export async function getClaudeHookServer(): Promise<{ port: number }> {
     void handleHook(req, res)
   })
 
-  // Held hook responses (a question/plan awaiting a Telegram answer) can stay
-  // open for minutes; disable Node's own request/socket timeouts so they aren't
-  // dropped mid-wait. The per-hook `timeout` in the injected settings is the
-  // real upper bound, with the bridge's safety timer just under it.
+  // Hooks respond immediately (nothing is held), but keep Node's own request/
+  // socket timeouts disabled so a slow client write can't drop a hook mid-flight.
+  // The per-hook `timeout` in the injected settings remains the real upper bound.
   server.requestTimeout = 0
   server.headersTimeout = 0
   server.timeout = 0
@@ -351,8 +353,8 @@ export async function getClaudeHookServer(): Promise<{ port: number }> {
 }
 
 export async function closeClaudeHookServer(): Promise<void> {
-  // Unblock any held hook responses first, otherwise their open sockets keep the
-  // server alive and `close()` hangs at shutdown.
+  // Clear transport-relay registrations at shutdown. Nothing holds hook sockets
+  // open anymore, so this no longer needs to unblock pending responses.
   cliHookTransportRouter.cancelAll()
 
   if (!server) {
