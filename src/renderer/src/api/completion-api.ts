@@ -49,9 +49,10 @@ export const completionApi = {
     model?: string
     systemPrompt?: string
     /**
-     * Gate path (Stage-2): read ONLY `<cwd>/.hive/review-gate.json`. When absent,
-     * resolve `{ success: true, noFile: true }` instead of falling back to the
-     * transcript LLM — the gate must never LLM-guess a pass.
+     * Gate path (Stage-2): read ONLY the Hive-owned verdict file (with a legacy
+     * in-repo fallback). When absent, resolve `{ success: true, noFile: true }`
+     * instead of falling back to the transcript LLM — the gate must never LLM-guess
+     * a pass.
      */
     fileOnly?: boolean
   }): Promise<ConditionGateCheckResult> =>
@@ -62,9 +63,10 @@ export const completionApi = {
 
   /**
    * Stage-2 (judge path) — extract the tail of a finished review session to feed a
-   * spawned interactive judge CLI as its "Context:", and (with `clearGateFile`)
-   * remove any stale `.hive/review-gate.json` first so the judge's fresh write is
-   * the only verdict Hive reads. Resolves to `{ success: false, error }` on failure.
+   * spawned interactive judge CLI as its "Context:", resolve the Hive-owned
+   * OUT-OF-REPO `gateFilePath` the judge must write to, and (with `clearGateFile`)
+   * remove any stale verdict file first so the judge's fresh write is the only
+   * verdict Hive reads. Resolves to `{ success: false, error }` on failure.
    */
   extractReviewContext: async (params: {
     sessionId: string

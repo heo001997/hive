@@ -60,7 +60,17 @@ const hoisted = vi.hoisted(() => ({
   // Stage-2 redesign: the gate extracts the review-session context then spawns a
   // judge CLI. Both are mocked so the gate reaches the verdict-poll loop.
   extractCtx:
-    vi.fn<(...args: unknown[]) => Promise<{ success: boolean; context?: string; source?: string; error?: string }>>(),
+    vi.fn<
+      (
+        ...args: unknown[]
+      ) => Promise<{
+        success: boolean
+        context?: string
+        source?: string
+        error?: string
+        gateFilePath?: string
+      }>
+    >(),
   dispatchJudge: vi.fn<(...args: unknown[]) => Promise<{ success: boolean; sessionId?: string; error?: string }>>(),
   toastError: vi.fn(),
   notifyNeedsInput: vi.fn()
@@ -258,8 +268,14 @@ beforeEach(() => {
   hoisted.dispatchJudge.mockReset()
   // Default: output is frozen (S0 === S1) so Gate 1 passes through to the Watcher.
   hoisted.fingerprint.mockResolvedValue(STABLE_FP)
-  // Default Stage-2 happy path: context extracts cleanly, the judge CLI launches.
-  hoisted.extractCtx.mockResolvedValue({ success: true, context: 'review reported findings', source: 'transcript' })
+  // Default Stage-2 happy path: context extracts cleanly (with a Hive-owned,
+  // out-of-repo verdict path), the judge CLI launches.
+  hoisted.extractCtx.mockResolvedValue({
+    success: true,
+    context: 'review reported findings',
+    source: 'transcript',
+    gateFilePath: '/tmp/hive-gate/review-gates/ticket-1/review-gate.json'
+  })
   hoisted.dispatchJudge.mockResolvedValue({ success: true, sessionId: 'judge-1' })
   useKanbanStore.setState({
     tickets: new Map(),
@@ -1219,7 +1235,12 @@ describe('Frozen-first — gate ticket skips the Watcher, judge writes the verdi
   })
 
   it('spawns the judge with the standard prompt + extracted context, inheriting the reviewed session', async () => {
-    hoisted.extractCtx.mockResolvedValue({ success: true, context: 'the review found X', source: 'transcript' })
+    hoisted.extractCtx.mockResolvedValue({
+      success: true,
+      context: 'the review found X',
+      source: 'transcript',
+      gateFilePath: '/tmp/hive-gate/review-gates/ticket-1/review-gate.json'
+    })
     hoisted.detectVerdict.mockResolvedValue({
       success: true,
       verdict: { verdict: 'pass', reason: 'ok', source: 'review-gate.json' }

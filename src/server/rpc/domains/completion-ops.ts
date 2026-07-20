@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { Effect } from 'effect'
 import { z } from 'zod'
 
@@ -25,6 +25,7 @@ import {
 } from '@shared/types/completion'
 import { stripAnsi } from '../../../shared/lib/ansi'
 import { createLogger } from '../../../main/services/logger'
+import { getHiveDataDir } from '../../../main/services/hive-paths'
 import type { RpcHandler } from '../router'
 
 /**
@@ -36,10 +37,10 @@ import type { RpcHandler } from '../router'
 const log = createLogger({ component: 'StrictVerify' })
 
 /**
- * Shape of the deterministic verdict file the review agent writes to
- * `<worktree>/.hive/review-gate.json`. `verdict` is required + constrained to the
- * canonical kinds; `reason` / `fixes[]` are optional. `.passthrough()` tolerates any
- * extra keys the agent adds. A file that fails this schema falls back to the LLM.
+ * Shape of the deterministic verdict file the review judge writes. `verdict` is
+ * required + constrained to the canonical kinds; `reason` / `fixes[]` are optional.
+ * `.passthrough()` tolerates any extra keys the agent adds. A file that fails this
+ * schema falls back to the LLM.
  */
 const reviewGateFileSchema = z
   .object({
@@ -50,20 +51,42 @@ const reviewGateFileSchema = z
   .passthrough()
 
 /**
- * Part E — file-first verdict. Read `<cwd>/.hive/review-gate.json`; when present and
+ * Absolute path — under Hive's OWN data dir, NOT the reviewed repo — where the
+ * Stage-2 judge writes (and Hive reads back) a ticket's verdict file. Keyed by
+ * ticket id so concurrent gate tickets never collide, and kept out of the worktree
+ * so Hive-generated verdict files never pollute the user's project `git status`.
+ * Both the pre-spawn `extractReviewContext` and the polling `detectTicketVerdict`
+ * derive this identically, so they always agree on the one file.
+ */
+export function reviewGateFilePath(dataDir: string, ticketId: string): string {
+  const safe = ticketId.replace(/[^A-Za-z0-9_.-]/g, '_') || 'ticket'
+  return join(dataDir, 'review-gates', safe, 'review-gate.json')
+}
+
+/**
+ * The legacy in-repo verdict path (`<cwd>/.hive/review-gate.json`). Still read +
+ * cleared as a fallback so a mid-flight round (or a hand-edited custom judge prompt
+ * that ignores the OUTPUT directive) keeps working — and so a stale in-repo file
+ * from before this change gets swept away rather than lingering in `git status`.
+ */
+function legacyReviewGateFilePath(cwd: string | undefined): string | undefined {
+  return cwd ? join(cwd, '.hive', 'review-gate.json') : undefined
+}
+
+/**
+ * Part E — file-first verdict. Read the verdict file at `filePath`; when present and
  * valid, return it as a {@link ConditionGateVerdict} (source `review-gate.json`),
  * carrying the agent's own `reason` + concrete `fixes[]`. Returns `null` on a missing
- * cwd, a missing/unreadable file, invalid JSON, or a schema mismatch — the caller
- * then falls back to the LLM read over the transcript (source `llm-transcript`).
+ * path, a missing/unreadable file, invalid JSON, or a schema mismatch — the caller
+ * then falls back (legacy path, or the LLM read over the transcript).
  */
-export function readReviewGateFile(cwd: string | undefined): ConditionGateVerdict | null {
-  if (!cwd) return null
-  const path = join(cwd, '.hive', 'review-gate.json')
+export function readReviewGateFile(filePath: string | undefined): ConditionGateVerdict | null {
+  if (!filePath) return null
   let raw: string
   try {
-    raw = readFileSync(path, 'utf-8')
+    raw = readFileSync(filePath, 'utf-8')
   } catch {
-    // No file (the common case) — silently fall back to the LLM.
+    // No file (the common case) — silently fall back.
     return null
   }
   try {
@@ -76,7 +99,7 @@ export function readReviewGateFile(cwd: string | undefined): ConditionGateVerdic
     }
   } catch (err) {
     log.warn('[ConditionGate] review-gate.json present but invalid — falling back to LLM', {
-      path,
+      path: filePath,
       error: err instanceof Error ? err.message : String(err)
     })
     return null
@@ -84,20 +107,19 @@ export function readReviewGateFile(cwd: string | undefined): ConditionGateVerdic
 }
 
 /**
- * Remove a stale `<cwd>/.hive/review-gate.json` before a fresh Stage-2 judge runs,
- * so the judge's new write is the ONLY verdict Hive can read (never a previous
- * round's leftover). Returns true if a file was actually present and removed.
+ * Remove a stale verdict file at `filePath` before a fresh Stage-2 judge runs, so
+ * the judge's new write is the ONLY verdict Hive can read (never a previous round's
+ * leftover). Returns true if a file was actually present and removed.
  */
-export function clearReviewGateFile(cwd: string | undefined): boolean {
-  if (!cwd) return false
-  const path = join(cwd, '.hive', 'review-gate.json')
-  if (!existsSync(path)) return false
+export function clearReviewGateFile(filePath: string | undefined): boolean {
+  if (!filePath) return false
+  if (!existsSync(filePath)) return false
   try {
-    rmSync(path, { force: true })
+    rmSync(filePath, { force: true })
     return true
   } catch (err) {
     log.warn('[ReviewJudge] failed to clear stale review-gate.json', {
-      path,
+      path: filePath,
       error: err instanceof Error ? err.message : String(err)
     })
     return false
@@ -138,9 +160,10 @@ export interface DetectTicketVerdictParams {
   /** Optional condition-gate system prompt override (blank → built-in default). */
   systemPrompt?: string
   /**
-   * Gate path: consult ONLY `<cwd>/.hive/review-gate.json`. When absent, return
-   * `{ success: true, noFile: true }` rather than the `llm-transcript` fallback —
-   * the gate must NEVER LLM-guess a pass (the store retries then escalates to Tu).
+   * Gate path: consult ONLY the Hive-owned verdict file (falling back to the legacy
+   * in-repo path). When absent, return `{ success: true, noFile: true }` rather than
+   * the `llm-transcript` fallback — the gate must NEVER LLM-guess a pass (the store
+   * retries then escalates to Tu).
    */
   fileOnly?: boolean
 }
@@ -157,7 +180,7 @@ export interface ExtractReviewContextParams {
   source?: ReviewJudgeContextSource
   /** Trailing-char budget for the extracted context (default 10000). */
   maxChars?: number
-  /** When true, also remove any stale `<cwd>/.hive/review-gate.json` before the judge runs. */
+  /** When true, remove any stale verdict file (Hive-owned + legacy in-repo) before the judge runs. */
   clearGateFile?: boolean
 }
 
@@ -205,6 +228,8 @@ export interface CompletionOpsRpcDependencies {
   readLiveness?: (sessionId: string) => SessionLiveness | undefined
   /** Read a Claude Agent SDK JSONL transcript (the `claude-code` provider). */
   readClaudeTranscript?: (worktreePath: string, claudeSessionId: string) => Promise<unknown[]>
+  /** Resolve the Hive data dir root (where the OUT-OF-REPO verdict files live). */
+  getDataDir?: () => string
 }
 
 const sha256 = (input: string): string => createHash('sha256').update(input).digest('hex')
@@ -543,9 +568,13 @@ export const makeLiveCompletionOpsRpcService = (
           const worktree = session?.worktree_id ? db.getWorktree(session.worktree_id) : null
           const cwd = worktree?.path ?? undefined
 
-          // Part E — file-first: the review agent's own `<cwd>/.hive/review-gate.json`
-          // wins over re-deriving the verdict via the LLM (which discarded it).
-          const fileVerdict = readReviewGateFile(cwd)
+          // Part E — file-first: the judge's own verdict file wins over re-deriving
+          // the verdict via the LLM. Read the Hive-owned OUT-OF-REPO path first, then
+          // the legacy in-repo `<cwd>/.hive/review-gate.json` for back-compat.
+          const dataDir = (deps.getDataDir ?? getHiveDataDir)()
+          const gatePath = reviewGateFilePath(dataDir, params.ticketId)
+          const fileVerdict =
+            readReviewGateFile(gatePath) ?? readReviewGateFile(legacyReviewGateFilePath(cwd))
           if (fileVerdict) {
             log.info('[ConditionGate] VERDICT', {
               ticketId: params.ticketId,
@@ -563,6 +592,7 @@ export const makeLiveCompletionOpsRpcService = (
           if (params.fileOnly) {
             log.info('[ConditionGate] NO FILE (fileOnly)', {
               ticketId: params.ticketId,
+              gatePath,
               cwd: cwd ?? '(none)'
             })
             return { success: true, noFile: true }
@@ -700,9 +730,29 @@ export const makeLiveCompletionOpsRpcService = (
           const worktree = session?.worktree_id ? db.getWorktree(session.worktree_id) : null
           const cwd = worktree?.path ?? undefined
 
+          // The Hive-owned, OUT-OF-REPO path this ticket's judge must write to (and
+          // that `detectTicketVerdict` reads back). Ensure its parent exists so the
+          // judge's write can't fail on a missing directory.
+          const dataDir = (deps.getDataDir ?? getHiveDataDir)()
+          const gateFilePath = reviewGateFilePath(dataDir, params.ticketId)
+          try {
+            mkdirSync(dirname(gateFilePath), { recursive: true })
+          } catch (err) {
+            log.warn('[ReviewJudge] failed to pre-create gate-file dir', {
+              path: gateFilePath,
+              error: err instanceof Error ? err.message : String(err)
+            })
+          }
+
           // Clear any stale verdict BEFORE the judge runs so its fresh write is the
-          // ONLY file Hive can read (never a previous round's leftover).
-          const clearedStaleGateFile = params.clearGateFile ? clearReviewGateFile(cwd) : false
+          // ONLY file Hive can read (never a previous round's leftover) — both the new
+          // OUT-OF-REPO path and the legacy in-repo path (also sweeps a pre-migration
+          // file out of the user's `git status`).
+          const clearedStaleGateFile = params.clearGateFile
+            ? [clearReviewGateFile(gateFilePath), clearReviewGateFile(legacyReviewGateFilePath(cwd))].some(
+                Boolean
+              )
+            : false
 
           const maxChars = params.maxChars ?? DEFAULT_REVIEW_JUDGE_CONTEXT_CHARS
           const source: ReviewJudgeContextSource = params.source ?? 'transcript'
@@ -730,11 +780,12 @@ export const makeLiveCompletionOpsRpcService = (
             contextChars: context.length,
             clearedStaleGateFile,
             cwd: cwd ?? '(none)',
+            gateFilePath,
             tailEnd:
               context.length > 400 ? `…${preview(context.slice(-400), 400)}` : preview(context, 400)
           })
 
-          return { success: true, context, cwd, source, clearedStaleGateFile }
+          return { success: true, context, cwd, gateFilePath, source, clearedStaleGateFile }
         } catch (err) {
           log.error(
             '[ReviewJudge] context extraction failed',

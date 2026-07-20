@@ -49,6 +49,20 @@ describe('buildJudgePrompt', () => {
   it('preserves internal newlines in each part', () => {
     expect(buildJudgePrompt('line1\nline2', 'a\nb')).toBe('line1\nline2\n\nContext:\na\nb')
   })
+
+  it('appends an authoritative OUTPUT directive naming the out-of-repo verdict path', () => {
+    const out = buildJudgePrompt('STANDARD', 'ctx', '/home/u/.hive/review-gates/t1/review-gate.json')
+    expect(out.startsWith('STANDARD\n\nContext:\nctx')).toBe(true)
+    expect(out).toContain('OUTPUT')
+    expect(out).toContain('/home/u/.hive/review-gates/t1/review-gate.json')
+    expect(out).toMatch(/overrides any file path named above/i)
+    expect(out).toMatch(/do NOT write any file inside the repository/i)
+  })
+
+  it('omits the OUTPUT directive when no gate path is supplied (legacy/plain)', () => {
+    expect(buildJudgePrompt('STANDARD', 'ctx')).toBe('STANDARD\n\nContext:\nctx')
+    expect(buildJudgePrompt('STANDARD', 'ctx', '   ')).toBe('STANDARD\n\nContext:\nctx')
+  })
 })
 
 describe('dispatchReviewJudge', () => {

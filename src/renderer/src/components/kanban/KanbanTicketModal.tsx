@@ -772,9 +772,9 @@ function VerificationOverridesSection({
             data-testid="verify-override-judge-prompt"
           />
           <p className="text-xs text-muted-foreground">
-            The standard the spawned judge is held to for THIS ticket only. Must keep the
-            instruction to write <code>.hive/review-gate.json</code>. Blank = use the global prompt
-            from Settings.
+            The standard the spawned judge is held to for THIS ticket only. Hive appends the
+            <code>OUTPUT</code> directive naming the verdict file (kept outside the repo), so you
+            need not specify a path. Blank = use the global prompt from Settings.
           </p>
         </div>
       )}

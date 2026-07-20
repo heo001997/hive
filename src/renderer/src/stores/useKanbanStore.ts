@@ -2288,14 +2288,17 @@ async function runConditionGate(
   //      the judge's fresh write is unambiguous),
   //   2. compose {user-editable standard prompt} + {context} and spawn a fresh
   //      interactive judge CLI (inheriting the ticket's model),
-  //   3. wait for the judge to WRITE `<cwd>/.hive/review-gate.json` (its verdict
+  //   3. wait for the judge to WRITE the Hive-owned verdict file (its verdict
   //      transport — an interactive CLI can't return structured stdout),
   //   4. read + route that verdict below (the decideConditionGate tail is unchanged).
   // NEVER fails open: any failure blocks for the human (per [[hive-strict-verify-trust-agent]]).
   const { completionApi } = await import('@/api/completion-api')
 
   // 1. Extract the review-session context + clear any stale verdict from a prior round.
+  //    `gateFilePath` is the Hive-owned, OUT-OF-REPO absolute path the judge must
+  //    write its verdict to (so it never lands in the user's `git status`).
   let reviewContext = ''
+  let gateFilePath: string | undefined
   try {
     const ctxRes = await completionApi.extractReviewContext({
       sessionId,
@@ -2308,12 +2311,14 @@ async function runConditionGate(
       return blockForTu(`review-judge context extraction failed: ${ctxRes.error ?? 'unknown'}`)
     }
     reviewContext = (ctxRes.context ?? '').trim()
+    gateFilePath = ctxRes.gateFilePath
     logToMain('info', 'ReviewJudge', `ticket ${ticketId} context extracted`, {
       ticketId,
       sessionId,
       source: ctxRes.source,
       contextChars: reviewContext.length,
-      clearedStaleGateFile: ctxRes.clearedStaleGateFile
+      clearedStaleGateFile: ctxRes.clearedStaleGateFile,
+      gateFilePath
     })
   } catch (err) {
     return blockForTu(
@@ -2337,8 +2342,11 @@ async function runConditionGate(
     current.verify_overrides?.judgePrompt?.trim() ||
     settings.kanbanReviewJudgePrompt?.trim() ||
     DEFAULT_REVIEW_JUDGE_PROMPT
+  if (!gateFilePath) {
+    return blockForTu('review-judge: Hive did not resolve an output path for the verdict file')
+  }
   const { buildJudgePrompt, dispatchReviewJudge } = await import('../lib/run-review-judge')
-  const judgePrompt = buildJudgePrompt(standardPrompt, reviewContext)
+  const judgePrompt = buildJudgePrompt(standardPrompt, reviewContext, gateFilePath)
 
   get().setVerifyProgress(key, { phase: 'judging' })
   logToMain('info', 'ReviewJudge', `ticket ${ticketId} spawning judge`, {
@@ -2359,7 +2367,7 @@ async function runConditionGate(
   }
   const judgeSessionId = spawn.sessionId
 
-  // 3. Await the judge. Poll for a VALID `.hive/review-gate.json` (a half-written
+  // 3. Await the judge. Poll for a VALID Hive-owned verdict file (a half-written
   //    file fails JSON/schema parse → reads as `noFile`, so we simply keep polling —
   //    the write-race resolves itself). If the judge's terminal goes frozen (it
   //    stopped) for a couple of consecutive checks WITHOUT a valid file, it finished
@@ -2375,8 +2383,8 @@ async function runConditionGate(
     await new Promise<void>((resolve) => setTimeout(resolve, JUDGE_POLL_MS))
     let res: ConditionGateCheckResult
     try {
-      // Read the verdict file from the JUDGE's session (its worktree = the reviewed
-      // worktree = repo root of `.hive/review-gate.json`).
+      // Read the verdict from the Hive-owned gate file for this ticket (server
+      // resolves the same OUT-OF-REPO path the judge was told to write).
       res = await completionApi.detectTicketVerdict({
         sessionId: judgeSessionId,
         ticketId,
