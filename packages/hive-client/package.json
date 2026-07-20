@@ -1,0 +1,31 @@
+{
+  "name": "@hive/client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Platform-neutral Hive RPC client (WebSocket transport + bootstrap handshake). No DOM, no Electron, zero runtime deps.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "module": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./node": {
+      "types": "./src/node/index.ts",
+      "default": "./src/node/index.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
