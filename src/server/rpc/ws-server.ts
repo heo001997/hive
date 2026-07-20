@@ -20,6 +20,12 @@ interface WebSocketRpcServer {
 interface WebSocketRpcServerOptions {
   readonly path?: string
   readonly authenticateToken?: (token: string) => boolean
+  // Origin allowlist gate. Called ONLY when the upgrade request carries an
+  // Origin header (i.e. a browser). Return false to reject the upgrade. When
+  // omitted, no origin check is performed. Requests with no Origin header
+  // (native apps, CLI, mobile RN) are always allowed — they are not browsers and
+  // cannot be driven into a cross-site WebSocket hijack.
+  readonly isOriginAllowed?: (origin: string) => boolean
 }
 
 export const attachWebSocketRpcServer = (
@@ -30,12 +36,26 @@ export const attachWebSocketRpcServer = (
 ): WebSocketRpcServer => {
   const path = typeof options === 'string' ? options : (options.path ?? '/ws')
   const authenticateToken = typeof options === 'string' ? undefined : options.authenticateToken
+  const isOriginAllowed = typeof options === 'string' ? undefined : options.isOriginAllowed
   const sockets = new Map<Duplex, () => void>()
 
   server.on('upgrade', (request, socket) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
     if (url.pathname !== path || !isWebSocketUpgrade(request)) {
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n')
+      socket.destroy()
+      return
+    }
+
+    // Cross-site WebSocket hijacking (CSWSH) guard. A browser always attaches an
+    // Origin header to a WebSocket handshake and cannot forge it, so when one is
+    // present we hold it to the same allowlist HTTP CORS uses. A request with no
+    // Origin header is a non-browser client (CLI, native, mobile RN) and is
+    // allowed through. This runs before auth so a disallowed cross-origin page is
+    // rejected even when auth is disabled (the loopback default).
+    const origin = request.headers.origin
+    if (origin !== undefined && isOriginAllowed && !isOriginAllowed(origin)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
       socket.destroy()
       return
     }
@@ -190,7 +210,28 @@ const handleSubscriptionMessage = (
 ): boolean => {
   const subscribe = WebSocketSubscribeMessageSchema.safeParse(request)
   if (subscribe.success) {
-    const { channel } = subscribe.data
+    const { channel, sinceSeq } = subscribe.data
+
+    // Resumable replay: when the client resubscribes with a cursor, flush the
+    // events it missed (or a resync signal) BEFORE wiring up live delivery.
+    // Everything here runs synchronously in this tick, so no concurrent publish
+    // can interleave between the replay and the live subscription — a live
+    // event carries a strictly higher seq and is delivered after the replay.
+    if (sinceSeq !== undefined && eventBus.replay) {
+      const { events, gap, latestSeq } = Effect.runSync(eventBus.replay(channel, sinceSeq))
+      if (gap) {
+        sendServerEvent(socket, {
+          channel,
+          payload: null,
+          resync: true,
+          reason: 'gap',
+          seq: latestSeq
+        })
+      } else {
+        for (const event of events) sendServerEvent(socket, event)
+      }
+    }
+
     if (!subscriptions.has(channel)) {
       const unsubscribe = Effect.runSync(
         eventBus.subscribe(channel, (event) => {

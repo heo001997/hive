@@ -1,10 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
+import { readFileSync } from 'node:fs'
 import { Cause, Effect, Exit, Option } from 'effect'
 import { z } from 'zod'
 import { exchangeDesktopBootstrapToken } from './auth/bootstrap'
+import {
+  exchangeOwnerToken,
+  hasOwnerCredential,
+  OWNER_TOKEN_HASH_SETTING_KEY,
+  type OwnerTokenDeps
+} from './auth/owner'
 import { getAuthSessionStatus, makeAuthSessionManager } from './auth/session'
 import { makeEventBus } from './events/event-bus'
-import { resolveServerConfig, type ServerConfig, type ServerConfigInput } from './config'
+import {
+  isAllowedBrowserOrigin,
+  resolveServerConfig,
+  type ServerConfig,
+  type ServerConfigInput
+} from './config'
 import { makeRpcRouter } from './rpc/router'
 import { attachWebSocketRpcServer } from './rpc/ws-server'
 import { resolveStaticFile, serveStaticFile } from './static'
@@ -139,12 +152,32 @@ export const startHiveServer = (
     const authSessions = makeAuthSessionManager()
     const router = makeRpcRouter({ eventBus })
 
+    // Owner-token credential source for the remote /api/auth/owner-exchange path.
+    // Reads/writes the hash from the SAME settings store the mint/rotate RPC uses,
+    // so a token minted over RPC is immediately honoured here. Never holds plaintext.
+    const ownerTokenDeps: OwnerTokenDeps = {
+      store: {
+        getHash: () => getDatabase().getSetting(OWNER_TOKEN_HASH_SETTING_KEY),
+        setHash: (hash) => getDatabase().setSetting(OWNER_TOKEN_HASH_SETTING_KEY, hash)
+      },
+      envOwnerToken: config.ownerTokenEnv
+    }
+
+    // Transport scheme derives from TLS: https/wss when cert+key are configured,
+    // plain http/ws otherwise (the loopback/desktop default).
+    const httpScheme = config.tlsEnabled ? 'https' : 'http'
+    const wsScheme = config.tlsEnabled ? 'wss' : 'ws'
+
     return yield* Effect.tryPromise({
       try: () =>
         new Promise<StartedHiveServer>((resolve, reject) => {
-          const server: Server = createServer((request, response) => {
+          const requestHandler = (request: IncomingMessage, response: ServerResponse): void => {
             const url = new URL(request.url ?? '/', `http://${request.headers.host ?? config.host}`)
-            const corsOrigin = getAllowedCorsOrigin(request.headers.origin)
+            const corsOrigin = getAllowedCorsOrigin(
+              request.headers.origin,
+              config.allowedOrigins,
+              config.loopbackBind
+            )
 
             if (request.headers.origin && corsOrigin === null) {
               writeJson(response, 403, { error: 'Forbidden origin' })
@@ -191,9 +224,12 @@ export const startHiveServer = (
                   mode: config.mode,
                   host: config.host,
                   port,
-                  httpBaseUrl: `http://${config.host}:${port}`,
-                  wsBaseUrl: `ws://${config.host}:${port}/ws`,
+                  httpBaseUrl: `${httpScheme}://${config.host}:${port}`,
+                  wsBaseUrl: `${wsScheme}://${config.host}:${port}/ws`,
                   hasDesktopBootstrapToken: config.desktopBootstrapToken !== null,
+                  // Advertised so an off-machine client knows the owner-exchange
+                  // path is usable before it presents a token.
+                  hasOwnerToken: hasOwnerCredential(ownerTokenDeps),
                   ...identity
                 },
                 corsOrigin
@@ -210,6 +246,44 @@ export const startHiveServer = (
                       config.desktopBootstrapToken,
                       authSessions
                     )
+                  )
+
+                  Exit.match(result, {
+                    onSuccess: (value) => writeJson(response, 200, value, corsOrigin),
+                    onFailure: (cause) => {
+                      const failure = Cause.failureOption(cause)
+                      if (Option.isSome(failure)) {
+                        writeJson(response, failure.value.statusCode, failure.value.body, corsOrigin)
+                        return
+                      }
+
+                      writeJson(response, 500, { error: 'Authentication failed' }, corsOrigin)
+                    }
+                  })
+                })
+                .catch((error) => {
+                  writeJson(
+                    response,
+                    400,
+                    {
+                      error: error instanceof Error ? error.message : 'Invalid request body'
+                    },
+                    corsOrigin
+                  )
+                })
+              return
+            }
+
+            // Remote single-owner auth: exchange the durable owner token for an
+            // AuthSession, identical in shape to /api/auth/bootstrap. The caller
+            // then hits the unchanged /api/auth/ws-token endpoint. This is the
+            // ONLY new public route; it never runs local-only logic and is safe to
+            // expose off-machine (constant-time verify, hash-at-rest).
+            if (request.method === 'POST' && url.pathname === '/api/auth/owner-exchange') {
+              void readJson(request)
+                .then(async (body) => {
+                  const result = await Effect.runPromiseExit(
+                    exchangeOwnerToken(body, ownerTokenDeps, authSessions)
                   )
 
                   Exit.match(result, {
@@ -297,14 +371,35 @@ export const startHiveServer = (
             }
 
             writeJson(response, 404, { error: 'Not Found' }, corsOrigin)
-          })
+          }
+
+          // TLS (https/wss) when a cert+key pair is configured; plain http/ws
+          // otherwise. The off-loopback guard in resolveServerConfig already
+          // guarantees a non-loopback bind has either TLS or an explicit insecure
+          // override, so a bare createServer here is only ever reached for loopback
+          // or an operator-acknowledged insecure deployment.
+          const server: Server = config.tlsEnabled
+            ? (createHttpsServer(
+                {
+                  cert: readFileSync(config.tlsCertPath as string),
+                  key: readFileSync(config.tlsKeyPath as string)
+                },
+                requestHandler
+              ) as unknown as Server)
+            : createServer(requestHandler)
 
           const wsServer = attachWebSocketRpcServer(server, router, eventBus, {
             // When auth is disabled (loopback web serving), accept token-less
             // upgrades so a plain browser can connect without a bootstrap token.
             authenticateToken: config.requireAuth
               ? (token) => authSessions.getWebSocketToken(token) !== null
-              : undefined
+              : undefined,
+            // Origin allowlist matching HTTP CORS. Closes cross-site WebSocket
+            // hijacking (CSWSH): even with auth disabled, a malicious cross-origin
+            // page cannot open a ws:// to this backend and invoke RPCs. Non-browser
+            // clients send no Origin and are unaffected.
+            isOriginAllowed: (origin) =>
+              isAllowedBrowserOrigin(origin, config.allowedOrigins, config.loopbackBind)
           })
 
           server.once('error', reject)
@@ -316,8 +411,8 @@ export const startHiveServer = (
               config,
               host: config.host,
               port,
-              httpBaseUrl: `http://${config.host}:${port}`,
-              wsBaseUrl: `ws://${config.host}:${port}/ws`,
+              httpBaseUrl: `${httpScheme}://${config.host}:${port}`,
+              wsBaseUrl: `${wsScheme}://${config.host}:${port}/ws`,
               close: async () => {
                 wsServer.closeAll()
                 await new Promise<void>((closeResolve, closeReject) => {
@@ -383,29 +478,25 @@ const makeCorsHeaders = (corsOrigin: string | null): Record<string, string> =>
       }
     : {}
 
-const getAllowedCorsOrigin = (origin: string | undefined): string | null => {
+// HTTP CORS reflection. Shares the exact same allowlist as the WebSocket upgrade
+// (see isAllowedBrowserOrigin) so the two transports never disagree on which
+// origin is trusted. A missing Origin (non-browser caller) reflects nothing; a
+// present-but-disallowed Origin returns null, which the request handler turns
+// into a 403.
+const getAllowedCorsOrigin = (
+  origin: string | undefined,
+  allowedOrigins: readonly string[],
+  allowNullOrigin: boolean
+): string | null => {
   if (!origin) return null
-  if (origin === 'null') return origin
-
-  try {
-    const url = new URL(origin)
-    const isLoopbackHost = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1'].includes(
-      url.hostname
-    )
-    if ((url.protocol === 'http:' || url.protocol === 'https:') && isLoopbackHost) {
-      return origin
-    }
-  } catch {
-    return null
-  }
-
-  return null
+  return isAllowedBrowserOrigin(origin, allowedOrigins, allowNullOrigin) ? origin : null
 }
 
 const isPublicHttpRoute = (method: string | undefined, pathname: string): boolean =>
   (method === 'GET' && pathname === '/health') ||
   (method === 'GET' && pathname === '/.well-known/hive/environment') ||
-  (method === 'POST' && pathname === '/api/auth/bootstrap')
+  (method === 'POST' && pathname === '/api/auth/bootstrap') ||
+  (method === 'POST' && pathname === '/api/auth/owner-exchange')
 
 const eventPublishSchema = z
   .object({

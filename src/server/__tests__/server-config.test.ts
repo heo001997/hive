@@ -77,16 +77,66 @@ describe('server config', () => {
     expect(config.requireAuth).toBe(false)
   })
 
-  it('uses BIND_IP as the server host override', async () => {
+  it('uses BIND_IP as the server host override (with insecure override)', async () => {
     const config = await Effect.runPromise(
       resolveServerConfig(
         { baseDir: mkdtempSync(join(tmpdir(), 'hive-server-config-')) },
-        { BIND_IP: '0.0.0.0' }
+        { BIND_IP: '0.0.0.0', HIVE_SERVER_ALLOW_INSECURE: 'true' }
       )
     )
 
     expect(config.host).toBe('0.0.0.0')
     expect(config.requireAuth).toBe(true)
+    expect(config.allowInsecure).toBe(true)
+  })
+
+  it('rejects a non-loopback bind without TLS or an insecure override', async () => {
+    await expect(
+      Effect.runPromise(
+        resolveServerConfig(
+          { baseDir: mkdtempSync(join(tmpdir(), 'hive-server-config-')) },
+          { BIND_IP: '0.0.0.0' }
+        )
+      )
+    ).rejects.toThrow('requires TLS')
+  })
+
+  it('allows a non-loopback bind when TLS cert and key are provided', async () => {
+    const config = await Effect.runPromise(
+      resolveServerConfig(
+        { baseDir: mkdtempSync(join(tmpdir(), 'hive-server-config-')) },
+        {
+          BIND_IP: '0.0.0.0',
+          HIVE_SERVER_TLS_CERT: '/tmp/hive.crt',
+          HIVE_SERVER_TLS_KEY: '/tmp/hive.key'
+        }
+      )
+    )
+
+    expect(config.host).toBe('0.0.0.0')
+    expect(config.tlsEnabled).toBe(true)
+    expect(config.tlsCertPath).toBe('/tmp/hive.crt')
+    expect(config.tlsKeyPath).toBe('/tmp/hive.key')
+  })
+
+  it('does not require TLS for the default loopback host', async () => {
+    const config = await Effect.runPromise(
+      resolveServerConfig({ baseDir: mkdtempSync(join(tmpdir(), 'hive-server-config-')) }, {})
+    )
+
+    expect(config.host).toBe(DEFAULT_HOST)
+    expect(config.tlsEnabled).toBe(false)
+  })
+
+  it('captures the HIVE_OWNER_TOKEN env override', async () => {
+    const config = await Effect.runPromise(
+      resolveServerConfig(
+        { baseDir: mkdtempSync(join(tmpdir(), 'hive-server-config-')) },
+        { HIVE_OWNER_TOKEN: '  ci-owner-token  ' }
+      )
+    )
+
+    expect(config.ownerTokenEnv).toBe('ci-owner-token')
   })
 
   it('rejects BIND_IP when auth is disabled', async () => {

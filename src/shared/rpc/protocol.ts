@@ -23,7 +23,15 @@ export type RpcResponse =
 export const SubscriptionRequestSchema = z
   .object({
     channel: z.string().min(1),
-    filter: z.unknown().optional()
+    filter: z.unknown().optional(),
+    /**
+     * Resumable-subscription cursor. When present, the server replays buffered
+     * events with `seq > sinceSeq` (in order) before resuming live delivery. If
+     * the cursor is older than the server's in-memory ring-buffer window (or
+     * ahead of it, e.g. after a server restart reset the counter), the server
+     * emits an explicit resync signal instead so the client refetches state.
+     */
+    sinceSeq: z.number().int().nonnegative().optional()
   })
   .strict()
 
@@ -47,4 +55,20 @@ export type WebSocketUnsubscribeMessage = z.infer<typeof WebSocketUnsubscribeMes
 export interface ServerEvent {
   readonly channel: string
   readonly payload: unknown
+  /**
+   * Monotonic per-channel sequence number assigned by the event bus at publish
+   * time. Optional so emitters that predate resumable subscriptions (and any
+   * non-buffered path) remain valid — clients treat its absence as "no
+   * resumability" and fall back to legacy behaviour.
+   */
+  readonly seq?: number
+  /**
+   * When `true`, this is an out-of-band resync signal rather than a real event:
+   * the client's `sinceSeq` fell outside the server's buffer window, so its
+   * `payload` is empty and the client must refetch channel state. `seq` (when
+   * present) carries the latest server sequence to adopt as the new cursor.
+   */
+  readonly resync?: boolean
+  /** Human-readable reason attached to a resync signal (e.g. `'gap'`). */
+  readonly reason?: string
 }
