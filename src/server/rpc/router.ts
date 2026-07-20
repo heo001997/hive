@@ -81,6 +81,11 @@ import {
   type ProjectOpsRpcService
 } from './domains/project-ops'
 import {
+  makeLivePushOpsRpcService,
+  makePushOpsRpcHandlers,
+  type PushOpsRpcService
+} from './domains/push-ops'
+import {
   makeKanbanRpcHandlers,
   makeLiveKanbanRpcService,
   type KanbanRpcService
@@ -172,6 +177,7 @@ export interface RpcContext {
   readonly perfDiagnosticsOps?: PerfDiagnosticsOpsRpcService
   readonly petOps?: PetOpsRpcService
   readonly projectOps?: ProjectOpsRpcService
+  readonly pushOps?: PushOpsRpcService
   readonly scriptOps?: ScriptOpsRpcService
   readonly settingsOps?: SettingsOpsRpcService
   readonly storageOps?: StorageOpsRpcService
@@ -236,6 +242,7 @@ const makeDefaultRpcHandlers = (context: RpcContext): ReadonlyMap<string, RpcHan
     ),
     ...makePetOpsRpcHandlers(context.petOps ?? makeLivePetOpsRpcService()),
     ...makeProjectOpsRpcHandlers(context.projectOps ?? makeLiveProjectOpsRpcService()),
+    ...makePushOpsRpcHandlers(context.pushOps ?? makeLivePushOpsRpcService()),
     ...makeScriptOpsRpcHandlers(context.scriptOps ?? makeLiveScriptOpsRpcService(context.eventBus)),
     ...makeSettingsOpsRpcHandlers(context.settingsOps ?? makeLiveSettingsOpsRpcService()),
     ...makeStorageOpsRpcHandlers(context.storageOps ?? makeLiveStorageOpsRpcService()),

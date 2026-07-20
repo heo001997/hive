@@ -199,6 +199,12 @@ export const makeLiveTelegramOpsRpcService = (eventBus?: EventBus): TelegramOpsR
     Effect.tryPromise({
       try: async () => {
         const telegramForwardingService = await importTelegramForwardingService(eventBus)
+        // Fan the same ticket lifecycle signal out to Expo push alongside Telegram.
+        // Every ticket notification (question/needs-input, review/stuck, done/PR-ready)
+        // funnels through here, so this one call mirrors all of them. Fire-and-forget:
+        // a push failure must never disrupt the Telegram send it rides beside.
+        const { dispatchTicketPush } = await import('./push-ops')
+        dispatchTicketPush(text)
         return telegramForwardingService.sendNotification(text)
       },
       catch: (cause) => cause
