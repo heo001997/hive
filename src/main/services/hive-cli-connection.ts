@@ -17,6 +17,13 @@ export interface HiveCliConnection {
   readonly bootstrapToken: string
   /** This instance's data dir (`<worktree>/.hive-data` in dev, `~/.hive` in prod). */
   readonly baseDir: string
+  /**
+   * Absolute path to the `hive-ticket` CLI this instance hands to spawned agents,
+   * resolved once at connection setup (where Electron's `app` paths are known —
+   * see backend-manager). Prefers the bundled copy; null when nothing resolvable,
+   * in which case `buildHiveCliEnv` retries the env/global-skill fallbacks itself.
+   */
+  readonly ticketCliPath?: string | null
 }
 
 let connection: HiveCliConnection | null = null
@@ -30,15 +37,24 @@ export function getHiveCliConnection(): HiveCliConnection | null {
 }
 
 /**
- * Resolve the `hive-ticket` CLI entry the spawned agent should call. Prefers an
- * explicit `HIVE_TICKET_CLI` override, else the well-known global skill install
- * (`~/.claude/skills/hive-create-ticket/create.mjs`). Returns null when neither is
- * present (the agent then falls back to its own discovery, or the feature is a
- * no-op) — never throws.
+ * Resolve the `hive-ticket` CLI entry the spawned agent should call. Resolution
+ * order, most authoritative first:
+ *   1. `HIVE_TICKET_CLI` env override (explicit, always wins if it exists).
+ *   2. The bundled copy shipped with the app — `hive-ticket.mjs` under each dir in
+ *      `searchDirs` (packaged: `process.resourcesPath/cli`; dev: the repo's
+ *      `resources/cli`). This is the canonical, versioned CLI.
+ *   3. Legacy fallback: the hand-installed global skill
+ *      (`~/.claude/skills/hive-create-ticket/create.mjs`).
+ * Returns null when nothing is present (the feature then no-ops) — never throws.
  */
-export function resolveHiveTicketCliPath(): string | null {
+export function resolveHiveTicketCliPath(searchDirs: readonly string[] = []): string | null {
   const override = process.env.HIVE_TICKET_CLI?.trim()
   if (override && existsSync(override)) return override
+  for (const dir of searchDirs) {
+    if (!dir) continue
+    const bundled = join(dir, 'hive-ticket.mjs')
+    if (existsSync(bundled)) return bundled
+  }
   const skillPath = join(homedir(), '.claude', 'skills', 'hive-create-ticket', 'create.mjs')
   if (existsSync(skillPath)) return skillPath
   return null
@@ -63,7 +79,9 @@ export function buildHiveCliEnv(context: {
   }
   if (context.projectId) env.HIVE_PROJECT_ID = context.projectId
   if (context.worktreeId) env.HIVE_WORKTREE_ID = context.worktreeId
-  const cliPath = resolveHiveTicketCliPath()
+  // Prefer the path resolved at connection setup (Electron `app` paths are only
+  // known there); otherwise re-resolve via env override / global-skill fallback.
+  const cliPath = conn.ticketCliPath ?? resolveHiveTicketCliPath()
   if (cliPath) env.HIVE_TICKET_CLI = cliPath
   return env
 }

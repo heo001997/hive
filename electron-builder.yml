@@ -7,6 +7,17 @@ files:
   - out/**/*
   - resources/**/*
 
+# The `hive-ticket` CLI must be reachable by a plain `node` OUTSIDE Electron (the
+# app injects it as $HIVE_TICKET_CLI and agents shell out to it). Files inside
+# app.asar can't be read that way, so copy the CLI to Contents/Resources/cli/
+# (unpacked) → process.resourcesPath/cli/hive-ticket.mjs at runtime. It is
+# dependency-free (Node built-in WebSocket), so no node_modules ride along.
+# NOTE: platform-specific extraResources REPLACE this top-level list, so `mac`
+# repeats the cli entry below (win/linux have none, so they inherit this).
+extraResources:
+  - from: resources/cli
+    to: cli
+
 # Native .node binaries cannot be loaded from inside an ASAR archive.
 # This extracts them to app.asar.unpacked/ at build time.
 asarUnpack:
@@ -20,6 +31,8 @@ mac:
   extraResources:
     - from: src/native/build/Release/ghostty.node
       to: native/ghostty.node
+    - from: resources/cli
+      to: cli
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
