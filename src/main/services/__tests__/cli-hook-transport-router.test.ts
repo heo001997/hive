@@ -16,7 +16,7 @@ describe('CliHookTransportRouter', () => {
     const second = makeTransport('second', true)
     const router = new CliHookTransportRouter([first, second])
     const res = {} as ServerResponse
-    const body = { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' }
+    const body = { hook_event_name: 'PreToolUse', tool_name: 'ExitPlanMode' }
 
     expect(router.routeHook('session-1', body, res)).toBe(true)
 

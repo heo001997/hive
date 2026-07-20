@@ -81,9 +81,9 @@ describe('mapHookEventToStatus', () => {
       'plan_ready'
     ],
     [
-      'PreToolUse AskUserQuestion maps to answering',
+      'PreToolUse AskUserQuestion is ignored (renders in the native terminal)',
       { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' },
-      'answering'
+      null
     ],
     [
       'PostToolUse ExitPlanMode maps to working',
@@ -112,9 +112,9 @@ describe('mapHookEventToStatus', () => {
       'plan_ready'
     ],
     [
-      'PermissionRequest for AskUserQuestion maps to answering',
+      'PermissionRequest for AskUserQuestion maps to permission',
       { hook_event_name: 'PermissionRequest', tool_name: 'AskUserQuestion' },
-      'answering'
+      'permission'
     ],
     ['unknown events are ignored', { hook_event_name: 'BogusEvent' }, null],
     [
@@ -175,12 +175,11 @@ describe('buildClaudeCliHookSettings', () => {
         ],
         PreToolUse: [
           {
-            matcher: 'ExitPlanMode|AskUserQuestion',
+            matcher: 'ExitPlanMode',
             hooks: [
               {
                 type: 'http',
-                url: 'http://127.0.0.1:34819/hook/hive-session-1/tool',
-                timeout: 600
+                url: 'http://127.0.0.1:34819/hook/hive-session-1/tool'
               }
             ]
           }

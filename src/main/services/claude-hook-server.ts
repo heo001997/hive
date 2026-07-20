@@ -75,11 +75,12 @@ export function buildClaudeCliHookSettings(port: number, hiveSessionId: string):
       ],
       PreToolUse: [
         {
-          matcher: 'ExitPlanMode|AskUserQuestion',
-          // A generous timeout (default is 600s) so a question/plan held open
-          // while a human answers via Telegram isn't cancelled early. Harmless
-          // when not held — it's a ceiling, not a delay.
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'tool'), timeout: 600 }]
+          // ExitPlanMode is hooked for status only (drives the 'plan_ready' badge
+          // and carries the plan text for the in-app plan card / auto-approve).
+          // The hook is answered immediately — the plan menu stays in the native
+          // terminal, never held or lifted into the app.
+          matcher: 'ExitPlanMode',
+          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'tool') }]
         }
       ],
       PostToolUse: [
@@ -114,7 +115,6 @@ export function mapHookEventToStatus(hook: ParsedClaudeHook): SessionStatusType 
       return hook.permission_mode === 'plan' ? 'planning' : 'working'
     case 'PreToolUse':
       if (hook.tool_name === 'ExitPlanMode') return 'plan_ready'
-      if (hook.tool_name === 'AskUserQuestion') return 'answering'
       return null
     case 'PostToolUseFailure':
       if (hook.tool_name === 'ExitPlanMode') return 'planning'
@@ -123,7 +123,6 @@ export function mapHookEventToStatus(hook: ParsedClaudeHook): SessionStatusType 
       return 'working'
     case 'PermissionRequest':
       if (hook.tool_name === 'ExitPlanMode') return 'plan_ready'
-      if (hook.tool_name === 'AskUserQuestion') return 'answering'
       return 'permission'
     default:
       return null

@@ -6,7 +6,6 @@ import type { AgentSdkManager } from './agent-sdk-manager'
 import { openCodeService } from './opencode-service'
 import { getDatabase } from '../db'
 import type { DatabaseService } from '../db/database'
-import { claudeCliDiscordBridge } from './claude-cli-discord-bridge'
 
 type PermissionDecision = 'once' | 'always' | 'reject'
 
@@ -44,14 +43,6 @@ interface ClaudePlanImplementer extends QuestionImplementer {
   ) => void
 }
 
-interface CliBridge {
-  hasPendingQuestion(requestId: string): boolean
-  hasPendingPlan(requestId: string): boolean
-  resolveQuestion(requestId: string, answers: string[][]): void
-  rejectQuestion(requestId: string): void
-  resolvePlan(requestId: string, approve: boolean, feedback?: string): void
-}
-
 interface OpenCodeReplyService {
   questionReply(requestId: string, answers: string[][], worktreePath?: string): Promise<void>
   questionReject(requestId: string, worktreePath?: string): Promise<void>
@@ -65,7 +56,6 @@ interface OpenCodeReplyService {
 export interface InteractiveReplyRouterDependencies {
   sdkManager?: AgentSdkManager | null
   openCodeService?: OpenCodeReplyService
-  cliBridge?: CliBridge
   db?: DatabaseService
 }
 
@@ -122,13 +112,11 @@ function getImplementer<T>(sdkManager: AgentSdkManager | null | undefined, sdk: 
 export class InteractiveReplyRouter {
   private sdkManager: AgentSdkManager | null
   private readonly openCode: OpenCodeReplyService
-  private readonly cliBridge: CliBridge
   private db: DatabaseService | null
 
   constructor(dependencies: InteractiveReplyRouterDependencies = {}) {
     this.sdkManager = dependencies.sdkManager ?? null
     this.openCode = dependencies.openCodeService ?? openCodeService
-    this.cliBridge = dependencies.cliBridge ?? claudeCliDiscordBridge
     this.db = dependencies.db ?? null
   }
 
@@ -137,11 +125,6 @@ export class InteractiveReplyRouter {
   }
 
   async replyQuestion(input: ReplyQuestionInput): Promise<void> {
-    if (this.cliBridge.hasPendingQuestion(input.requestId)) {
-      this.cliBridge.resolveQuestion(input.requestId, input.answers)
-      return
-    }
-
     const claudeImpl = getImplementer<QuestionImplementer>(this.sdkManager, 'claude-code')
     if (claudeImpl?.hasPendingQuestion?.(input.requestId)) {
       await claudeImpl.questionReply?.(input.requestId, input.answers, input.worktreePath)
@@ -158,11 +141,6 @@ export class InteractiveReplyRouter {
   }
 
   async rejectQuestion(input: RejectQuestionInput): Promise<void> {
-    if (this.cliBridge.hasPendingQuestion(input.requestId)) {
-      this.cliBridge.rejectQuestion(input.requestId)
-      return
-    }
-
     const claudeImpl = getImplementer<QuestionImplementer>(this.sdkManager, 'claude-code')
     if (claudeImpl?.hasPendingQuestion?.(input.requestId)) {
       await claudeImpl.questionReject?.(input.requestId, input.worktreePath)
@@ -213,11 +191,6 @@ export class InteractiveReplyRouter {
   }
 
   async replyPlan(input: ReplyPlanInput): Promise<void> {
-    if (this.cliBridge.hasPendingPlan(input.requestId)) {
-      this.cliBridge.resolvePlan(input.requestId, input.approve, input.feedback)
-      return
-    }
-
     const claudeImpl = getImplementer<ClaudePlanImplementer>(this.sdkManager, 'claude-code')
     const hasPending =
       claudeImpl?.hasPendingPlan?.(input.requestId) ||

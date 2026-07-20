@@ -6,7 +6,6 @@ import type { AgentSdkManager } from './agent-sdk-manager'
 import type { AgentSdkCapabilities, AgentSdkId, PromptOptions } from './agent-sdk-types'
 import { ClaudeCodeImplementer } from './claude-code-implementer'
 import { CodexImplementer } from './codex-implementer'
-import { claudeCliTelegramBridge } from './claude-cli-telegram-bridge'
 import { toError } from './error-utils'
 import { isClaudeCli, isTerminalBacked } from '@shared/types/agent-sdk'
 
@@ -499,11 +498,6 @@ export async function replyOpenCodeQuestion(
 ): Promise<{ success: boolean; error?: string }> {
   log.info('OpenCode session question:reply', { requestId })
   try {
-    if (claudeCliTelegramBridge.hasPendingQuestion(requestId)) {
-      claudeCliTelegramBridge.resolveQuestion(requestId, answers)
-      return { success: true }
-    }
-
     if (sdkManager) {
       const claudeImpl = sdkManager.getImplementer('claude-code') as ClaudeCodeImplementer
       if (claudeImpl.hasPendingQuestion(requestId)) {
@@ -540,11 +534,6 @@ export async function rejectOpenCodeQuestion(
 ): Promise<{ success: boolean; error?: string }> {
   log.info('OpenCode session question:reject', { requestId })
   try {
-    if (claudeCliTelegramBridge.hasPendingQuestion(requestId)) {
-      claudeCliTelegramBridge.rejectQuestion(requestId)
-      return { success: true }
-    }
-
     if (sdkManager) {
       const claudeImpl = sdkManager.getImplementer('claude-code') as ClaudeCodeImplementer
       if (claudeImpl.hasPendingQuestion(requestId)) {

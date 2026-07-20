@@ -25,26 +25,17 @@ const makeRouter = (overrides: Partial<InteractiveReplyRouterDependencies> = {})
     questionReject: vi.fn(async () => undefined),
     permissionReply: vi.fn(async () => undefined)
   }
-  const cliBridge = {
-    hasPendingQuestion: vi.fn(() => false),
-    hasPendingPlan: vi.fn(() => false),
-    resolveQuestion: vi.fn(),
-    rejectQuestion: vi.fn(),
-    resolvePlan: vi.fn()
-  }
   const router = createInteractiveReplyRouter({
     db: db as never,
     openCodeService: openCodeService as never,
-    cliBridge: cliBridge as never,
     ...overrides
   })
-  return { router, db, openCodeService, cliBridge }
+  return { router, db, openCodeService }
 }
 
 describe('interactive reply router', () => {
-  it('answers held Claude CLI questions before SDK or OpenCode fallbacks', async () => {
-    const { router, cliBridge, openCodeService } = makeRouter()
-    cliBridge.hasPendingQuestion.mockReturnValue(true)
+  it('falls back to OpenCode when no SDK implementer has the question pending (CLI questions stay in the terminal)', async () => {
+    const { router, openCodeService } = makeRouter()
 
     await router.replyQuestion({
       requestId: 'req-1',
@@ -52,8 +43,7 @@ describe('interactive reply router', () => {
       worktreePath: '/repo/worktree'
     })
 
-    expect(cliBridge.resolveQuestion).toHaveBeenCalledWith('req-1', [['A']])
-    expect(openCodeService.questionReply).not.toHaveBeenCalled()
+    expect(openCodeService.questionReply).toHaveBeenCalledWith('req-1', [['A']], '/repo/worktree')
   })
 
   it('routes SDK questions to Claude first, then Codex by pending request id', async () => {
@@ -76,7 +66,7 @@ describe('interactive reply router', () => {
     expect(openCodeService.questionReply).not.toHaveBeenCalled()
   })
 
-  it('rejects questions through the same CLI, SDK, then OpenCode cascade', async () => {
+  it('rejects questions through the SDK (Claude then Codex), then OpenCode cascade', async () => {
     const claude = {
       hasPendingQuestion: vi.fn(() => false),
       questionReject: vi.fn(async () => undefined)
@@ -152,9 +142,15 @@ describe('interactive reply router', () => {
     )
   })
 
-  it('routes plan rejection to the held CLI bridge or Claude SDK pending plan', async () => {
-    const { router, cliBridge } = makeRouter()
-    cliBridge.hasPendingPlan.mockReturnValue(true)
+  it('routes plan rejection to the Claude SDK pending plan', async () => {
+    const claude = {
+      hasPendingPlan: vi.fn(() => true),
+      hasPendingPlanForSession: vi.fn(() => false),
+      planApprove: vi.fn(async () => undefined),
+      planReject: vi.fn(async () => undefined)
+    }
+    const sdkManager = { getImplementer: vi.fn(() => claude) }
+    const { router } = makeRouter({ sdkManager: sdkManager as never })
 
     await router.replyPlan({
       requestId: 'plan-1',
@@ -163,6 +159,14 @@ describe('interactive reply router', () => {
       feedback: 'Need a smaller plan'
     })
 
-    expect(cliBridge.resolvePlan).toHaveBeenCalledWith('plan-1', false, 'Need a smaller plan')
+    expect(claude.planReject).toHaveBeenCalledWith('', 'hive-1', 'Need a smaller plan', 'plan-1')
+  })
+
+  it('throws when no SDK implementer has the plan pending (CLI plans stay in the terminal)', async () => {
+    const { router } = makeRouter()
+
+    await expect(
+      router.replyPlan({ requestId: 'plan-x', sessionId: 'hive-1', approve: true })
+    ).rejects.toThrow('Plan is no longer pending')
   })
 })
