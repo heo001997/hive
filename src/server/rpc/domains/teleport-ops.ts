@@ -39,6 +39,218 @@ export interface TeleportStartResult {
 export type TeleportReceiveParams = TeleportRemoteReceiveParams
 export type TeleportReceiveResult = TeleportRemoteReceiveResult
 
+// -----------------------------------------------------------------------------
+// Remote-backends registry (Teleport v2 self-host convenience)
+//
+// A management layer that lets a client SAVE / LIST / PROBE Hive backends
+// running on other machines (dev box / VM). Only URLs + labels are stored here;
+// the owner token is entered per-connect on the client and lives in the
+// client-side TokenStore, never in this server-side registry.
+// -----------------------------------------------------------------------------
+
+// Settings row (no migration — plain key/value in the settings store).
+export const REMOTE_BACKENDS_SETTINGS_KEY = 'teleport.remoteBackends'
+const PROBE_TIMEOUT_MS = 5_000
+
+export interface RemoteBackend {
+  readonly id: string
+  readonly label: string
+  readonly url: string
+  readonly addedAt: string
+}
+
+export interface AddRemoteParams {
+  readonly label: string
+  readonly url: string
+}
+
+export interface RemoveRemoteParams {
+  readonly id: string
+}
+
+export interface RemoveRemoteResult {
+  readonly id: string
+  readonly removed: boolean
+}
+
+export interface TestRemoteParams {
+  readonly url: string
+}
+
+// Shape returned to the client so it can confirm a backend before connecting.
+// Mirrors the public fields of GET /.well-known/hive/environment.
+export interface TeleportRemoteEnvironment {
+  readonly reachable: boolean
+  readonly httpBaseUrl?: string
+  readonly wsBaseUrl?: string
+  readonly hasOwnerToken?: boolean
+  readonly instanceKind?: string
+  readonly label?: string
+}
+
+// Minimal settings-store surface (getSetting/setSetting) so the registry can be
+// unit-tested without a real database.
+export interface TeleportSettingsStore {
+  readonly get: (key: string) => string | null
+  readonly set: (key: string, value: string) => void
+}
+
+const remoteBackendSchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    url: z.string(),
+    addedAt: z.string()
+  })
+  .strict()
+
+const remoteBackendsSchema = z.array(remoteBackendSchema)
+
+const addRemoteParamsSchema = z
+  .object({ label: z.string(), url: z.string().min(1) })
+  .strict()
+
+const removeRemoteParamsSchema = z.object({ id: z.string().min(1) }).strict()
+
+const testRemoteParamsSchema = z.object({ url: z.string().min(1) }).strict()
+
+const listRemotesParamsSchema = z.union([z.object({}).strict(), z.undefined(), z.null()])
+
+/**
+ * Validate + normalize a backend URL for storage and dedup. Throws on anything
+ * that is not an absolute http(s) URL. Drops query/hash and trailing slashes so
+ * `https://box:9000/` and `https://box:9000` dedup to the same entry, and strips
+ * any embedded userinfo (`user:pass@`) so a Basic-auth credential is never
+ * persisted in the registry, echoed back to clients, or turned into an
+ * `Authorization` header by the credential-free `test()` probe.
+ */
+export function normalizeRemoteBackendUrl(raw: string): string {
+  const url = new URL(raw.trim())
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Remote backend URL must use http or https')
+  }
+  url.username = ''
+  url.password = ''
+  url.hash = ''
+  url.search = ''
+  url.pathname = url.pathname.replace(/\/+$/, '')
+  return url.toString().replace(/\/+$/, '')
+}
+
+function readRemoteBackends(store: TeleportSettingsStore): RemoteBackend[] {
+  const raw = store.get(REMOTE_BACKENDS_SETTINGS_KEY)
+  if (!raw) return []
+  try {
+    const parsed = remoteBackendsSchema.safeParse(JSON.parse(raw))
+    // Corrupt/legacy rows read as an empty registry rather than throwing.
+    return parsed.success ? [...parsed.data] : []
+  } catch {
+    return []
+  }
+}
+
+function writeRemoteBackends(store: TeleportSettingsStore, entries: RemoteBackend[]): void {
+  store.set(REMOTE_BACKENDS_SETTINGS_KEY, JSON.stringify(entries))
+}
+
+function listRemoteBackends(store: TeleportSettingsStore): RemoteBackend[] {
+  return readRemoteBackends(store)
+}
+
+function addRemoteBackend(store: TeleportSettingsStore, params: AddRemoteParams): RemoteBackend {
+  const url = normalizeRemoteBackendUrl(params.url)
+  const existing = readRemoteBackends(store)
+  const duplicate = existing.find((entry) => entry.url === url)
+  // Dedup by normalized url: return the already-saved entry unchanged.
+  if (duplicate) return duplicate
+
+  const label = params.label.trim() || url
+  const entry: RemoteBackend = {
+    id: crypto.randomUUID(),
+    label,
+    url,
+    addedAt: new Date().toISOString()
+  }
+  writeRemoteBackends(store, [...existing, entry])
+  return entry
+}
+
+function removeRemoteBackend(
+  store: TeleportSettingsStore,
+  params: RemoveRemoteParams
+): RemoveRemoteResult {
+  const existing = readRemoteBackends(store)
+  const next = existing.filter((entry) => entry.id !== params.id)
+  const removed = next.length !== existing.length
+  if (removed) writeRemoteBackends(store, next)
+  return { id: params.id, removed }
+}
+
+/**
+ * Probe GET {url}/.well-known/hive/environment with a short timeout and NO
+ * credentials, so a client can confirm a backend before it presents a token.
+ *
+ * Security: never sends Authorization/cookies, and `redirect: 'error'` refuses
+ * to follow the URL to any other (possibly credentialed) location. The fetch
+ * target is an owner-supplied URL, so this is an SSRF surface — acceptable on a
+ * single-owner self-host box because only the owner can add a remote and only
+ * the owner triggers the probe; it must not be exposed to untrusted callers.
+ */
+export async function probeRemoteBackendEnvironment(
+  rawUrl: string
+): Promise<TeleportRemoteEnvironment> {
+  let base: string
+  try {
+    base = normalizeRemoteBackendUrl(rawUrl)
+  } catch {
+    return { reachable: false }
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
+  try {
+    const response = await fetch(`${base}/.well-known/hive/environment`, {
+      method: 'GET',
+      redirect: 'error',
+      signal: controller.signal
+    })
+    if (!response.ok) return { reachable: false }
+    const body = (await response.json()) as Record<string, unknown>
+    const asString = (value: unknown): string | undefined =>
+      typeof value === 'string' ? value : undefined
+    return {
+      reachable: true,
+      httpBaseUrl: asString(body.httpBaseUrl),
+      wsBaseUrl: asString(body.wsBaseUrl),
+      hasOwnerToken: typeof body.hasOwnerToken === 'boolean' ? body.hasOwnerToken : undefined,
+      instanceKind: asString(body.instanceKind),
+      label: asString(body.label)
+    }
+  } catch {
+    // Timeout, DNS failure, refused connection, redirect, non-JSON body, etc.
+    return { reachable: false }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function getLiveSettingsStore(): Promise<TeleportSettingsStore> {
+  const { getDatabase } = await import('../../../main/db')
+  const db = getDatabase()
+  return {
+    get: (key) => db.getSetting(key),
+    set: (key, value) => db.setSetting(key, value)
+  }
+}
+
+function resolveSettingsStore(deps: TeleportOpsDeps): Promise<TeleportSettingsStore> {
+  return deps.settings ? Promise.resolve(deps.settings) : getLiveSettingsStore()
+}
+
+function resolveProbe(deps: TeleportOpsDeps): (url: string) => Promise<TeleportRemoteEnvironment> {
+  return deps.probeEnvironment ?? probeRemoteBackendEnvironment
+}
+
 interface TeleportDb {
   getSession: (id: string) => Session | null
   getWorktree: (id: string) => Worktree | null
@@ -98,6 +310,15 @@ export interface TeleportOpsRpcService {
   readonly receive: (
     params: TeleportReceiveParams
   ) => Effect.Effect<TeleportReceiveResult, unknown, never>
+  // Remote-backends registry (save/list/probe backends on other machines).
+  readonly remotesList: () => Effect.Effect<readonly RemoteBackend[], unknown, never>
+  readonly remotesAdd: (params: AddRemoteParams) => Effect.Effect<RemoteBackend, unknown, never>
+  readonly remotesRemove: (
+    params: RemoveRemoteParams
+  ) => Effect.Effect<RemoveRemoteResult, unknown, never>
+  readonly remotesTest: (
+    params: TestRemoteParams
+  ) => Effect.Effect<TeleportRemoteEnvironment, unknown, never>
 }
 
 export interface TeleportOpsDeps {
@@ -109,6 +330,11 @@ export interface TeleportOpsDeps {
   // lifecycle column. Keep the busy definition in sync with the renderer's
   // `isSessionBusy` in SessionTabs.tsx ('working' | 'planning').
   readonly isSessionBusy: (sessionId: string) => boolean
+  // Optional overrides for the remote-backends registry. When omitted the live
+  // service falls back to the app database settings store + a real fetch probe,
+  // so existing callers (which never pass these) keep working unchanged.
+  readonly settings?: TeleportSettingsStore
+  readonly probeEnvironment?: (url: string) => Promise<TeleportRemoteEnvironment>
 }
 
 const modelSchema = z
@@ -505,6 +731,26 @@ export const makeTeleportOpsRpcService = (deps: TeleportOpsDeps): TeleportOpsRpc
     Effect.tryPromise({
       try: () => receiveTeleport(deps, params),
       catch: (cause) => cause
+    }),
+  remotesList: () =>
+    Effect.tryPromise({
+      try: async () => listRemoteBackends(await resolveSettingsStore(deps)),
+      catch: (cause) => cause
+    }),
+  remotesAdd: (params) =>
+    Effect.tryPromise({
+      try: async () => addRemoteBackend(await resolveSettingsStore(deps), params),
+      catch: (cause) => cause
+    }),
+  remotesRemove: (params) =>
+    Effect.tryPromise({
+      try: async () => removeRemoteBackend(await resolveSettingsStore(deps), params),
+      catch: (cause) => cause
+    }),
+  remotesTest: (params) =>
+    Effect.tryPromise({
+      try: () => resolveProbe(deps)(params.url),
+      catch: (cause) => cause
     })
 })
 
@@ -517,6 +763,26 @@ export const makeLiveTeleportOpsRpcService = (): TeleportOpsRpcService => ({
   receive: (params) =>
     Effect.tryPromise({
       try: async () => receiveTeleport(await createLiveDeps(), params),
+      catch: (cause) => cause
+    }),
+  remotesList: () =>
+    Effect.tryPromise({
+      try: async () => listRemoteBackends(await getLiveSettingsStore()),
+      catch: (cause) => cause
+    }),
+  remotesAdd: (params) =>
+    Effect.tryPromise({
+      try: async () => addRemoteBackend(await getLiveSettingsStore(), params),
+      catch: (cause) => cause
+    }),
+  remotesRemove: (params) =>
+    Effect.tryPromise({
+      try: async () => removeRemoteBackend(await getLiveSettingsStore(), params),
+      catch: (cause) => cause
+    }),
+  remotesTest: (params) =>
+    Effect.tryPromise({
+      try: () => probeRemoteBackendEnvironment(params.url),
       catch: (cause) => cause
     })
 })
@@ -545,6 +811,50 @@ export const makeTeleportOpsRpcHandlers = (
             catch: (cause) => cause
           })
           return yield* service.receive(parsed)
+        })
+    ],
+    [
+      'teleport.remotes.list',
+      (params) =>
+        Effect.gen(function* () {
+          yield* Effect.try({
+            try: () => listRemotesParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.remotesList()
+        })
+    ],
+    [
+      'teleport.remotes.add',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => addRemoteParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.remotesAdd(parsed)
+        })
+    ],
+    [
+      'teleport.remotes.remove',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => removeRemoteParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.remotesRemove(parsed)
+        })
+    ],
+    [
+      'teleport.remotes.test',
+      (params) =>
+        Effect.gen(function* () {
+          const parsed = yield* Effect.try({
+            try: () => testRemoteParamsSchema.parse(params),
+            catch: (cause) => cause
+          })
+          return yield* service.remotesTest(parsed)
         })
     ]
   ])
