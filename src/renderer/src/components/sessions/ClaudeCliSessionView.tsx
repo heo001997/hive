@@ -3,17 +3,13 @@ import { CheckCheck, AlertTriangle } from 'lucide-react'
 import { terminalApi } from '@/api/terminal-api'
 import { TerminalView, type TerminalViewHandle } from '@/components/terminal/TerminalView'
 import { unwrapEnvelope } from '@/lib/ipc-envelope'
-import { opencodeApi } from '@/api/opencode-api'
 import { useSessionStore, BOARD_TAB_ID } from '@/stores/useSessionStore'
 import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useKanbanStore } from '@/stores/useKanbanStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useConnectionStore } from '@/stores/useConnectionStore'
 import { useSettingsStore } from '@/stores/useSettingsStore'
-import { useQuestionStore } from '@/stores/useQuestionStore'
-import { useTelegramStore } from '@/stores/useTelegramStore'
 import { useClaudeCliSessionPortal } from '@/contexts/ClaudeCliSessionPortalContext'
-import { QuestionPrompt } from './QuestionPrompt'
 import { ClaudeCliEndedOverlay } from './ClaudeCliEndedOverlay'
 import { ClaudeCliAwaitingSetupOverlay } from './ClaudeCliAwaitingSetupOverlay'
 import { HandoffSplitButton } from './HandoffSplitButton'
@@ -23,11 +19,7 @@ import { isPlanLike } from '@/lib/constants'
 import { bumpWorktreeLastMessage } from '@/lib/last-message-utils'
 import { startBackgroundSessionPrompt } from '@/lib/backgroundSessionStart'
 import { parsePlanMenu, findMatchingOption, buildSelectionKeystrokes } from '@/lib/plan-menu'
-import {
-  recordHiveQuestionAnswerTelemetry,
-  registerHivePromptHandoff,
-  resolveQuestionCount
-} from '@/lib/hive-enterprise-telemetry'
+import { registerHivePromptHandoff } from '@/lib/hive-enterprise-telemetry'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 import { extractPlanTitle } from '@shared/types/branch-utils'
@@ -346,13 +338,6 @@ export function ClaudeCliSessionView({
     }
   }, [autoApproveEffective, sessionId, projectId])
 
-  // While Telegram forwarding is active, AskUserQuestion is intercepted by the
-  // hook bridge (so it never renders in the terminal) and surfaced through the
-  // shared question store. Render the same in-app QuestionPrompt the SDK
-  // providers use; when forwarding is off the question shows natively in the CLI.
-  const activeQuestion = useQuestionStore((state) => state.getActiveQuestion(sessionId))
-  const isForwarding = useTelegramStore((state) => state.activeForwardingSessionId === sessionId)
-
   useEffect(() => {
     setPlanSavedAsTicket(false)
   }, [pendingPlan?.planContent])
@@ -597,48 +582,6 @@ export function ClaudeCliSessionView({
     }
   }, [pendingPlan?.planContent, sessionRecord?.project_id])
 
-  const resolveQuestionPath = useCallback((): string | undefined => {
-    if (sessionRecord?.worktree_id) {
-      return findWorktreePathById(sessionRecord.worktree_id) ?? undefined
-    }
-    if (sessionRecord?.connection_id) {
-      return findConnectionPathById(sessionRecord.connection_id) ?? undefined
-    }
-    return undefined
-  }, [sessionRecord?.worktree_id, sessionRecord?.connection_id])
-
-  const handleQuestionReply = useCallback(
-    async (requestId: string, answers: string[][]) => {
-      // Capture before the reply resolves: the store entry is removed by the
-      // async question.removed event handler.
-      const questionCount = resolveQuestionCount(
-        useQuestionStore.getState().getQuestions(sessionId),
-        requestId,
-        answers
-      )
-      try {
-        unwrapEnvelope(await opencodeApi.questionReply(requestId, answers, resolveQuestionPath()))
-        recordHiveQuestionAnswerTelemetry({ sessionId, questionCount })
-      } catch (err) {
-        console.error('Failed to reply to question:', err)
-        toast.error('Failed to send answer')
-      }
-    },
-    [resolveQuestionPath, sessionId]
-  )
-
-  const handleQuestionReject = useCallback(
-    async (requestId: string) => {
-      try {
-        unwrapEnvelope(await opencodeApi.questionReject(requestId, resolveQuestionPath()))
-      } catch (err) {
-        console.error('Failed to dismiss question:', err)
-        toast.error('Failed to dismiss question')
-      }
-    },
-    [resolveQuestionPath]
-  )
-
   return (
     <div
       className="flex-1 flex flex-col min-h-0 bg-background"
@@ -702,20 +645,6 @@ export function ClaudeCliSessionView({
             onSaveAsTicket={handlePlanReadySaveAsTicket}
             savedAsTicket={planSavedAsTicket}
           />
-        )}
-        {/* In the ticket modal the modal renders its own question sidebar, so only
-            show the session-embedded prompt for the standalone session view. */}
-        {activeQuestion && isForwarding && !isMountedInTicketModal && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 p-4">
-            <div className="pointer-events-auto mx-auto max-w-2xl">
-              <QuestionPrompt
-                key={activeQuestion.id}
-                request={activeQuestion}
-                onReply={handleQuestionReply}
-                onReject={handleQuestionReject}
-              />
-            </div>
-          </div>
         )}
         {launchGate &&
           (launchGate.state === 'awaiting' || launchGate.state === 'blocked') && (
