@@ -27,7 +27,8 @@ import {
   Wand2,
   PanelLeftOpen,
   PanelLeftClose,
-  RefreshCw
+  RefreshCw,
+  Swords
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -53,6 +54,7 @@ import { HandoffSplitButton } from '../sessions/HandoffSplitButton'
 import { IndeterminateProgressBar } from '@/components/sessions/IndeterminateProgressBar'
 import { cn } from '@/lib/utils'
 import { parseTicketKey, ticketKey, useKanbanStore } from '@/stores/useKanbanStore'
+import { useWarRoomStore } from '@/stores/useWarRoomStore'
 import { BOARD_TAB_ID, useSessionStore } from '@/stores/useSessionStore'
 import { useWorktreeStore } from '@/stores/useWorktreeStore'
 import { useConnectionStore } from '@/stores/useConnectionStore'
@@ -2198,6 +2200,27 @@ function EditModeContent({
           )}
         </div>
         <div className="flex gap-2 flex-wrap">
+          <Button
+            type="button"
+            variant="outline"
+            className="gap-1.5 border-amber-500/30 text-amber-500 hover:bg-amber-500/10"
+            data-testid="ticket-discuss-war-room-btn"
+            title="Open a War Room to discuss this ticket with AI agents"
+            onClick={() => {
+              const kanban = useKanbanStore.getState()
+              if (kanban.isBoardViewActive) kanban.toggleBoardView()
+              onClose()
+              void useWarRoomStore.getState().openRoomFromTicket({
+                id: ticket.id,
+                project_id: ticket.project_id,
+                title: ticket.title,
+                description: ticket.description
+              })
+            }}
+          >
+            <Swords className="h-3.5 w-3.5" />
+            War Room
+          </Button>
           {ticket.column === 'done' &&
             ticket.worktree_id &&
             isTerminalTicket &&

@@ -7,7 +7,8 @@ import {
   Settings,
   Coffee,
   MoonStar,
-  Activity
+  Activity,
+  Swords
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { Button } from '@/components/ui/button'
@@ -30,6 +31,7 @@ import { useWorktreeStatusStore } from '@/stores/useWorktreeStatusStore'
 import { useSleepWhenIdleStore } from '@/stores/useSleepWhenIdleStore'
 import { useVimModeStore } from '@/stores/useVimModeStore'
 import { useKanbanStore } from '@/stores/useKanbanStore'
+import { useWarRoomStore } from '@/stores/useWarRoomStore'
 import { useBoardSearchStore } from '@/stores/useBoardSearchStore'
 import { BoardSearchControl } from '@/components/kanban/BoardSearchControl'
 import { useTipStore } from '@/stores/useTipStore'
@@ -67,6 +69,8 @@ export function Header(): React.JSX.Element {
   const isBoardViewActive = useKanbanStore((s) => s.isBoardViewActive)
   const boardSearchMounted = useBoardSearchStore((s) => s.mounted)
   const toggleBoardView = useKanbanStore((s) => s.toggleBoardView)
+  const isWarRoomViewActive = useWarRoomStore((s) => s.isWarRoomViewActive)
+  const toggleWarRoomView = useWarRoomStore((s) => s.toggleWarRoomView)
   const kanbanIconSeen = useTipStore((s) => s.isTipSeen('kanban-icon'))
   const hatchFirstPetSeen = useTipStore((s) => s.isTipSeen('hatch-first-pet'))
   const nonDefaultProviderChosen = useTipStore((s) => s.nonDefaultProviderChosen)
@@ -221,6 +225,7 @@ export function Header(): React.JSX.Element {
                 const fileStore = useFileViewerStore.getState()
                 if (!isBoardViewActive) {
                   fileStore.clearActiveViews()
+                  useWarRoomStore.getState().setWarRoomViewActive(false)
                   toggleBoardView()
                 } else if (fileStore.hasActiveOverlay()) {
                   fileStore.clearActiveViews()
@@ -238,6 +243,24 @@ export function Header(): React.JSX.Element {
             </Button>
           </Tip>
         )}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => {
+            if (!isWarRoomViewActive) {
+              useFileViewerStore.getState().clearActiveViews()
+              if (useKanbanStore.getState().isBoardViewActive) {
+                toggleBoardView()
+              }
+            }
+            toggleWarRoomView()
+          }}
+          title={isWarRoomViewActive ? 'Close War Rooms' : 'Open War Rooms'}
+          data-testid="war-room-toggle"
+          className={cn(isWarRoomViewActive && 'bg-accent text-accent-foreground')}
+        >
+          <Swords className="h-4 w-4" />
+        </Button>
         {boardSearchMounted && <BoardSearchControl />}
         <Button
           variant="ghost"

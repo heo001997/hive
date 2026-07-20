@@ -1,4 +1,4 @@
-export const CURRENT_SCHEMA_VERSION = 40
+export const CURRENT_SCHEMA_VERSION = 44
 
 export const SCHEMA_SQL = `
 -- Projects table
@@ -686,6 +686,74 @@ DROP TABLE IF EXISTS diff_comments;`
     name: 'add_ticket_verify_overrides',
     up: `
       ALTER TABLE kanban_tickets ADD COLUMN verify_overrides TEXT DEFAULT NULL;
+    `,
+    down: `-- SQLite cannot drop columns safely; no-op.`
+  },
+  {
+    version: 43,
+    name: 'add_war_room_tables',
+    up: `
+      CREATE TABLE IF NOT EXISTS war_rooms (
+        id TEXT PRIMARY KEY,
+        project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        topic TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        orchestration_mode TEXT NOT NULL DEFAULT 'round_robin',
+        max_rounds INTEGER NOT NULL DEFAULT 3,
+        current_round INTEGER NOT NULL DEFAULT 0,
+        current_turn INTEGER NOT NULL DEFAULT 0,
+        seed_ticket_id TEXT REFERENCES kanban_tickets(id) ON DELETE SET NULL,
+        outcome TEXT DEFAULT NULL,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        concluded_at TEXT DEFAULT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_war_rooms_project ON war_rooms(project_id);
+
+      CREATE TABLE IF NOT EXISTS war_room_members (
+        id TEXT PRIMARY KEY,
+        war_room_id TEXT NOT NULL REFERENCES war_rooms(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        role TEXT,
+        system_prompt TEXT,
+        stance TEXT,
+        color TEXT,
+        model_id TEXT,
+        model_variant TEXT,
+        speaking_order INTEGER NOT NULL DEFAULT 0,
+        is_moderator INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_war_room_members_room ON war_room_members(war_room_id);
+
+      CREATE TABLE IF NOT EXISTS war_room_messages (
+        id TEXT PRIMARY KEY,
+        war_room_id TEXT NOT NULL REFERENCES war_rooms(id) ON DELETE CASCADE,
+        member_id TEXT REFERENCES war_room_members(id) ON DELETE SET NULL,
+        round INTEGER NOT NULL DEFAULT 0,
+        role TEXT NOT NULL DEFAULT 'member',
+        content TEXT NOT NULL,
+        needs_ceo INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_war_room_messages_room ON war_room_messages(war_room_id, created_at);
+    `,
+    down: `
+      DROP TABLE IF EXISTS war_room_messages;
+      DROP TABLE IF EXISTS war_room_members;
+      DROP INDEX IF EXISTS idx_war_rooms_project;
+      DROP TABLE IF EXISTS war_rooms;
+    `
+  },
+  {
+    version: 44,
+    name: 'add_war_room_member_agent_sdk',
+    up: `
+      ALTER TABLE war_room_members ADD COLUMN agent_sdk TEXT;
     `,
     down: `-- SQLite cannot drop columns safely; no-op.`
   }
