@@ -15,6 +15,7 @@ import type {
 } from './protocol'
 import type { WebSocketImpl, WebSocketLike } from './types'
 import { createDefaultIdFactory, resolveWebSocketImpl } from './globals'
+import { isAuthError } from './handshake'
 
 export type ServerEventListener = (event: ServerEvent) => void
 
@@ -23,7 +24,22 @@ export interface WsTransportOptions {
   readonly webSocketImpl?: WebSocketImpl
   readonly idFactory?: () => string
   readonly webSocketTokenProvider?: () => Promise<string | null>
+  /**
+   * Base reconnect delay in ms. Reconnect uses exponential backoff starting here
+   * and doubling each attempt up to `maxReconnectDelayMs`, reset to this base on a
+   * successful open. Defaults to 250ms.
+   */
   readonly reconnectDelayMs?: number
+  /** Upper bound for the exponential reconnect backoff, in ms. Defaults to 30000. */
+  readonly maxReconnectDelayMs?: number
+  /**
+   * Called once when a token handshake fails terminally (a 401/403 auth
+   * rejection). Auto-reconnect is stopped first — retrying a known-bad credential
+   * is futile — so the host can react (e.g. clear stored creds + return to a login
+   * gate). Never receives the token. Transient / network / 5xx failures do NOT
+   * fire this and keep reconnecting with backoff.
+   */
+  readonly onAuthError?: (error: unknown) => void
   /**
    * Per-request reply timeout in ms. `<= 0` (the default) disables the backstop
    * and waits indefinitely — the historical renderer behaviour. Callers that
@@ -69,9 +85,18 @@ export class WsTransport {
   private readonly idFactory: () => string
   private readonly webSocketTokenProvider?: () => Promise<string | null>
   private readonly reconnectDelayMs: number
+  private readonly maxReconnectDelayMs: number
+  private readonly onAuthError?: (error: unknown) => void
   private readonly requestTimeoutMs: number
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
   private closed = false
+  /**
+   * Latched once a terminal auth rejection is seen. Retrying a known-bad token is
+   * futile, so this permanently disarms auto-reconnect until the transport is
+   * recreated (the host recovers via `onAuthError`).
+   */
+  private authFailed = false
 
   constructor(
     private readonly wsBaseUrl: string,
@@ -81,6 +106,8 @@ export class WsTransport {
     this.idFactory = options.idFactory ?? createDefaultIdFactory()
     this.webSocketTokenProvider = options.webSocketTokenProvider
     this.reconnectDelayMs = options.reconnectDelayMs ?? 250
+    this.maxReconnectDelayMs = options.maxReconnectDelayMs ?? 30000
+    this.onAuthError = options.onAuthError
     this.requestTimeoutMs = options.requestTimeoutMs ?? 0
   }
 
@@ -154,6 +181,16 @@ export class WsTransport {
   }
 
   private connect(): Promise<WebSocketLike> {
+    // A latched terminal auth failure short-circuits every future connect: reject
+    // immediately WITHOUT re-running the handshake. Re-running it would re-hit the
+    // known-bad credential and could fire `onAuthError` again; the latch guarantees
+    // the callback fired exactly once. This state persists until the transport is
+    // recreated — which is exactly how web recovery works (clearWebAuth + reload
+    // tears the client down), so a permanent latch until reload/close is fine and
+    // never bricks a client that legitimately re-auths (that path builds a new one).
+    if (this.authFailed) {
+      return Promise.reject(new Error('Hive WebSocket authentication failed'))
+    }
     if (this.socket && this.socket.readyState === this.webSocketImpl.OPEN) {
       return Promise.resolve(this.socket)
     }
@@ -168,6 +205,8 @@ export class WsTransport {
         socket.addEventListener('open', () => {
           opened = true
           this.connectPromise = null
+          // A live connection clears the backoff so the next drop retries fast.
+          this.reconnectAttempts = 0
           this.sendSubscriptions(socket)
           resolve(socket)
         })
@@ -202,6 +241,13 @@ export class WsTransport {
       typeof webSocketUrl === 'string' ? openSocket(webSocketUrl) : webSocketUrl.then(openSocket)
     this.connectPromise = connectPromise.catch((error) => {
       this.connectPromise = null
+      // A terminal auth rejection (rotated/rejected owner or ws token) is not
+      // recoverable by retrying: latch it, stop auto-reconnect, and hand off to
+      // the host so it can re-authenticate. Never inspect / log the token.
+      if (isAuthError(error)) {
+        this.handleAuthFailure(error)
+        throw error
+      }
       // The rejection fired before any socket was constructed (e.g. the token
       // handshake fetch threw because the backend was down at startup), so no
       // 'close' event will ever arm the reconnect. Arm it here instead so the
@@ -268,17 +314,40 @@ export class WsTransport {
     this.pending.clear()
   }
 
+  private handleAuthFailure(error: unknown): void {
+    // Latch-guarded so `onAuthError` fires exactly once. connect() already
+    // short-circuits once `authFailed` is set, but guarding here too makes the
+    // exactly-once contract hold regardless of how this path is reached.
+    if (this.authFailed) return
+    this.authFailed = true
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.onAuthError?.(error)
+  }
+
   private scheduleReconnect(): void {
-    if (this.closed || this.eventListeners.size === 0 || this.reconnectTimer) return
+    if (this.closed || this.authFailed || this.eventListeners.size === 0 || this.reconnectTimer)
+      return
+
+    // Exponential backoff: base * 2^attempt, capped, reset to base on a
+    // successful open. Bounds the retry rate so a persistent failure no longer
+    // hammers the server at a flat cadence.
+    const delay = Math.min(
+      this.reconnectDelayMs * 2 ** this.reconnectAttempts,
+      this.maxReconnectDelayMs
+    )
+    this.reconnectAttempts += 1
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
-      if (this.closed || this.eventListeners.size === 0) return
+      if (this.closed || this.authFailed || this.eventListeners.size === 0) return
 
       void this.connect().catch(() => {
         this.scheduleReconnect()
       })
-    }, this.reconnectDelayMs)
+    }, delay)
   }
 
   private sendSubscriptions(socket: WebSocketLike): void {

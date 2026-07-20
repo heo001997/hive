@@ -26,6 +26,8 @@ export interface HiveClientOptions {
   readonly idFactory?: () => string
   readonly webSocketTokenProvider?: () => Promise<string | null>
   readonly reconnectDelayMs?: number
+  /** Terminal auth-failure hook. Defaults to the web-mode recovery from the target. */
+  readonly onAuthError?: (error: unknown) => void
   readonly fetch?: typeof fetch
   /** Per-request reply timeout in ms. `<= 0` / omitted waits indefinitely. */
   readonly requestTimeoutMs?: number
@@ -38,12 +40,17 @@ export class HiveClient {
     readonly target: BackendTarget,
     options: Omit<HiveClientOptions, 'target'> = {}
   ) {
+    // The base config already carries the web-mode `onAuthError` recovery for a
+    // `browser` target (and nothing for desktop / Vite-dev). Keep it unless a
+    // caller explicitly overrides, so desktop stays free of the login gate.
+    const base = backendTargetToClientConfig(target)
     const config: ClientConfig = {
-      ...backendTargetToClientConfig(target),
+      ...base,
       webSocketImpl: options.WebSocketCtor as unknown as ClientConfig['webSocketImpl'],
       fetchImpl: options.fetch as unknown as ClientConfig['fetchImpl'],
       idFactory: options.idFactory,
       reconnectDelayMs: options.reconnectDelayMs,
+      onAuthError: options.onAuthError ?? base.onAuthError,
       requestTimeoutMs: options.requestTimeoutMs,
       webSocketTokenProvider: options.webSocketTokenProvider
     }

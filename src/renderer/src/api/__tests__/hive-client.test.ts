@@ -201,8 +201,11 @@ describe('HiveClient', () => {
     secondSocket.open()
     await waitForSentFrame(secondSocket)
 
+    // After a prior connection, the resubscribe carries sinceSeq:0 so the server
+    // replays anything published while the socket was down (resumable subs). The
+    // first-ever subscribe (before any connection) still omits sinceSeq.
     expect(secondSocket.sent).toEqual([
-      JSON.stringify({ type: 'subscribe', channel: 'git:statusChanged' })
+      JSON.stringify({ type: 'subscribe', channel: 'git:statusChanged', sinceSeq: 0 })
     ])
     secondSocket.serverMessage({
       channel: 'git:statusChanged',

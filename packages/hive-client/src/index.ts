@@ -11,7 +11,16 @@ export {
   type WsTransportOptions,
   type ServerEventListener
 } from './ws-transport'
-export { createWebSocketTokenProvider, type HandshakeConfig } from './handshake'
+export {
+  createWebSocketTokenProvider,
+  createOwnerTokenWebSocketTokenProvider,
+  exchangeOwnerToken,
+  OwnerAuthError,
+  isAuthError,
+  type OwnerAuthPhase,
+  type HandshakeConfig,
+  type OwnerHandshakeConfig
+} from './handshake'
 export { MemoryTokenStore, type TokenStore } from './token-store'
 export {
   setHiveClient,
