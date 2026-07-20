@@ -19,9 +19,12 @@ import type {
 // `@/lib/ticket-lifecycle` import keeps resolving untouched.
 import {
   buildConditionGateConfig,
+  buildShardGateConfig,
   conditionGateConfigOf,
   decideConditionGate,
+  decideShardGate,
   isConditionGate,
+  isShardGate,
   isReviewGateDraft,
   safeGateRegex,
   setConditionGate,
@@ -35,16 +38,22 @@ import type {
   ConditionGateDecision,
   ConditionGateMatchMode,
   GateMatchConfig,
-  ReviewGateDraftLike
+  ReviewGateDraftLike,
+  ShardGateDecision,
+  ShardNextSpec
 } from '@shared/lib/condition-gate'
+import type { TicketLifecycleConfig } from '@shared/types/ticket-lifecycle'
 
 export type { LifecycleSlot, LifecycleEntryContext } from '@shared/types/ticket-lifecycle'
 
 export {
   buildConditionGateConfig,
+  buildShardGateConfig,
   conditionGateConfigOf,
   decideConditionGate,
+  decideShardGate,
   isConditionGate,
+  isShardGate,
   isReviewGateDraft,
   safeGateRegex,
   setConditionGate,
@@ -58,7 +67,9 @@ export type {
   ConditionGateDecision,
   ConditionGateMatchMode,
   GateMatchConfig,
-  ReviewGateDraftLike
+  ReviewGateDraftLike,
+  ShardGateDecision,
+  ShardNextSpec
 }
 
 /**
@@ -155,6 +166,29 @@ function baseLabelFromReviewTitle(title: string): string {
 }
 
 /**
+ * The `pending_launch_config` a Hive-spawned round/phase ticket carries so the
+ * existing auto-launch machinery starts it in an EXISTING worktree (one branch = one
+ * PR) with the Claude CLI in build mode, no context injection, no setup rerun. Shared
+ * by {@link buildFixRoundBatch} (review loop) and {@link buildShardPhaseDraft} (shard
+ * loop) so the launch shape can never drift between the two.
+ */
+export function buildAgentLaunchConfig(worktreeId: string, prompt: string): Record<string, unknown> {
+  return {
+    worktree: { type: 'existing', worktreeId },
+    prompt,
+    mode: 'build',
+    model: null,
+    sdk: 'claude-code-cli',
+    codexFastMode: false,
+    goalMode: false,
+    goalSuccessCriteria: null,
+    autoApprovePlan: false,
+    injectContext: false,
+    runSetup: false
+  }
+}
+
+/**
  * Build the batch of three round tickets (`fix → review-plan → review`) as the
  * `hive-ticket` CLI's batch-file shape. Pure + deterministic so the caller embeds
  * exact JSON in the agent's prompt (rather than trusting the agent to compose it):
@@ -183,19 +217,8 @@ export function buildFixRoundBatch(
   // The launch config every round ticket carries so the existing auto-launch
   // machinery starts it — reusing THE SAME worktree as-is (no `reuseBranchBase`,
   // so all three commit to one branch = one PR) with the CLI SDK in build mode.
-  const launchConfig = (prompt: string): Record<string, unknown> => ({
-    worktree: { type: 'existing', worktreeId: p.worktreeId },
-    prompt,
-    mode: 'build',
-    model: null,
-    sdk: 'claude-code-cli',
-    codexFastMode: false,
-    goalMode: false,
-    goalSuccessCriteria: null,
-    autoApprovePlan: false,
-    injectContext: false,
-    runSetup: false
-  })
+  const launchConfig = (prompt: string): Record<string, unknown> =>
+    buildAgentLaunchConfig(p.worktreeId, prompt)
 
   // `auto_approve_review: true` so fix/review-plan auto-advance out of Review and
   // unblock the next chain member unattended; the gate ticket routes its own outcome.
@@ -265,6 +288,65 @@ rm -f "$BATCH_FILE"
 \`\`\`
 
 2. Confirm the CLI printed three \`Created:\` lines. If it errored, report the exact error and stop. Do NOT edit code, do NOT implement the fixes, do NOT write any file into the repository — creating the three tickets is your only job. Once the three tickets exist, you are done.`
+}
+
+/**
+ * Parse the run number of a sharded phase ticket from its title. Continuation
+ * tickets carry `(run {N})` (e.g. "E2E Execute (run 3)"); the base phase ticket has
+ * none → run 0. Mirrors {@link parseGateRound} but for the shard loop's own counter.
+ */
+export function parseShardRun(title: string | null | undefined): number {
+  const match = /\(\s*run\s+(\d+)\s*\)/i.exec(title ?? '')
+  if (!match) return 0
+  const n = Number.parseInt(match[1], 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+/** Inputs for {@link buildShardPhaseDraft}. */
+export interface ShardPhaseDraftParams {
+  projectId: string
+  /** The shared worktree every run of the whole e2e chain reuses (one branch = one PR). */
+  worktreeId: string
+  /** Run number: `> 0` for a numbered continuation, `0` for a first/base phase ticket. */
+  round: number
+  /** The slash command the run launches (fed verbatim as the CLI prompt, no ticket wrapper). */
+  command: string
+  /** Human phase label for the title (e.g. `E2E Execute`). */
+  label: string
+  /** Draft-key base (e.g. `e2e-execute` → `e2e-execute-r3` for run 3). */
+  key: string
+  /** The shard gate config the run carries, so the loop re-arms on the fresh ticket. */
+  gateConfig: TicketLifecycleConfig
+}
+
+/**
+ * Build ONE `kanban.ticket.createBatch` draft for a sharded-phase run ticket — the
+ * unit the shard loop spawns on both `CONTINUE` (the next numbered run of the SAME
+ * phase) and `DONE` (run 1 of the NEXT phase). Deterministic + pure so the store can
+ * create it via the RPC directly (no throwaway CLI agent). Mirrors the launch-config
+ * shape `buildFixRoundBatch` uses so the existing auto-launch machinery starts it in
+ * the shared worktree.
+ */
+export function buildShardPhaseDraft(p: ShardPhaseDraftParams): Record<string, unknown> {
+  const numbered = p.round > 0
+  const title = numbered ? `${p.label} (run ${p.round})` : p.label
+  const draftKey = numbered ? `${p.key}-r${p.round}` : p.key
+  const description = numbered
+    ? `Auto E2E — ${p.label}, run ${p.round}. Continues the sharded phase in a fresh session; \`${p.command}\` Step 0 resumes from the on-disk state (the prior run left work PENDING).`
+    : `Auto E2E — ${p.label}. Runs \`${p.command}\`; the shard gate loops fresh runs until the phase's on-disk state is complete, then spawns the next phase.`
+
+  const launchConfig = buildAgentLaunchConfig(p.worktreeId, p.command)
+
+  return {
+    draft_key: draftKey,
+    project_id: p.projectId,
+    title,
+    description,
+    column: 'todo',
+    worktree_id: p.worktreeId,
+    lifecycle_callbacks: p.gateConfig,
+    pending_launch_config: JSON.stringify(launchConfig)
+  }
 }
 
 /**
