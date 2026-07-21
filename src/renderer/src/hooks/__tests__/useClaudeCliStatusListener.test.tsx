@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   setSessionStatus: vi.fn(),
   setPendingPlan: vi.fn(),
   clearPendingPlan: vi.fn(),
+  setSessionMode: vi.fn(),
   notifyKanbanSessionSync: vi.fn(),
   setSelectedTicketId: vi.fn(),
   lastSendMode: new Map<string, 'plan' | 'build'>(),
@@ -31,7 +32,8 @@ vi.mock('@/stores/useSessionStore', () => ({
     getState: () => ({
       modeBySession: mocks.modeBySession,
       setPendingPlan: mocks.setPendingPlan,
-      clearPendingPlan: mocks.clearPendingPlan
+      clearPendingPlan: mocks.clearPendingPlan,
+      setSessionMode: mocks.setSessionMode
     })
   }
 }))
@@ -99,6 +101,7 @@ describe('useClaudeCliStatusListener', () => {
     mocks.setSessionStatus.mockClear()
     mocks.setPendingPlan.mockClear()
     mocks.clearPendingPlan.mockClear()
+    mocks.setSessionMode.mockClear()
     mocks.setSelectedTicketId.mockClear()
     mocks.notifyKanbanSessionSync.mockClear()
     mocks.lastSendMode.clear()
@@ -182,6 +185,34 @@ describe('useClaudeCliStatusListener', () => {
       hookEventName: 'PostToolUse',
       hookPath: 'tool',
       toolName: 'ExitPlanMode'
+    })
+    // Session was not tracked as plan-like, so there is nothing to persist.
+    expect(mocks.setSessionMode).not.toHaveBeenCalled()
+  })
+
+  it('persists session mode to build (without re-syncing the CLI) when a plan-mode session approves ExitPlanMode', () => {
+    // Reproduces the reported bug: after auto-approving a plan, the session row
+    // must flip mode='plan' → 'build' so reopening the ticket does not relaunch
+    // with `--permission-mode plan` and drop back into planning. skipCliSync is
+    // required because the CLI already left plan mode when the plan was approved.
+    mocks.modeBySession.set('hive-session-1', 'plan')
+    renderHook(() => useClaudeCliStatusListener())
+
+    subscribedCallback?.({
+      sessionId: 'hive-session-1',
+      status: 'working',
+      metadata: {
+        hookEventName: 'PostToolUse',
+        hookPath: 'tool',
+        toolName: 'ExitPlanMode'
+      }
+    })
+
+    expect(mocks.setSessionMode).toHaveBeenCalledWith('hive-session-1', 'build', {
+      skipCliSync: true
+    })
+    expect(mocks.notifyKanbanSessionSync).toHaveBeenCalledWith('hive-session-1', {
+      type: 'implement'
     })
   })
 
