@@ -50,7 +50,12 @@ import { gitApi } from '@/api/git-api'
 import { worktreeApi } from '@/api/worktree-api'
 import { startHivePromptTelemetry } from '@/lib/hive-enterprise-telemetry'
 import type { KanbanTicket, Session } from '../../../../main/db/types'
-import { canonicalizeTicketTitle } from '@shared/types/branch-utils'
+import {
+  canonicalizeTicketTitle,
+  generateBranchNameCandidates,
+  sanitizeCustomBranchName,
+  type BranchNameCandidate
+} from '@shared/types/branch-utils'
 import { supportsGoalMode } from '@shared/types/agent-sdk'
 
 // Stable empty array to avoid referential-inequality loops in Zustand selectors
@@ -69,6 +74,85 @@ interface BranchInfo {
   isRemote: boolean
   isCheckedOut: boolean
   worktreePath?: string
+}
+
+// ── Branch-name picker ──────────────────────────────────────────────
+// Compact popover shown at worktree-creation time: pick a generated candidate
+// (Hive default, sequential, timestamp, short-name) or type a custom name.
+// Live-strips only clearly-illegal chars while typing; the full sanitize runs
+// on send. Custom text is the escape hatch that bypasses generation entirely.
+export function BranchNamePicker({
+  candidates,
+  value,
+  onChange,
+  open,
+  onOpenChange
+}: {
+  candidates: BranchNameCandidate[]
+  value: string
+  onChange: (value: string) => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const matched = candidates.find((c) => c.value === value)
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-testid="branch-name-trigger"
+          title={value || undefined}
+          className="ml-auto inline-flex max-w-[200px] items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 font-mono text-xs transition-colors hover:bg-muted/30"
+        >
+          <span className="truncate">{value || 'name…'}</span>
+          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-0" align="end">
+        <div className="max-h-[220px] overflow-y-auto py-1" data-testid="branch-name-candidates">
+          {candidates.map((c) => (
+            <button
+              type="button"
+              key={c.kind}
+              data-testid={`branch-name-candidate-${c.kind}`}
+              className={cn(
+                'flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-muted/30',
+                matched?.kind === c.kind && 'bg-primary/8'
+              )}
+              onClick={() => {
+                onChange(c.value)
+                onOpenChange(false)
+              }}
+            >
+              <span className="flex w-full items-center gap-2">
+                <span className="text-xs font-medium text-foreground">{c.label}</span>
+                <span className="ml-auto text-[10px] text-muted-foreground">{c.hint}</span>
+              </span>
+              <span className="max-w-full truncate font-mono text-xs text-muted-foreground">
+                {c.value}
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="border-t border-border/40 p-2">
+          <label className="mb-1 block text-[10px] uppercase tracking-wider text-muted-foreground">
+            Custom name
+          </label>
+          <Input
+            data-testid="branch-name-custom-input"
+            value={value}
+            placeholder="type-a-branch-name"
+            onChange={(e) =>
+              // Gentle live cleanup (spaces→dashes, drop slashes/illegal); keep
+              // trailing separators so hyphens can be typed. Full sanitize on send.
+              onChange(e.target.value.replace(/\s+/g, '-').replace(/[^A-Za-z0-9._-]/g, ''))
+            }
+            className="h-8 font-mono text-xs"
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
 }
 
 interface WorktreePickerModalProps {
@@ -225,6 +309,14 @@ export function WorktreePickerModal({
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const [sourceBranch, setSourceBranch] = useState<string | null>(null) // null = default
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
+  // Chosen branch name for the new worktree (or the fresh branch on a reused
+  // one). Seeded to Hive's default derived name on open; the picker offers
+  // speckit-style candidates or a custom name. Empty falls back to the default.
+  const [branchName, setBranchName] = useState('')
+  const [branchNamePopoverOpen, setBranchNamePopoverOpen] = useState(false)
+  // Epoch ms captured on open — keeps the timestamp candidate stable across
+  // re-renders (e.g. when branches finish loading and candidates recompute).
+  const [pickerOpenedAt, setPickerOpenedAt] = useState(0)
   const [branches, setBranches] = useState<BranchInfo[]>([])
   const [branchFilter, setBranchFilter] = useState('')
   const [branchesLoading, setBranchesLoading] = useState(false)
@@ -259,9 +351,25 @@ export function WorktreePickerModal({
     return defaultWt?.branch_name ?? 'main'
   }, [worktrees])
 
-  const worktreeNamePreview = useMemo(() => {
-    return canonicalizeTicketTitle(ticket.title)
-  }, [ticket.title])
+  // Existing branch + worktree names feed the sequential-number scan.
+  const existingBranchNames = useMemo(
+    () => [...branches.map((b) => b.name), ...worktrees.map((w) => w.branch_name)],
+    [branches, worktrees]
+  )
+
+  // Branch-name candidates for the picker: Hive's default derived name plus
+  // speckit-style sequential / timestamp / short-name options.
+  const branchCandidates = useMemo(
+    () =>
+      generateBranchNameCandidates({
+        title: ticket.title,
+        description: ticket.description,
+        existingNames: existingBranchNames,
+        now: new Date(pickerOpenedAt),
+        hiveDefault: canonicalizeTicketTitle(ticket.title)
+      }),
+    [ticket.title, ticket.description, existingBranchNames, pickerOpenedAt]
+  )
 
   // Only meaningful (and only shown) when the project actually has a setup script
   // and we're creating a new worktree — reused worktrees never run setup here.
@@ -398,6 +506,11 @@ export function WorktreePickerModal({
       setBranches([])
       setBranchFilter('')
       setBranchPopoverOpen(false)
+      // Seed the branch name to Hive's default derived name (the fallback path)
+      // and stamp the open time so the timestamp candidate stays stable.
+      setBranchName(canonicalizeTicketTitle(ticket.title))
+      setBranchNamePopoverOpen(false)
+      setPickerOpenedAt(Date.now())
       // Refresh worktree list from git so the picker shows current state
       if (project?.path) {
         syncWorktrees(projectId, project.path, { force: true })
@@ -492,7 +605,7 @@ export function WorktreePickerModal({
   // Returns false (and toasts) on failure so the caller can abort before
   // creating a session on the wrong branch.
   const branchWorktreeFromBase = useCallback(
-    async (worktreeId: string, baseBranch: string): Promise<boolean> => {
+    async (worktreeId: string, baseBranch: string, chosenBranchName?: string): Promise<boolean> => {
       const wt = Array.from(useWorktreeStore.getState().worktreesByProject.values())
         .flat()
         .find((w) => w.id === worktreeId)
@@ -501,7 +614,8 @@ export function WorktreePickerModal({
         worktreeId,
         worktreePath: wt.path,
         ticketTitle: ticket.title,
-        baseBranch
+        baseBranch,
+        ...(chosenBranchName ? { branchName: chosenBranchName } : {})
       })
       if (!result.success) {
         toast.error(result.error || 'Failed to create the new branch')
@@ -785,6 +899,13 @@ export function WorktreePickerModal({
     try {
       let worktreeId = selectedWorktreeId
 
+      // Resolve the branch name chosen in the picker. Full-sanitize the value
+      // (custom text may still be dirty), falling back to Hive's default when
+      // it's empty. Used as the nameHint for a new worktree and as the branch
+      // name for a fresh branch on a reused one.
+      const effectiveBranchName =
+        sanitizeCustomBranchName(branchName) || canonicalizeTicketTitle(ticket.title) || ''
+
       // ── Save config only path: serialize config, don't create session ─
       if (saveConfigOnly) {
         const pendingConfig = {
@@ -792,7 +913,8 @@ export function WorktreePickerModal({
             ? {
                 type: 'new' as const,
                 sourceBranch: sourceBranch ?? defaultBranchName,
-                useExistingBranch: assignExistingBranch
+                useExistingBranch: assignExistingBranch,
+                branchName: effectiveBranchName
               }
             : { type: 'existing' as const, worktreeId: worktreeId! },
           prompt: promptText.trim() || buildPrompt(mode, ticket),
@@ -810,7 +932,10 @@ export function WorktreePickerModal({
           // Reused-worktree only: branch off this base at launch time. Omitted
           // (reuse as-is) for new worktrees or when the toggle is off.
           ...(!isNewWorktree && createNewBranch
-            ? { reuseBranchBase: sourceBranch ?? defaultBranchName }
+            ? {
+                reuseBranchBase: sourceBranch ?? defaultBranchName,
+                reuseBranchName: effectiveBranchName
+              }
             : {})
         }
 
@@ -847,9 +972,7 @@ export function WorktreePickerModal({
           _lastSourceBranchByProject[projectId] = targetBranch
           // Assigning an existing branch keeps the branch's own name; only a
           // forked branch is named after the ticket.
-          const nameHint = assignExistingBranch
-            ? undefined
-            : canonicalizeTicketTitle(ticket.title) || undefined
+          const nameHint = assignExistingBranch ? undefined : effectiveBranchName || undefined
           const result = await createWorktreeFromBranch(
             projectId,
             project.path,
@@ -877,7 +1000,8 @@ export function WorktreePickerModal({
         if (!isNewWorktree && createNewBranch) {
           const checkedOut = await branchWorktreeFromBase(
             worktreeId,
-            sourceBranch ?? defaultBranchName
+            sourceBranch ?? defaultBranchName,
+            effectiveBranchName || undefined
           )
           if (!checkedOut) {
             setIsSending(false)
@@ -925,7 +1049,8 @@ export function WorktreePickerModal({
             ? {
                 type: 'new' as const,
                 sourceBranch: sourceBranch ?? defaultBranchName,
-                useExistingBranch: assignExistingBranch
+                useExistingBranch: assignExistingBranch,
+                branchName: effectiveBranchName
               }
             : { type: 'existing' as const, worktreeId: selectedWorktreeId! },
           prompt: promptText.trim() || buildPrompt(mode, ticket),
@@ -1294,7 +1419,8 @@ export function WorktreePickerModal({
     createNewBranch,
     runSetup,
     branchWorktreeFromBase,
-    assignExistingBranch
+    assignExistingBranch,
+    branchName
   ])
 
   // ── Mode toggle chip ────────────────────────────────────────────
@@ -1480,10 +1606,14 @@ export function WorktreePickerModal({
                           </div>
                         </PopoverContent>
                       </Popover>
-                      {!assignExistingBranch && worktreeNamePreview && (
-                        <span className="ml-auto text-xs text-muted-foreground font-mono truncate max-w-[180px]">
-                          {worktreeNamePreview}
-                        </span>
+                      {!assignExistingBranch && (
+                        <BranchNamePicker
+                          candidates={branchCandidates}
+                          value={branchName}
+                          onChange={setBranchName}
+                          open={branchNamePopoverOpen}
+                          onOpenChange={setBranchNamePopoverOpen}
+                        />
                       )}
                     </div>
 
@@ -1686,11 +1816,13 @@ export function WorktreePickerModal({
                       </div>
                     </PopoverContent>
                   </Popover>
-                  {worktreeNamePreview && (
-                    <span className="ml-auto text-xs text-muted-foreground font-mono truncate max-w-[180px]">
-                      {worktreeNamePreview}
-                    </span>
-                  )}
+                  <BranchNamePicker
+                    candidates={branchCandidates}
+                    value={branchName}
+                    onChange={setBranchName}
+                    open={branchNamePopoverOpen}
+                    onOpenChange={setBranchNamePopoverOpen}
+                  />
                 </div>
               )}
             </div>

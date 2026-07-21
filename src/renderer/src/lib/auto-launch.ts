@@ -34,7 +34,7 @@ interface AutoLaunchTicket {
 
 interface PendingLaunchConfig {
   worktree:
-    | { type: 'new'; sourceBranch: string; useExistingBranch?: boolean }
+    | { type: 'new'; sourceBranch: string; useExistingBranch?: boolean; branchName?: string }
     | { type: 'existing'; worktreeId: string }
   prompt: string
   mode: AutoLaunchMode
@@ -49,6 +49,12 @@ interface PendingLaunchConfig {
    * ticket-named branch before launching. Absent = reuse the worktree as-is.
    */
   reuseBranchBase?: string
+  /**
+   * Branch name chosen in the worktree-creation picker. Honored on both the
+   * new-worktree and reused-worktree branch paths. Absent = derive from the
+   * ticket title (Hive's default).
+   */
+  reuseBranchName?: string
   /** claude-code-cli: gate the spawn on setup + inject the worktree context. */
   injectContext?: boolean
   /** claude-code-cli: editable token template used when injectContext is on. */
@@ -148,7 +154,9 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
       const useExistingBranch = config.worktree.useExistingBranch === true
       // Assigning an existing branch keeps the branch's own name; only a forked
       // branch is named after the ticket.
-      const nameHint = useExistingBranch ? undefined : canonicalizeTicketTitle(ticket.title) || undefined
+      const nameHint = useExistingBranch
+        ? undefined
+        : config.worktree.branchName?.trim() || canonicalizeTicketTitle(ticket.title) || undefined
       const result = await useWorktreeStore
         .getState()
         .createWorktreeFromBranch(
@@ -181,7 +189,10 @@ async function runAutoLaunch(ticket: AutoLaunchTicket): Promise<void> {
             worktreeId,
             worktreePath: reusedWorktree.path,
             ticketTitle: ticket.title,
-            baseBranch: config.reuseBranchBase
+            baseBranch: config.reuseBranchBase,
+            ...(config.reuseBranchName?.trim()
+              ? { branchName: config.reuseBranchName.trim() }
+              : {})
           })
           if (!branchResult.success) {
             toast.error(

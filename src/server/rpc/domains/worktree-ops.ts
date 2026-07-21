@@ -121,7 +121,8 @@ const branchFromBaseParamsSchema = z
     worktreeId: z.string().min(1),
     worktreePath: z.string().min(1),
     ticketTitle: z.string().min(1),
-    baseBranch: z.string().min(1)
+    baseBranch: z.string().min(1),
+    branchName: z.string().optional()
   })
   .strict() satisfies z.ZodType<BranchFromBaseParams>
 const createFromBranchParamsSchema = z
