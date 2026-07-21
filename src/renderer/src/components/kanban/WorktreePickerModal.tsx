@@ -1092,10 +1092,9 @@ export function WorktreePickerModal({
         const targetBranch = sourceBranch ?? defaultBranchName
         _lastSourceBranchByProject[projectId] = targetBranch
         // Assigning an existing branch keeps the branch's own name; only a forked
-        // branch is named after the ticket.
-        const nameHint = assignExistingBranch
-          ? undefined
-          : canonicalizeTicketTitle(ticket.title) || undefined
+        // branch is named — from the branch-name picker's chosen candidate
+        // (effectiveBranchName), falling back to Hive's default derived name.
+        const nameHint = assignExistingBranch ? undefined : effectiveBranchName || undefined
         const result = await createWorktreeFromBranch(
           projectId,
           project.path,
