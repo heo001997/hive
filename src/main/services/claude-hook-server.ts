@@ -46,61 +46,114 @@ const statusSubscribers = new Set<(payload: ClaudeCliStatusPayload) => void>()
 // us from re-emitting on every prompt.
 const firstPromptAnnounced = new Set<string>()
 
+// Sub-agent accounting, per session. Claude Code fires SubagentStart when the
+// main agent spawns a sub-agent and SubagentStop when it finishes — a matched
+// pair that is the in-flight counter. Both POST to THIS session's hook URL (the
+// sub-agent inherits the same injected settings.json), so the counter reflects
+// how many sub-agents are running for the main session. (PreToolUse{Task} is an
+// extra liveness ping at dispatch time but does NOT touch the count.)
+//
+// A main-turn `Stop` that arrives while a sub-agent is still running does NOT
+// mean the session finished: the main agent is WAITING on the sub-agent (it
+// resumes once the sub-agent returns, and for a background/async sub-agent the
+// main turn ends first). Reporting 'completed' there lets the kanban board
+// treat the terminal as frozen and promote the ticket to Review while work is
+// still in flight — the "incorrect review state". So a Stop is DEFERRED (kept
+// 'working') until the last SubagentStop. See resolveClaudeCliStatus.
+const subagentDepthBySession = new Map<string, number>()
+const stopDeferredBySession = new Set<string>()
+
 function hookUrl(port: number, hiveSessionId: string, path: string): string {
   return `http://${host}:${port}/hook/${encodeURIComponent(hiveSessionId)}/${path}`
 }
 
+/**
+ * Every Claude Code hook event (per code.claude.com/docs/en/hooks.md) routed to
+ * this local server, EXCEPT `MessageDisplay` — that one fires per streamed text
+ * chunk and would flood the server with zero status value. Events are grouped by
+ * the endpoint path they POST to (`hookPath`, a label carried in the status
+ * metadata); the actual status decision keys off `hook_event_name` in the body,
+ * not the path — see `resolveClaudeCliStatus` / `mapHookEventToStatus`.
+ *
+ * Not every hook maps to a session status: the notify-only / environment events
+ * (Notification, Task*, ConfigChange, WorktreeCreate, …) resolve to `null` and
+ * are still delivered so the transport relay + telemetry see the full stream and
+ * so a status mapping can be added later without re-touching the CLI settings.
+ */
 export function buildClaudeCliHookSettings(port: number, hiveSessionId: string): string {
+  // Matcher-less registration (fires for all invocations of the event).
+  const at = (path: string): { hooks: { type: string; url: string }[] }[] => [
+    { hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, path) }] }
+  ]
+  // A single matcher-scoped registration.
+  const matched = (
+    matcher: string,
+    path: string
+  ): { matcher: string; hooks: { type: string; url: string }[] } => ({
+    matcher,
+    hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, path) }]
+  })
+
   return JSON.stringify({
     hooks: {
-      SessionStart: [
-        {
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'session') }]
-        }
-      ],
-      SessionEnd: [
-        {
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'session') }]
-        }
-      ],
-      UserPromptSubmit: [
-        {
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'start') }]
-        }
-      ],
-      Stop: [
-        {
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'stop') }]
-        }
-      ],
+      // ── Session lifecycle ──
+      SessionStart: at('session'),
+      SessionEnd: at('session'),
+      Setup: at('session'),
+
+      // ── Prompt / turn boundary ──
+      UserPromptSubmit: at('start'),
+      UserPromptExpansion: at('start'),
+      Stop: at('stop'),
+      // Turn ended on an API error (rate limit / overload / auth). Treated like a
+      // Stop so the ticket surfaces for a human instead of stranding In Progress.
+      StopFailure: at('stop'),
+
+      // ── Sub-agents ── the counter pair that keeps a ticket In Progress while a
+      // Task sub-agent runs (a Stop mid-sub-agent is deferred, not 'completed').
+      SubagentStart: at('subagent'),
+      SubagentStop: at('subagent'),
+
+      // ── Tool activity ──
       PreToolUse: [
-        {
-          // ExitPlanMode is hooked for status only (drives the 'plan_ready' badge
-          // and carries the plan text for the in-app plan card / auto-approve).
-          // The hook is answered immediately — the plan menu stays in the native
-          // terminal, never held or lifted into the app.
-          matcher: 'ExitPlanMode',
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'tool') }]
-        }
+        // ExitPlanMode drives the 'plan_ready' badge + carries the plan text for
+        // the in-app plan card / auto-approve. Answered immediately; the plan menu
+        // stays in the native terminal, never held or lifted into the app.
+        matched('ExitPlanMode', 'tool'),
+        // Task dispatches a sub-agent — a liveness signal at invoke time (the
+        // SubagentStart/Stop pair owns the actual in-flight count).
+        matched('Task', 'tool')
       ],
-      PostToolUse: [
-        {
-          matcher: '*',
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'tool') }]
-        }
-      ],
-      PostToolUseFailure: [
-        {
-          matcher: '*',
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'tool') }]
-        }
-      ],
-      PermissionRequest: [
-        {
-          matcher: '*',
-          hooks: [{ type: 'http', url: hookUrl(port, hiveSessionId, 'permission') }]
-        }
-      ]
+      PostToolUse: [matched('*', 'tool')],
+      PostToolUseFailure: [matched('*', 'tool')],
+      PostToolBatch: at('tool'),
+      PermissionDenied: [matched('*', 'tool')],
+
+      // ── Waiting on a human ──
+      PermissionRequest: [matched('*', 'permission')],
+      Elicitation: [matched('*', 'permission')],
+      ElicitationResult: [matched('*', 'permission')],
+
+      // ── Context compaction ── (agent is busy, tty goes quiet → keep 'working')
+      PreCompact: at('compact'),
+      PostCompact: at('compact'),
+
+      // ── Notify-only / environment ── routed for transcript + telemetry; no
+      // session-status mapping (resolve to null).
+      Notification: at('event'),
+      // MessageDisplay fires per streamed text chunk. Registered for completeness
+      // but fast-acked in handleHook (no status / telemetry / transport work) so
+      // the hot loop can't hammer this server.
+      MessageDisplay: at('event'),
+      TaskCreated: at('event'),
+      TaskCompleted: at('event'),
+      TeammateIdle: at('event'),
+      InstructionsLoaded: at('event'),
+      ConfigChange: at('event'),
+      CwdChanged: at('event'),
+      FileChanged: at('event'),
+      WorktreeCreate: at('event'),
+      WorktreeRemove: at('event')
     }
   })
 }
@@ -120,12 +173,98 @@ export function mapHookEventToStatus(hook: ParsedClaudeHook): SessionStatusType 
       if (hook.tool_name === 'ExitPlanMode') return 'planning'
       return 'working'
     case 'PostToolUse':
+    case 'PostToolBatch':
+    case 'PermissionDenied':
+      // A denied tool call / resolved batch → the agent keeps going.
       return 'working'
     case 'PermissionRequest':
       if (hook.tool_name === 'ExitPlanMode') return 'plan_ready'
       return 'permission'
+    // MCP asked the user for input mid-tool → waiting on a human (like a
+    // permission prompt); the reply resumes work.
+    case 'Elicitation':
+      return 'permission'
+    case 'ElicitationResult':
+      return 'working'
+    // Context compaction: the agent is busy and the tty falls quiet — must read
+    // as 'working' so the quiet window is not mistaken for a finished session.
+    case 'PreCompact':
+    case 'PostCompact':
+      return 'working'
     default:
       return null
+  }
+}
+
+/**
+ * Stateful wrapper over the pure {@link mapHookEventToStatus} that layers
+ * sub-agent (Task tool) lifecycle awareness on top. Its whole job is to stop a
+ * main-turn `Stop` — fired while a sub-agent is still running — from being
+ * reported as 'completed'. The main session is WAITING on the sub-agent, not
+ * finished; a premature 'completed' lets the kanban board see a quiet terminal
+ * and promote the ticket to Review mid-work (the "incorrect review state").
+ *
+ * Rules (see `subagentDepthBySession`):
+ *   SubagentStart    → a sub-agent spawned: depth++, report 'working'.
+ *   SubagentStop     → a sub-agent finished: depth-- (floored at 0). Reports
+ *                      'completed' only when the LAST sub-agent stops AND a main
+ *                      Stop was already deferred; otherwise 'working' (the main
+ *                      agent resumes to consume the result, or others run on).
+ *   Stop / StopFailure → main turn ended (normally or on an API error): deferred
+ *                      to 'working' while any sub-agent is in flight (depth > 0),
+ *                      else 'completed'.
+ *   PreToolUse{Task} → liveness ping at dispatch ('working'); does not count.
+ *   UserPromptSubmit → fresh turn: clear stale bookkeeping (guards against a
+ *                      SubagentStop we never received, e.g. an interrupt).
+ * Everything else defers to the pure mapper.
+ */
+export function resolveClaudeCliStatus(
+  sessionId: string,
+  hook: ParsedClaudeHook
+): SessionStatusType | null {
+  switch (hook.hook_event_name) {
+    case 'UserPromptSubmit':
+      subagentDepthBySession.delete(sessionId)
+      stopDeferredBySession.delete(sessionId)
+      return mapHookEventToStatus(hook)
+
+    case 'PreToolUse':
+      // Liveness only — the SubagentStart/SubagentStop pair owns the in-flight
+      // count. Task marks the session busy the instant it is dispatched.
+      if (hook.tool_name === 'Task') return 'working'
+      return mapHookEventToStatus(hook)
+
+    case 'SubagentStart':
+      subagentDepthBySession.set(sessionId, (subagentDepthBySession.get(sessionId) ?? 0) + 1)
+      return 'working'
+
+    case 'SubagentStop': {
+      const depth = Math.max(0, (subagentDepthBySession.get(sessionId) ?? 0) - 1)
+      if (depth === 0) subagentDepthBySession.delete(sessionId)
+      else subagentDepthBySession.set(sessionId, depth)
+      // The whole process is idle only once the last sub-agent stops AND the
+      // main turn has already ended (a Stop we deferred). Until then the main
+      // agent is still working (it resumes to consume the sub-agent result).
+      if (depth === 0 && stopDeferredBySession.delete(sessionId)) {
+        return 'completed'
+      }
+      return 'working'
+    }
+
+    // A normal turn end (Stop) and an API-error turn end (StopFailure) both mean
+    // "the main turn is over" — deferred while a sub-agent is still running.
+    case 'Stop':
+    case 'StopFailure':
+      if ((subagentDepthBySession.get(sessionId) ?? 0) > 0) {
+        // A sub-agent is still running; the main agent is WAITING on it, not
+        // done. Defer completion until the last SubagentStop resolves it.
+        stopDeferredBySession.add(sessionId)
+        return 'working'
+      }
+      return 'completed'
+
+    default:
+      return mapHookEventToStatus(hook)
   }
 }
 
@@ -187,6 +326,8 @@ export function getLastClaudeCliStatus(sessionId: string): SessionStatusType | u
  */
 export function clearClaudeCliStatus(sessionId: string): void {
   lastStatusBySession.delete(sessionId)
+  subagentDepthBySession.delete(sessionId)
+  stopDeferredBySession.delete(sessionId)
 }
 
 export function subscribeClaudeCliStatus(
@@ -252,8 +393,12 @@ async function handleHook(req: http.IncomingMessage, res: http.ServerResponse): 
   try {
     const rawBody = await readRequestBody(req)
     const body = JSON.parse(rawBody || '{}') as ParsedClaudeHook
-    if (route) {
-      const status = mapHookEventToStatus(body)
+    // MessageDisplay fires per streamed text chunk — accept + ack it (so the CLI
+    // sees the hook it registered) but do NO further work: it maps to no session
+    // status and carries no unique transcript value, and running the status /
+    // telemetry / transport path per chunk would hammer this server.
+    if (route && body.hook_event_name !== 'MessageDisplay') {
+      const status = resolveClaudeCliStatus(route.sessionId, body)
       if (status) {
         publishClaudeCliStatus({
           sessionId: route.sessionId,
@@ -362,6 +507,8 @@ export async function closeClaudeHookServer(): Promise<void> {
     startingPromise = null
     lastStatusBySession.clear()
     statusSubscribers.clear()
+    subagentDepthBySession.clear()
+    stopDeferredBySession.clear()
     return
   }
 
@@ -380,4 +527,6 @@ export async function closeClaudeHookServer(): Promise<void> {
   startingPromise = null
   lastStatusBySession.clear()
   statusSubscribers.clear()
+  subagentDepthBySession.clear()
+  stopDeferredBySession.clear()
 }
