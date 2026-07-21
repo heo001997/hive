@@ -810,11 +810,17 @@ async function confirmSessionFrozen(
     const fp = await completionApi.getSessionFingerprint(sessionId)
 
     // (b) Live PTY — the ground truth is the last-emit timestamp. Any byte within
-    // the idle window (spinner/clock/token counter included) → still alive. Subagents
-    // run on the SAME tty and the parent's "Running… (Xs)" clock keeps ticking while
-    // a Task tool is in flight, so a working subagent restamps this too — i.e. the
-    // whole process (main agent + subagents) reads as `'active'`, which is exactly the
-    // desired semantics. A single read, no wait; the manual recheck takes this path too.
+    // the idle window (spinner/clock/token counter included) → still alive. A single
+    // read, no wait; the manual recheck takes this path too.
+    //
+    // Subagents are NOT held here by tty bytes: a Task sub-agent (especially a
+    // background/async one) can leave the parent tty silent for longer than the idle
+    // window while it runs, and the main agent's turn may even have ended (`Stop`) —
+    // relying on the parent "Running… (Xs)" clock to restamp this was the source of
+    // the "incorrect review state" bug. Instead the hook server DEFERS the main
+    // `Stop`→'completed' while any sub-agent is in flight (SubagentStart /
+    // SubagentStop bookkeeping — see resolveClaudeCliStatus), so the status short-
+    // circuit above keeps the whole process `'active'` for the sub-agent's lifetime.
     if (fp.source === 'pty') {
       const lastOutputAt = fp.lastOutputAt ?? Date.now()
       const ageMs = Date.now() - lastOutputAt
