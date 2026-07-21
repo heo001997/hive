@@ -215,7 +215,11 @@ interface SessionState {
   toggleSessionMode: (sessionId: string) => Promise<void>
   toggleSuperMode: (sessionId: string) => Promise<void>
   toggleSuperPlanShortcut: (sessionId: string) => Promise<void>
-  setSessionMode: (sessionId: string, mode: SessionMode) => Promise<void>
+  setSessionMode: (
+    sessionId: string,
+    mode: SessionMode,
+    options?: { skipCliSync?: boolean }
+  ) => Promise<void>
   setSessionModel: (
     sessionId: string,
     model: SelectedModel,
@@ -1431,10 +1435,19 @@ export const useSessionStore = create<SessionState>()(
         notifyKanbanSessionSync(sessionId, { type: 'mode_change', sessionMode: newMode })
       },
 
-      // Set session mode explicitly (also applies mode-specific model default)
-      setSessionMode: async (sessionId: string, mode: SessionMode) => {
+      // Set session mode explicitly (also applies mode-specific model default).
+      // `skipCliSync` suppresses the Shift+Tab permission-mode keystroke — used
+      // when the Claude CLI already changed its own mode (e.g. a plan was just
+      // approved from the terminal) and only the persisted state needs to catch up.
+      setSessionMode: async (
+        sessionId: string,
+        mode: SessionMode,
+        options?: { skipCliSync?: boolean }
+      ) => {
         const previousMode = get().modeBySession.get(sessionId) || 'build'
-        syncClaudeCliPermissionModeIfNeeded(get(), sessionId, previousMode, mode)
+        if (!options?.skipCliSync) {
+          syncClaudeCliPermissionModeIfNeeded(get(), sessionId, previousMode, mode)
+        }
 
         set((state) => {
           const newModeMap = new Map(state.modeBySession)

@@ -52,8 +52,16 @@ export function useClaudeCliStatusListener(): void {
       const currentMode = sessionStore.modeBySession.get(sessionId)
 
       if (metadata?.hookEventName === 'PostToolUse' && metadata.toolName === 'ExitPlanMode') {
-        // User approved ExitPlanMode from the terminal, matching the in-app implement action.
+        // Plan approved from the terminal (manually or via auto-approve), matching
+        // the in-app implement action. The CLI has already left plan mode itself,
+        // so persist the session mode to 'build' WITHOUT re-sending the Shift+Tab
+        // keystroke (skipCliSync). Without this the session row stays mode='plan'
+        // and reopening the ticket relaunches with `--permission-mode plan`,
+        // dropping the resumed session back into planning instead of execution.
         sessionStore.clearPendingPlan(sessionId)
+        if (isPlanLike(currentMode)) {
+          void sessionStore.setSessionMode(sessionId, 'build', { skipCliSync: true })
+        }
         notifyKanbanSessionSync(sessionId, { type: 'implement' })
         lastSendMode.set(sessionId, 'build')
         worktreeStatus.setSessionStatus(sessionId, 'working', metadata)
