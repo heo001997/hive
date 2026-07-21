@@ -154,13 +154,18 @@ const waitForVite = (child: ChildProcess): Promise<string> =>
  * both isolated in a fresh temp base dir. Requires a fresh `pnpm build`
  * (e2e-test.sh self-heals that).
  */
-export const launchHiveBrowserApp = async (): Promise<HiveApp> => {
+export const launchHiveBrowserApp = async (
+  opts: { extraEnv?: NodeJS.ProcessEnv } = {}
+): Promise<HiveApp> => {
   const baseDir = mkdtempSync(join(tmpdir(), 'hive-e2e-'))
   const bootstrapToken = randomBytes(32).toString('base64url')
   let backend: ChildProcess | null = null
   let vite: ChildProcess | null = null
 
   try {
+    // opts.extraEnv lets a spec inject backend env — e.g. a stub agent CLI on
+    // PATH, or HIVE_WORKTREES_DIR confinement so a git-effect spec's real
+    // `git worktree add` cannot leak into the dev worktrees dir.
     backend = spawnChild('pnpm', ['exec', 'electron', 'out/main/server.js'], {
       ELECTRON_RUN_AS_NODE: '1',
       HOME: baseDir,
@@ -168,7 +173,8 @@ export const launchHiveBrowserApp = async (): Promise<HiveApp> => {
       HIVE_SERVER_MODE: 'browser',
       HIVE_SERVER_PORT: '0',
       HIVE_DESKTOP_BOOTSTRAP_TOKEN: bootstrapToken,
-      HIVE_SERVER_DEV_URL: 'http://127.0.0.1:5173'
+      HIVE_SERVER_DEV_URL: 'http://127.0.0.1:5173',
+      ...opts.extraEnv
     })
     const ready = await waitForHiveServer(backend)
 

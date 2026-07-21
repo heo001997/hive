@@ -62,6 +62,12 @@ export interface BranchFromBaseParams {
   ticketTitle: string
   /** Ref to branch off (a branch name like `main`, or `origin/main`). */
   baseBranch: string
+  /**
+   * Explicit branch name chosen in the worktree-creation picker. When present,
+   * it's used as-is (still collision-suffixed) instead of deriving one from the
+   * ticket title. Empty/absent = fall back to the title-derived name.
+   */
+  branchName?: string
 }
 
 export interface BranchFromBaseResult {
@@ -535,7 +541,7 @@ export const branchWorktreeFromBaseOpEffect = (
   params: BranchFromBaseParams
 ): Effect.Effect<BranchFromBaseResult, never, Db> =>
   Effect.gen(function* () {
-    const base = canonicalizeBranchName(params.ticketTitle)
+    const base = params.branchName?.trim() || canonicalizeBranchName(params.ticketTitle)
     if (!base) {
       return { success: false, error: 'Could not derive a branch name from the ticket title' }
     }

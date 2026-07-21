@@ -79,6 +79,8 @@ type WorktreeBranchFromBaseParams = {
   worktreePath: string
   ticketTitle: string
   baseBranch: string
+  /** Explicit branch name chosen in the picker; empty/absent = derive from title. */
+  branchName?: string
 }
 
 type WorktreeBranchFromBaseResult = {
