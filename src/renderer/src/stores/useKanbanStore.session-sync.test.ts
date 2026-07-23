@@ -203,6 +203,70 @@ describe('syncTicketWithSession — rider guard (pending_launch_config)', () => 
   })
 })
 
+// The Human Require column: a ticket blocked awaiting the user (plan approval, an
+// error the agent can't recover from on its own, a mid-run prompt) lands here, NOT
+// Review (which is reserved for finished-and-stopped work). See the state-machine map.
+describe('syncTicketWithSession — Human Require routing', () => {
+  it('moves an in_progress build ticket to human_required on session_error (API failure)', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_error' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+    expect(kanbanApi.ticket.move).toHaveBeenCalledWith(PROJECT_ID, 'ticket-1', 'human_required', 0)
+  })
+
+  it('moves an in_progress plan ticket to human_required on plan_ready and sets the flag', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'plan', plan_ready: false }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'plan_ready' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+    expect(kanbanApi.ticket.update).toHaveBeenCalledWith(
+      PROJECT_ID,
+      'ticket-1',
+      expect.objectContaining({ plan_ready: true })
+    )
+  })
+
+  it('does NOT quiescence-promote a human_required ticket to Review on session_completed', async () => {
+    // A blocked ticket's terminal is expected to be silent; a completed event must
+    // not sweep it to Review. It stays put until the user resumes it.
+    seed(makeTicket({ column: 'human_required', mode: 'build' }))
+
+    useKanbanStore
+      .getState()
+      .syncTicketWithSession(SESSION_ID, { type: 'session_completed', sessionMode: 'build' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalled()
+  })
+
+  it('returns a human_required ticket to in_progress on session_working (user answered)', async () => {
+    seed(makeTicket({ column: 'human_required', mode: 'build' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_working' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).toHaveBeenCalledWith(PROJECT_ID, 'ticket-1', 'in_progress', 0)
+  })
+
+  it('routes session_human_required (permission/command-approval) to human_required', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build' }))
+
+    useKanbanStore
+      .getState()
+      .syncTicketWithSession(SESSION_ID, { type: 'session_human_required' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+  })
+})
+
 describe('syncTicketWithSession — non-done paths unchanged', () => {
   it('still advances an in_progress build ticket to review on session_completed', async () => {
     seed(makeTicket({ column: 'in_progress', mode: 'build' }))

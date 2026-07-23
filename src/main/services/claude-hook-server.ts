@@ -120,6 +120,10 @@ export function buildClaudeCliHookSettings(port: number, hiveSessionId: string):
         // the in-app plan card / auto-approve. Answered immediately; the plan menu
         // stays in the native terminal, never held or lifted into the app.
         matched('ExitPlanMode', 'tool'),
+        // AskUserQuestion blocks the turn on a user answer — the fire marks the
+        // ticket human-blocked ('answering' → Human Require column). The question
+        // menu still renders/answers in the native terminal.
+        matched('AskUserQuestion', 'permission'),
         // Task dispatches a sub-agent — a liveness signal at invoke time (the
         // SubagentStart/Stop pair owns the actual in-flight count).
         matched('Task', 'tool')
@@ -168,6 +172,13 @@ export function mapHookEventToStatus(hook: ParsedClaudeHook): SessionStatusType 
       return hook.permission_mode === 'plan' ? 'planning' : 'working'
     case 'PreToolUse':
       if (hook.tool_name === 'ExitPlanMode') return 'plan_ready'
+      // AskUserQuestion blocks the turn waiting on the user. The question menu
+      // renders in the native terminal (it is NOT lifted into an app panel — see
+      // the CLI hold-core), and the terminal can fall silent while it waits, so the
+      // PreToolUse fire is the signal that the agent is now human-blocked. Reports
+      // 'answering' → the renderer routes it to the Human Require column; the
+      // matching PostToolUse{AskUserQuestion} → 'working' resumes it to In Progress.
+      if (hook.tool_name === 'AskUserQuestion') return 'answering'
       return null
     case 'PostToolUseFailure':
       if (hook.tool_name === 'ExitPlanMode') return 'planning'

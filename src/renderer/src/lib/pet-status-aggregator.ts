@@ -112,7 +112,7 @@ export interface PetTicketInput {
   project_id: string
   worktree_id: string | null
   current_session_id: string | null
-  column: 'todo' | 'in_progress' | 'review' | 'done'
+  column: 'todo' | 'in_progress' | 'human_required' | 'review' | 'done'
   title: string
   archived_at: string | null
   /**

@@ -150,7 +150,7 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
   // ────────────────────────────────────────────────────────────────────
   // Plan session completing sets plan_ready to true
   // ────────────────────────────────────────────────────────────────────
-  test('plan session completing sets plan_ready and moves to review', async () => {
+  test('plan session completing sets plan_ready and moves to human_required', async () => {
     const ticket = makeTicket({
       id: 't1',
       column: 'in_progress',
@@ -175,15 +175,15 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
     const tickets = useKanbanStore.getState().tickets.get('proj-1')
     const updated = tickets!.find((t) => t.id === 't1')
     expect(updated!.plan_ready).toBe(true)
-    expect(updated!.column).toBe('review')
+    expect(updated!.column).toBe('human_required')
     expect(mockKanbanApi.ticket.update).toHaveBeenCalledWith('proj-1', 't1', { plan_ready: true })
-    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'review', 0)
+    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'human_required', 0)
   })
 
   // ────────────────────────────────────────────────────────────────────
-  // Plan session completing does NOT move ticket to review
+  // Plan awaiting approval is a Human Require state (not Review)
   // ────────────────────────────────────────────────────────────────────
-  test('plan session completing moves ticket to review', async () => {
+  test('plan session completing moves ticket to human_required', async () => {
     const ticket = makeTicket({
       id: 't1',
       column: 'in_progress',
@@ -207,14 +207,14 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
 
     const tickets = useKanbanStore.getState().tickets.get('proj-1')
     const updated = tickets!.find((t) => t.id === 't1')
-    expect(updated!.column).toBe('review')
-    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'review', 0)
+    expect(updated!.column).toBe('human_required')
+    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'human_required', 0)
   })
 
   // ────────────────────────────────────────────────────────────────────
-  // Session error does not change ticket column
+  // A turn that errored can't proceed without the user → Human Require
   // ────────────────────────────────────────────────────────────────────
-  test('session error moves in_progress ticket to review', async () => {
+  test('session error moves in_progress ticket to human_required', async () => {
     const ticket = makeTicket({
       id: 't1',
       column: 'in_progress',
@@ -237,8 +237,8 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
 
     const tickets = useKanbanStore.getState().tickets.get('proj-1')
     const moved = tickets!.find((t) => t.id === 't1')
-    expect(moved!.column).toBe('review')
-    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'review', 0)
+    expect(moved!.column).toBe('human_required')
+    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'human_required', 0)
     expect(mockKanbanApi.ticket.update).not.toHaveBeenCalled()
   })
 
@@ -342,7 +342,7 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
   // ────────────────────────────────────────────────────────────────────
   // plan_ready change persists through kanbanApi
   // ────────────────────────────────────────────────────────────────────
-  test('plan_ready change persists through kanbanApi and moves to review', async () => {
+  test('plan_ready change persists through kanbanApi and moves to human_required', async () => {
     const ticket = makeTicket({
       id: 't1',
       column: 'in_progress',
@@ -365,7 +365,7 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
     })
 
     expect(mockKanbanApi.ticket.update).toHaveBeenCalledWith('proj-1', 't1', { plan_ready: true })
-    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'review', 0)
+    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'human_required', 0)
   })
 
   // ────────────────────────────────────────────────────────────────────
@@ -450,7 +450,7 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
 
     const ticketsAfterB = useKanbanStore.getState().tickets.get('proj-1')!
     expect(ticketsAfterB.find((t) => t.id === 'tB')!.plan_ready).toBe(true)
-    expect(ticketsAfterB.find((t) => t.id === 'tB')!.column).toBe('review')
+    expect(ticketsAfterB.find((t) => t.id === 'tB')!.column).toBe('human_required')
   })
 
   // ────────────────────────────────────────────────────────────────────
@@ -479,7 +479,7 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
   // ────────────────────────────────────────────────────────────────────
   // plan_ready event sets flag on plan-mode ticket
   // ────────────────────────────────────────────────────────────────────
-  test('plan_ready event sets flag and moves to review', async () => {
+  test('plan_ready event sets flag and moves to human_required', async () => {
     const ticket = makeTicket({
       id: 't1',
       column: 'in_progress',
@@ -503,8 +503,8 @@ describe('Session 10: Session ↔ Kanban Store Coordination', () => {
     const tickets = useKanbanStore.getState().tickets.get('proj-1')
     const updated = tickets!.find((t) => t.id === 't1')
     expect(updated!.plan_ready).toBe(true)
-    expect(updated!.column).toBe('review')
-    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'review', 0)
+    expect(updated!.column).toBe('human_required')
+    expect(mockKanbanApi.ticket.move).toHaveBeenCalledWith('proj-1', 't1', 'human_required', 0)
   })
 
   test('plan_followup event clears plan_ready and moves ticket back to in_progress', async () => {

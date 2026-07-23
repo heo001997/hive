@@ -136,6 +136,49 @@ describe('useClaudeCliStatusListener', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1)
   })
 
+  it('routes a StopFailure (API-error turn end) to session_error, not a completed→Review promotion', () => {
+    renderHook(() => useClaudeCliStatusListener())
+
+    subscribedCallback?.({
+      sessionId: 'hive-session-1',
+      status: 'completed',
+      metadata: { hookEventName: 'StopFailure', hookPath: 'stop' }
+    })
+
+    // Fires session_error (→ Human Require) and sets a NON-completed status so the
+    // completed→session_completed→Review promotion does not also run.
+    expect(mocks.notifyKanbanSessionSync).toHaveBeenCalledWith('hive-session-1', {
+      type: 'session_error'
+    })
+    expect(mocks.setSessionStatus).toHaveBeenCalledWith('hive-session-1', 'unread', {
+      hookEventName: 'StopFailure',
+      hookPath: 'stop'
+    })
+    expect(mocks.setSessionStatus).not.toHaveBeenCalledWith(
+      'hive-session-1',
+      'completed',
+      expect.anything()
+    )
+  })
+
+  it('writes the answering status for a CLI AskUserQuestion (drives the Human Require move)', () => {
+    renderHook(() => useClaudeCliStatusListener())
+
+    subscribedCallback?.({
+      sessionId: 'hive-session-1',
+      status: 'answering',
+      metadata: { hookEventName: 'PreToolUse', hookPath: 'permission', toolName: 'AskUserQuestion' }
+    })
+
+    // The store bridge (useWorktreeStatusStore) turns 'answering' into a
+    // session_human_required kanban event; here we only assert the status is written.
+    expect(mocks.setSessionStatus).toHaveBeenCalledWith('hive-session-1', 'answering', {
+      hookEventName: 'PreToolUse',
+      hookPath: 'permission',
+      toolName: 'AskUserQuestion'
+    })
+  })
+
   it('stores raw ExitPlanMode plan text when a Claude CLI plan becomes ready', () => {
     renderHook(() => useClaudeCliStatusListener())
 

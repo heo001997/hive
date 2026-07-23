@@ -149,6 +149,19 @@ export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => 
       notifyKanbanSessionSync(sessionId, { type: 'plan_ready' })
     } else if (status === 'working' || status === 'planning') {
       notifyKanbanSessionSync(sessionId, { type: 'session_working' })
+    } else if (
+      status === 'permission' ||
+      status === 'command_approval' ||
+      status === 'answering'
+    ) {
+      // The agent is BLOCKED awaiting the user — a permission / command-approval
+      // prompt, an MCP elicitation (`permission`), or a structured question
+      // (`answering`, the CLI AskUserQuestion path). Route to the Human Require
+      // column. (SDK structured Q&A also fires the more specific `session_question`
+      // from the OpenCode listener; both target the same column, so it's idempotent.)
+      // A reply flips the status back to working/planning → `session_working` →
+      // In Progress.
+      notifyKanbanSessionSync(sessionId, { type: 'session_human_required' })
     }
   },
 

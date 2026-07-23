@@ -48,10 +48,14 @@ import type {
  * flips `enabled`); the parent decides whether to persist it.
  */
 
+// `human_required` is intentionally NOT a configurable lifecycle state — it is a
+// transient "blocked on the user" holding column with no before/during/after hooks.
+// It only appears in STATE_LABELS so the label Record stays total over LifecycleState.
 const STATES: LifecycleState[] = ['todo', 'in_progress', 'review', 'done']
 const STATE_LABELS: Record<LifecycleState, string> = {
   todo: 'To Do',
   in_progress: 'In Progress',
+  human_required: 'Human Require',
   review: 'Review',
   done: 'Done'
 }
@@ -65,6 +69,8 @@ const SLOTS: { slot: LifecycleSlot; label: string; hint: string; entry: boolean 
 // type/validator (see LIFECYCLE_ACTION_TYPES).
 const ACTION_TYPES: readonly LifecycleActionType[] = LIFECYCLE_ACTION_TYPES
 const VERDICTS: LifecycleVerdict[] = ['pass', 'fail', 'needsInput']
+// `human_required` is intentionally NOT a goto target (like STATES): it's a
+// session-driven holding state, never a column a lifecycle action routes a ticket to.
 const GOTOS: (LifecycleState | 'end')[] = ['todo', 'in_progress', 'review', 'done', 'end']
 const NOTIFY_EVENTS = ['started', 'question', 'review', 'stuck_review', 'done'] as const
 const ENTRY_CONTEXTS: LifecycleEntryContext[] = ['initial', 'retry']

@@ -160,20 +160,24 @@ describe('getMaxParallelWorktrees', () => {
 })
 
 describe('getRunningWorktreeCount', () => {
-  it('counts launched In Progress tickets only', () => {
+  it('counts launched In Progress AND Human Require tickets (both hold a live worktree)', () => {
     setTickets([
       makeTicket({ id: 'a', column: 'in_progress' }),
       makeTicket({ id: 'b', column: 'in_progress' }),
-      // queued (still carries pending config) — not yet running
+      // Human Require holds a live session + worktree (agent blocked on the user) → counts.
+      makeTicket({ id: 'h', column: 'human_required' }),
+      // queued (still carries pending config) — not yet running, even in Human Require.
       makeTicket({ id: 'c', column: 'in_progress', pending_launch_config: QUEUED_CONFIG }),
+      makeTicket({ id: 'i', column: 'human_required', pending_launch_config: QUEUED_CONFIG }),
       // other columns don't count
       makeTicket({ id: 'd', column: 'todo' }),
       makeTicket({ id: 'e', column: 'review' }),
       makeTicket({ id: 'f', column: 'done' }),
-      // archived In Progress doesn't count
-      makeTicket({ id: 'g', column: 'in_progress', archived_at: '2026-01-02T00:00:00.000Z' })
+      // archived doesn't count
+      makeTicket({ id: 'g', column: 'in_progress', archived_at: '2026-01-02T00:00:00.000Z' }),
+      makeTicket({ id: 'j', column: 'human_required', archived_at: '2026-01-02T00:00:00.000Z' })
     ])
-    expect(getRunningWorktreeCount(PROJECT_ID)).toBe(2)
+    expect(getRunningWorktreeCount(PROJECT_ID)).toBe(3)
   })
 })
 

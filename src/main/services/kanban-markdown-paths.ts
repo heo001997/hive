@@ -9,6 +9,7 @@ const DEFAULT_MARKDOWN_CONFIG: KanbanMarkdownConfig = {
   statusFolders: {
     todo: 'docs/kanban/todo',
     in_progress: 'docs/kanban/in-progress',
+    human_required: 'docs/kanban/human-required',
     review: 'docs/kanban/review',
     done: 'docs/kanban/done'
   }
@@ -113,7 +114,11 @@ export async function ensureFolder(
   const folder =
     config.layout === 'single-folder'
       ? config.singleFolder
-      : config.statusFolders[column]
+      : // `human_required` is a transient "blocked on the user" state; when a
+        // status-folders config predates it (no folder configured), the card rests
+        // in the in_progress folder on disk (it re-derives human_required from live
+        // session status), so no new folder is forced on existing projects.
+        (config.statusFolders[column] ?? config.statusFolders.in_progress)
   const resolved = resolveProjectPath(project.path, folder)
   await mkdir(resolved, { recursive: true })
   return resolved

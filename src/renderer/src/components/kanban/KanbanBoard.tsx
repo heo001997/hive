@@ -20,7 +20,13 @@ import { useMarkdownKanbanWatcher } from '@/hooks/useMarkdownKanbanWatcher'
 import { cardOccurrenceKeys } from '@/components/kanban/kanban-card-identity'
 import type { KanbanTicket, KanbanTicketColumn } from '../../../../main/db/types'
 
-const COLUMNS: KanbanTicketColumn[] = ['todo', 'in_progress', 'review', 'done']
+const COLUMNS: KanbanTicketColumn[] = [
+  'todo',
+  'in_progress',
+  'human_required',
+  'review',
+  'done'
+]
 
 // Case-insensitive substring match across the fields a user would search by.
 function ticketMatchesQuery(ticket: KanbanTicket, normalizedQuery: string): boolean {

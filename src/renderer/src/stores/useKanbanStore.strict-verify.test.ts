@@ -1132,8 +1132,8 @@ describe('Liveness gate on session_completed (In Progress ⟺ Review authority)'
 // emits until it is answered — so it moves to Review with NO liveness gate, even while
 // the status still reads `working`. `session_working` (the answer resumes the agent)
 // returns it to In Progress.
-describe('session_question → Review (waiting on the user)', () => {
-  it('moves an active build ticket straight to Review even while the status still reads working', async () => {
+describe('session_question / session_human_required → Human Require (blocked on the user)', () => {
+  it('moves an active build ticket straight to Human Require even while the status still reads working', async () => {
     hoisted.settings.kanbanStrictVerifyEnabled = false
     // `working` would HOLD a session_completed in place (see the liveness-gate suite),
     // but a pending question supersedes it: the ticket is paused on the user.
@@ -1143,7 +1143,30 @@ describe('session_question → Review (waiting on the user)', () => {
     useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_question' })
     await vi.runAllTimersAsync()
 
-    expect(columnOf('ticket-1')).toBe('review')
+    expect(columnOf('ticket-1')).toBe('human_required')
+  })
+
+  it('routes a permission/command-approval block (session_human_required) to Human Require too', async () => {
+    hoisted.settings.kanbanStrictVerifyEnabled = false
+    hoisted.sessionStatuses = { [SESSION_ID]: { status: 'working', timestamp: 0 } }
+    seed(makeTicket({ column: 'in_progress' }))
+
+    useKanbanStore
+      .getState()
+      .syncTicketWithSession(SESSION_ID, { type: 'session_human_required' })
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+  })
+
+  it('returns the ticket to In Progress when the user answers (session_working resume)', async () => {
+    hoisted.settings.kanbanStrictVerifyEnabled = false
+    seed(makeTicket({ column: 'human_required' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_working' })
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
   })
 
   it('ignores a non-build (plan) ticket — the gate is build-only', async () => {
