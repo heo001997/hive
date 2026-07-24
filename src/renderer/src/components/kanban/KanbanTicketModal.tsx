@@ -28,7 +28,8 @@ import {
   PanelLeftOpen,
   PanelLeftClose,
   RefreshCw,
-  Swords
+  Swords,
+  Workflow
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -937,6 +938,7 @@ function KanbanTicketModalContent({
   const updateTicket = useKanbanStore((s) => s.updateTicket)
   const deleteTicket = useKanbanStore((s) => s.deleteTicket)
   const moveTicket = useKanbanStore((s) => s.moveTicket)
+  const setWorkflowChainFocus = useKanbanStore((s) => s.setWorkflowChainFocus)
   const [editDraftDirty, setEditDraftDirty] = useState(false)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
 
@@ -1525,6 +1527,22 @@ function KanbanTicketModalContent({
       break
   }
 
+  // "View workflow" header action — opens the per-chain DAG focus modal for this
+  // ticket. Positioned to the left of the dialog's close button (top-right) so it
+  // is present in every modal layout. z-10 keeps it above the mode content.
+  const viewWorkflowButton = (
+    <button
+      type="button"
+      onClick={() => setWorkflowChainFocus({ projectId: ticket.project_id, ticketId: ticket.id })}
+      title="View workflow"
+      data-testid="view-workflow-btn"
+      className="absolute right-12 top-3.5 z-10 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+    >
+      <Workflow className="h-3.5 w-3.5" />
+      Workflow
+    </button>
+  )
+
   // ── Full-width session layout (in-progress edit mode) ──
   // The terminal/session pane fills the dialog by default; the ticket-detail pane
   // is opt-in via the "Detail" toggle in the tab strip (showDetailPane) so the
@@ -1540,6 +1558,7 @@ function KanbanTicketModalContent({
         <DialogHeader className="sr-only">
           <DialogTitle>{ticket.title}</DialogTitle>
         </DialogHeader>
+        {viewWorkflowButton}
         {conflictBanner}
         <TicketSessionTabs
           ticket={ticket}
@@ -1653,6 +1672,7 @@ function KanbanTicketModalContent({
         data-testid="kanban-ticket-modal"
         className="w-[96vw] max-w-[1920px] h-[90vh] p-0 gap-0 overflow-hidden flex flex-col"
       >
+        {viewWorkflowButton}
         {conflictBanner}
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {/* Left: ticket content */}
@@ -1721,6 +1741,7 @@ function KanbanTicketModalContent({
     // ── Standard layout (no session) ────────────────────────────────
     dialogBody = (
       <DialogContent data-testid="kanban-ticket-modal" className={MODE_DIALOG_CLASS[modalMode]}>
+        {viewWorkflowButton}
         {conflictBanner}
         {modeContent}
       </DialogContent>

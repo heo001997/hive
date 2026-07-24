@@ -449,6 +449,10 @@ interface KanbanState {
   isLoading: boolean
   /** Whether the kanban board view is active — persisted to localStorage */
   isBoardViewActive: boolean
+  /** Whether the workflow (DAG) view is active — persisted to localStorage */
+  isWorkflowViewActive: boolean
+  /** Ticket whose chain the workflow focus modal is showing (null = closed). NOT persisted. */
+  workflowChainFocus: TicketRef | null
   /** Per-project simple mode toggle — persisted to localStorage */
   simpleModeByProject: Record<string, boolean>
   /** Currently selected ticket ID for the detail modal (null = closed) */
@@ -513,6 +517,8 @@ interface KanbanState {
   moveTicketsToColumn: (refs: TicketRef[], column: KanbanTicketColumn) => Promise<void>
   applyColumnSort: (tickets: KanbanTicket[], field: SortField, dir: SortDir) => Promise<void>
   toggleBoardView: () => void
+  toggleWorkflowView: () => void
+  setWorkflowChainFocus: (ref: TicketRef | null) => void
   setSimpleMode: (projectId: string, enabled: boolean) => Promise<void>
   archiveTicket: (ticketId: string, projectId: string) => Promise<void>
   archiveAllDone: (projectId: string) => Promise<number>
@@ -3216,6 +3222,8 @@ export const useKanbanStore = create<KanbanState>()(
       tickets: new Map(),
       isLoading: false,
       isBoardViewActive: false,
+      isWorkflowViewActive: false,
+      workflowChainFocus: null,
       isPinnedBoardActive: false,
       simpleModeByProject: {} as Record<string, boolean>,
       selectedTicketId: null,
@@ -4157,6 +4165,16 @@ export const useKanbanStore = create<KanbanState>()(
       // ── toggleBoardView ──────────────────────────────────────────
       toggleBoardView: () => {
         set((state) => ({ isBoardViewActive: !state.isBoardViewActive }))
+      },
+
+      // ── toggleWorkflowView ───────────────────────────────────────
+      toggleWorkflowView: () => {
+        set((state) => ({ isWorkflowViewActive: !state.isWorkflowViewActive }))
+      },
+
+      // ── setWorkflowChainFocus ────────────────────────────────────
+      setWorkflowChainFocus: (ref: TicketRef | null) => {
+        set({ workflowChainFocus: ref })
       },
 
       // ── setSimpleMode ────────────────────────────────────────────
@@ -5231,6 +5249,7 @@ export const useKanbanStore = create<KanbanState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         isBoardViewActive: state.isBoardViewActive,
+        isWorkflowViewActive: state.isWorkflowViewActive,
         isPinnedBoardActive: state.isPinnedBoardActive,
         simpleModeByProject: state.simpleModeByProject,
         promptQueues: state.promptQueues

@@ -26,6 +26,7 @@ import { useSleepWhenIdle } from '@/hooks/useSleepWhenIdle'
 import { ErrorBoundary, ErrorFallback } from '@/components/error'
 import { CreatePRModal } from '@/components/pr/CreatePRModal'
 import { MonitorModal } from '@/components/monitor/MonitorModal'
+import { WorkflowChainModal } from '@/components/workflow/WorkflowChainModal'
 import { MonitorAlertsListener } from '@/components/monitor/MonitorAlertsListener'
 import { ProjectSettingsDialog } from '@/components/projects/ProjectSettingsDialog'
 import { TerminalPortalProvider, useTerminalPortal } from '@/contexts/TerminalPortalContext'
@@ -310,6 +311,9 @@ export function AppLayout({ children }: AppLayoutProps): React.JSX.Element {
           <MonitorAlertsListener />
           <ErrorBoundary componentName="FileSearchDialog" fallback={null}>
             <FileSearchDialog />
+          </ErrorBoundary>
+          <ErrorBoundary componentName="WorkflowChainModal" fallback={null}>
+            <WorkflowChainModal />
           </ErrorBoundary>
           <GlobalProjectSettings />
           {createPRWorktreeId && createPRWorktreePath && (
