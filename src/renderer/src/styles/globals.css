@@ -714,3 +714,32 @@ body::after {
       inset 0 0 14px 2px rgba(245, 158, 11, 0.45);
   }
 }
+
+/* ── React Flow (workflow DAG) theming ─────────────────────────────────────
+ * Map React Flow's own CSS vars to the app's semantic tokens so the graph shell
+ * (background, edges, controls, minimap) matches the app in both light and dark.
+ * The tokens already flip under `.dark`, so the dark selector carries the SAME
+ * assignments — it exists only to out-specify React Flow's built-in
+ * `.react-flow.dark` overrides (its style.css ships its own dark palette). */
+.react-flow,
+html.dark .react-flow {
+  --xy-background-color: var(--background);
+  --xy-background-pattern-color: var(--border);
+  --xy-edge-stroke-default: var(--border);
+  --xy-edge-stroke-selected: var(--primary);
+  --xy-node-color-default: var(--foreground);
+  --xy-node-border-default: var(--border);
+  --xy-node-background-color-default: var(--card);
+  --xy-controls-button-background-color-default: var(--card);
+  --xy-controls-button-background-color-hover-default: var(--accent);
+  --xy-controls-button-color-default: var(--muted-foreground);
+  --xy-controls-button-color-hover-default: var(--foreground);
+  --xy-controls-button-border-color-default: var(--border);
+  --xy-minimap-background-color-default: var(--card);
+  --xy-minimap-mask-background-color-default: color-mix(
+    in srgb,
+    var(--background) 60%,
+    transparent
+  );
+  --xy-attribution-background-color-default: transparent;
+}

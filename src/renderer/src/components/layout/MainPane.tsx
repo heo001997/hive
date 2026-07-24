@@ -29,6 +29,7 @@ import { useSettingsStore } from '@/stores/useSettingsStore'
 import { useClaudeCliSessionPortal } from '@/contexts/ClaudeCliSessionPortalContext'
 import { KanbanBoard } from '@/components/kanban/KanbanBoard'
 import { WarRoomView } from '@/components/war-room/WarRoomView'
+import { WorkflowBoardView } from '@/components/workflow/WorkflowBoardView'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { BoardAssistantView } from '@/components/kanban/BoardAssistantView'
 import { PRNotificationStack } from '@/components/pr/PRNotificationStack'
@@ -132,6 +133,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     (state) => state.activeBoardAssistantSessionId
   )
   const isBoardViewActive = useKanbanStore((state) => state.isBoardViewActive)
+  const isWorkflowViewActive = useKanbanStore((state) => state.isWorkflowViewActive)
   const isPinnedBoardActive = useKanbanStore((state) => state.isPinnedBoardActive)
   const isWarRoomViewActive = useWarRoomStore((state) => state.isWarRoomViewActive)
   const connectionsLoaded = useConnectionStore((state) => state.loaded)
@@ -248,6 +250,7 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     // terminal would render as flex-1 alongside the board and split the pane.
     if (
       isBoardViewActive ||
+      isWorkflowViewActive ||
       isPinnedBoardActive ||
       isWarRoomViewActive ||
       activeBoardAssistantProjectId
@@ -283,7 +286,9 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     getAgentSdk,
     ghosttyOverlaySuppressed,
     isBoardViewActive,
+    isWorkflowViewActive,
     isPinnedBoardActive,
+    isWarRoomViewActive,
     activeBoardAssistantProjectId
   ])
 
@@ -306,6 +311,21 @@ export function MainPane({ children }: MainPaneProps): React.JSX.Element {
     // when no project is selected). Highest priority so its toggle always wins.
     if (isWarRoomViewActive) {
       return <WarRoomView projectId={selectedProjectId} />
+    }
+
+    // Workflow (DAG) view takes over the full pane — same takeover tier as War Room,
+    // but only over an actual project (needs tickets to graph).
+    if (isWorkflowViewActive && !activeFilePath && !activeDiff && !contextEditorWorktreeId) {
+      return selectedProjectId ? (
+        <WorkflowBoardView projectId={selectedProjectId} />
+      ) : (
+        <div className="flex-1 flex items-center justify-center text-muted-foreground">
+          <div className="text-center">
+            <KanbanIcon className="h-8 w-8 mx-auto mb-3 opacity-50" />
+            <p className="text-sm">Select a project to view its workflow</p>
+          </div>
+        </div>
+      )
     }
 
     // Board assistant tab is active — render the focused chat's BoardAssistantView

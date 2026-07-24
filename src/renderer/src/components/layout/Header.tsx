@@ -8,7 +8,8 @@ import {
   Coffee,
   MoonStar,
   Activity,
-  Swords
+  Swords,
+  Workflow
 } from 'lucide-react'
 import { KanbanIcon } from '@/components/kanban/KanbanIcon'
 import { Button } from '@/components/ui/button'
@@ -69,6 +70,8 @@ export function Header(): React.JSX.Element {
   const isBoardViewActive = useKanbanStore((s) => s.isBoardViewActive)
   const boardSearchMounted = useBoardSearchStore((s) => s.mounted)
   const toggleBoardView = useKanbanStore((s) => s.toggleBoardView)
+  const isWorkflowViewActive = useKanbanStore((s) => s.isWorkflowViewActive)
+  const toggleWorkflowView = useKanbanStore((s) => s.toggleWorkflowView)
   const isWarRoomViewActive = useWarRoomStore((s) => s.isWarRoomViewActive)
   const toggleWarRoomView = useWarRoomStore((s) => s.toggleWarRoomView)
   const kanbanIconSeen = useTipStore((s) => s.isTipSeen('kanban-icon'))
@@ -226,6 +229,7 @@ export function Header(): React.JSX.Element {
                 if (!isBoardViewActive) {
                   fileStore.clearActiveViews()
                   useWarRoomStore.getState().setWarRoomViewActive(false)
+                  if (useKanbanStore.getState().isWorkflowViewActive) toggleWorkflowView()
                   toggleBoardView()
                 } else if (fileStore.hasActiveOverlay()) {
                   fileStore.clearActiveViews()
@@ -252,6 +256,9 @@ export function Header(): React.JSX.Element {
               if (useKanbanStore.getState().isBoardViewActive) {
                 toggleBoardView()
               }
+              if (useKanbanStore.getState().isWorkflowViewActive) {
+                toggleWorkflowView()
+              }
             }
             toggleWarRoomView()
           }}
@@ -260,6 +267,25 @@ export function Header(): React.JSX.Element {
           className={cn(isWarRoomViewActive && 'bg-accent text-accent-foreground')}
         >
           <Swords className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => {
+            if (!isWorkflowViewActive) {
+              useFileViewerStore.getState().clearActiveViews()
+              useWarRoomStore.getState().setWarRoomViewActive(false)
+              if (useKanbanStore.getState().isBoardViewActive) {
+                toggleBoardView()
+              }
+            }
+            toggleWorkflowView()
+          }}
+          title={isWorkflowViewActive ? 'Close Workflow' : 'Open Workflow'}
+          data-testid="workflow-view-toggle"
+          className={cn(isWorkflowViewActive && 'bg-accent text-accent-foreground')}
+        >
+          <Workflow className="h-4 w-4" />
         </Button>
         {boardSearchMounted && <BoardSearchControl />}
         <Button
