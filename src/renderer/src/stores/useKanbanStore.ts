@@ -205,8 +205,9 @@ export function isLayoutAnimationSuppressed(): boolean {
 const COLUMN_ORDER: Record<KanbanTicketColumn, number> = {
   todo: 0,
   in_progress: 1,
-  review: 2,
-  done: 3
+  human_required: 2,
+  review: 3,
+  done: 4
 }
 
 function findTicketByRef(
@@ -271,7 +272,13 @@ async function loadProjectTicketsSnapshot(
 const TICKETS_PER_PAGE = 20
 
 /** Columns streamed, in display order, by the paginated load. */
-const STREAM_COLUMNS: KanbanTicketColumn[] = ['todo', 'in_progress', 'review', 'done']
+const STREAM_COLUMNS: KanbanTicketColumn[] = [
+  'todo',
+  'in_progress',
+  'human_required',
+  'review',
+  'done'
+]
 
 type ColumnPagesResult = Record<string, { tickets: KanbanTicket[]; total: number }>
 
@@ -1223,7 +1230,11 @@ async function promoteToReviewWhenQuiescent(
       t.pending_launch_config ||
       t.mode !== 'build' ||
       t.column === 'review' ||
-      t.column === 'done'
+      t.column === 'done' ||
+      // Blocked on the user: its terminal is expected to be silent while it waits,
+      // so quiescence must NOT promote it to Review. It leaves Human Require only on
+      // a genuine resume (session_working → In Progress).
+      t.column === 'human_required'
     ) {
       cancelReviewPromotion(key)
       return null
@@ -4180,7 +4191,12 @@ export const useKanbanStore = create<KanbanState>()(
                 if (
                   ticket.mode === 'build' &&
                   ticket.column !== 'review' &&
-                  ticket.column !== 'done'
+                  ticket.column !== 'done' &&
+                  // A ticket already blocked on the user (Human Require) is NOT finished;
+                  // its terminal is expected to be silent while it waits, so a completed
+                  // event must not quiescence-promote it to Review. It leaves Human
+                  // Require only on a genuine resume (session_working).
+                  ticket.column !== 'human_required'
                 ) {
                   // Liveness gate (the In Progress ⟺ Review authority): do NOT trust
                   // the main agent's idle/Stop event to move the ticket. Confirm the
@@ -4190,13 +4206,19 @@ export const useKanbanStore = create<KanbanState>()(
                   // Progress and this polls until it settles.
                   void promoteToReviewWhenQuiescent(get, projectId, ticket.id, sessionId)
                 } else if (isPlanLike(ticket.mode) && !ticket.plan_ready) {
-                  // Plan finished — set plan_ready and move to review for user attention
+                  // Plan finished — the user must approve/implement it, so it's a Human
+                  // Require state (not Review, which is for finished build work).
                   get()
                     .updateTicket(ticket.id, projectId, { plan_ready: true })
                     .catch(() => {})
                   if (ticket.column !== 'review' && ticket.column !== 'done') {
                     get()
-                      .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                      .moveTicket(
+                        ticket.id,
+                        projectId,
+                        'human_required',
+                        topOfColumnSortOrder(get, projectId, 'human_required')
+                      )
                       .catch(() => {})
                   }
                 }
@@ -4222,14 +4244,20 @@ export const useKanbanStore = create<KanbanState>()(
               }
 
               case 'plan_ready': {
-                // Explicit plan.ready event — set flag and move to review
+                // Explicit plan.ready event — the plan awaits the user's approval, a
+                // Human Require state (not Review). Set the flag and move it there.
                 if (isPlanLike(ticket.mode) && !ticket.plan_ready) {
                   get()
                     .updateTicket(ticket.id, projectId, { plan_ready: true })
                     .catch(() => {})
                   if (ticket.column !== 'review' && ticket.column !== 'done') {
                     get()
-                      .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                      .moveTicket(
+                        ticket.id,
+                        projectId,
+                        'human_required',
+                        topOfColumnSortOrder(get, projectId, 'human_required')
+                      )
                       .catch(() => {})
                   }
                 }
@@ -4295,31 +4323,49 @@ export const useKanbanStore = create<KanbanState>()(
 
               case 'session_error': {
                 // Same rider guard as session_completed: a queued ticket attached to
-                // someone else's session must not be dragged to Review on their error.
+                // someone else's session must not be dragged off its column on their error.
                 if (ticket.pending_launch_config) break
-                // Error requires user attention — move to review if currently in_progress
+                // A turn that ended on an error (API failure / crash) can't proceed
+                // without the user — a Human Require state, not Review (Review is
+                // finished-and-stopped work). Move it there if currently In Progress.
                 if (ticket.column === 'in_progress') {
+                  cancelReviewPromotion(ticketKey(projectId, ticket.id))
                   get()
-                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                    .moveTicket(
+                      ticket.id,
+                      projectId,
+                      'human_required',
+                      topOfColumnSortOrder(get, projectId, 'human_required')
+                    )
                     .catch(() => {})
                 }
                 break
               }
 
-              case 'session_question': {
-                // The agent asked a structured question and is now PAUSED, waiting on
-                // the user — a Review state (the "Question" badge tells Tu to look). A
-                // pending question is definitively quiescent (nothing emits until it's
-                // answered), so — unlike session_completed — no liveness gate: move
-                // straight to Review. `session_working` (fired when the answer resumes
-                // the agent) returns it to In Progress and clears the badge.
+              case 'session_question':
+              case 'session_human_required': {
+                // The agent is BLOCKED mid-run awaiting the user — a structured Q&A
+                // (`session_question`), or a permission / command-approval / MCP
+                // elicitation prompt (`session_human_required`). This is the Human
+                // Require column: In Progress means "running, nothing blocking", so a
+                // ticket waiting on a human belongs in its own column, NOT In Progress
+                // and NOT Review (Review is finished-and-stopped). A pending prompt is
+                // definitively quiescent (nothing emits until it's answered), so —
+                // unlike session_completed — no liveness gate: move straight there.
+                // `session_working` (fired when the reply resumes the agent) returns it
+                // to In Progress.
                 if (ticket.pending_launch_config) break
                 if (ticket.mode === 'build' && ticket.column === 'in_progress') {
-                  // A pending question supersedes any in-flight promote-when-quiescent
-                  // poll for this ticket (both target Review; avoid a double move).
+                  // A human-required block supersedes any in-flight promote-when-quiescent
+                  // poll for this ticket (avoid racing it into Review).
                   cancelReviewPromotion(ticketKey(projectId, ticket.id))
                   get()
-                    .moveTicket(ticket.id, projectId, 'review', topOfColumnSortOrder(get, projectId, 'review'))
+                    .moveTicket(
+                      ticket.id,
+                      projectId,
+                      'human_required',
+                      topOfColumnSortOrder(get, projectId, 'human_required')
+                    )
                     .catch(() => {})
                 }
                 break
@@ -4342,7 +4388,13 @@ export const useKanbanStore = create<KanbanState>()(
                     .updateTicket(ticket.id, projectId, { plan_ready: false })
                     .catch(() => {})
                 }
-                if (ticket.column === 'todo' || ticket.column === 'review') {
+                if (
+                  ticket.column === 'todo' ||
+                  ticket.column === 'review' ||
+                  // The user answered the prompt (Q&A / permission / plan / error) that
+                  // parked it in Human Require — the agent is running again → In Progress.
+                  ticket.column === 'human_required'
+                ) {
                   // A genuine resume out of Review (the user typed into the CLI again)
                   // closes the current review cycle — free the "review" Telegram dedupe
                   // slot so the NEXT time this ticket reaches Review it notifies again.

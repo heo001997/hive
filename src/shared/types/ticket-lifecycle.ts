@@ -53,8 +53,10 @@ export type LifecycleSlot = 'before' | 'retry' | 'during' | 'after'
 /** The verdicts a DURING/AFTER gate can produce, used to pick a branch. */
 export type LifecycleVerdict = 'pass' | 'fail' | 'needsInput'
 
-/** Kanban states a ticket flows through. Structurally identical to `KanbanTicketColumn`. */
-export type LifecycleState = 'todo' | 'in_progress' | 'review' | 'done'
+/** Kanban states a ticket flows through. Structurally identical to `KanbanTicketColumn`.
+ * `human_required` is a transient "blocked on the user" holding state (no lifecycle
+ * hooks are configured for it) — included so a `column`→`LifecycleState` cast stays total. */
+export type LifecycleState = 'todo' | 'in_progress' | 'human_required' | 'review' | 'done'
 
 /** Entry context for a before/retry slot — distinguishes a first entry from a loop re-entry. */
 export type LifecycleEntryContext = 'initial' | 'retry'

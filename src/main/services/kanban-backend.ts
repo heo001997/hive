@@ -72,13 +72,20 @@ const HIVE_FRONTMATTER_FIELDS = new Set([
 ])
 
 const CARD_FILE_SIZE_LIMIT_BYTES = 1024 * 1024
-const KANBAN_COLUMNS: KanbanTicketColumn[] = ['todo', 'in_progress', 'review', 'done']
+const KANBAN_COLUMNS: KanbanTicketColumn[] = [
+  'todo',
+  'in_progress',
+  'human_required',
+  'review',
+  'done'
+]
 const VALID_COLUMNS = new Set<KanbanTicketColumn>(KANBAN_COLUMNS)
 
 function emptyColumnPages(): KanbanColumnPages {
   return {
     todo: { tickets: [], total: 0 },
     in_progress: { tickets: [], total: 0 },
+    human_required: { tickets: [], total: 0 },
     review: { tickets: [], total: 0 },
     done: { tickets: [], total: 0 }
   }
@@ -2187,7 +2194,11 @@ async function planSingleFolderToStatusFolders(
       const id = asString(parsed.frontmatter.id)
       validateKnownFrontmatter(parsed.frontmatter, id)
       const column = asColumn(parsed.frontmatter.column) ?? 'todo'
-      const targetFolder = nextConfig.statusFolders[column]
+      // `human_required` is a transient state with no dedicated status folder in
+      // pre-existing configs; its cards rest in the in_progress folder on disk (same
+      // fallback as ensureFolder). Without this, statusFolders[column] is undefined
+      // and resolveProjectPath(path, undefined) throws, breaking the layout migration.
+      const targetFolder = nextConfig.statusFolders[column] ?? nextConfig.statusFolders.in_progress
       moves.push({
         source,
         target: join(resolveProjectPath(project.path, targetFolder), entry.name)

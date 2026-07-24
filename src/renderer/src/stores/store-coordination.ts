@@ -37,7 +37,12 @@ export function clearConnectionSelection(): void {
 // importing useKanbanStore.
 
 export interface KanbanSessionEvent {
-  type: 'session_completed' | 'session_error' | 'plan_ready' | 'plan_followup' | 'supercharge' | 'mode_change' | 'implement' | 'session_working' | 'session_question'
+  // `session_human_required` — the agent is blocked mid-run awaiting the user
+  // (permission / command-approval / MCP elicitation). Routes the ticket to the
+  // Human Require column, like `session_question` (structured Q&A) does. Both,
+  // plus `plan_ready` and `session_error`, target Human Require; a resume
+  // (`session_working`) returns the ticket to In Progress.
+  type: 'session_completed' | 'session_error' | 'plan_ready' | 'plan_followup' | 'supercharge' | 'mode_change' | 'implement' | 'session_working' | 'session_question' | 'session_human_required'
   /** The mode the session was running in (build / plan) — relevant for completed events */
   sessionMode?: 'build' | 'plan'
   /** For supercharge: the newly-created session that replaces the old one */

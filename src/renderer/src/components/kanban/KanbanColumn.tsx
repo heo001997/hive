@@ -93,6 +93,7 @@ const CARD_LAYOUT_SPRING = {
 const COLUMN_TITLES: Record<ColumnType, string> = {
   todo: 'To Do',
   in_progress: 'In Progress',
+  human_required: 'Human Require',
   review: 'Review',
   done: 'Done'
 }

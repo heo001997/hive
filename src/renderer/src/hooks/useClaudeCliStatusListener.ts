@@ -121,6 +121,18 @@ export function useClaudeCliStatusListener(): void {
         return
       }
 
+      if (status === 'completed' && metadata?.hookEventName === 'StopFailure') {
+        // The turn ended on an API error (rate limit / overload / auth), not a clean
+        // finish (a StopFailure deferred behind a running sub-agent resolves as
+        // 'working' and never reaches here). The agent can't proceed without the user
+        // → Human Require, not Review. Fire session_error (→ Human Require) and set a
+        // non-'completed' status so the completed→session_completed→Review promotion
+        // does not also fire.
+        notifyKanbanSessionSync(sessionId, { type: 'session_error' })
+        worktreeStatus.setSessionStatus(sessionId, 'unread', metadata)
+        return
+      }
+
       worktreeStatus.setSessionStatus(sessionId, status, metadata)
     })
 

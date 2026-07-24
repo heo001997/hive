@@ -324,6 +324,37 @@ export const launchHiveElectronApp = async (): Promise<HiveElectronApp> => {
 }
 
 /**
+ * Publish an event through the backend's sanctioned injection seam
+ * `POST /api/events/publish` → real eventBus.publish → real WS server-push → the real
+ * renderer listener the app subscribes to (`claude-cli:status` / `opencode:stream`).
+ * The maximally-faithful analog of "a real agent pushed a status" in browser E2E, where
+ * no real agent process exists to emit it (precondition 0.4, F3/F4). Fixture/injection
+ * seam only — never a UI-journey action. Same bootstrap→accessToken flow as rpcCall.
+ */
+export const publishEvent = async (
+  app: HiveApp,
+  channel: string,
+  payload: Record<string, unknown>
+): Promise<void> => {
+  const boot = await fetch(`${app.httpBaseUrl}/api/auth/bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bootstrapToken: app.bootstrapToken })
+  })
+  if (!boot.ok) throw new Error(`bootstrap failed: ${boot.status}`)
+  const auth = (await boot.json()) as { session: { accessToken: string } }
+  const res = await fetch(`${app.httpBaseUrl}/api/events/publish`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${auth.session.accessToken}`
+    },
+    body: JSON.stringify({ channel, payload })
+  })
+  if (!res.ok) throw new Error(`publishEvent ${channel} failed: ${res.status}`)
+}
+
+/**
  * Create a throwaway git repo with one commit — the on-disk half of seeding a Hive
  * project (fixture phase only). Lives inside the OS temp dir with the hive-e2e- marker
  * so the cleanup sweep can find strays.

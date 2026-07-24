@@ -54,6 +54,9 @@ export type KanbanMarkdownConfig =
       statusFolders?: {
         todo: string
         in_progress: string
+        // Optional: a ticket blocked awaiting the user. Falls back to the
+        // in_progress folder when unset (transient state; see kanban-markdown-paths).
+        human_required?: string
         review: string
         done: string
       }
@@ -64,6 +67,7 @@ export type KanbanMarkdownConfig =
       statusFolders: {
         todo: string
         in_progress: string
+        human_required?: string
         review: string
         done: string
       }
@@ -496,7 +500,7 @@ export interface SessionSearchOptions {
 }
 
 // Kanban ticket types
-export type KanbanTicketColumn = 'todo' | 'in_progress' | 'review' | 'done'
+export type KanbanTicketColumn = 'todo' | 'in_progress' | 'human_required' | 'review' | 'done'
 export type TicketMark = 'common' | 'rare' | 'epic' | 'legendary'
 
 export interface KanbanTicket {

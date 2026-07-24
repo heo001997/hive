@@ -2872,7 +2872,14 @@ function PlanReviewModeContent({
           toast.error('Failed to attach the new session to the ticket')
         })
 
-      if (ticket.column === 'todo' || ticket.column === 'review') {
+      if (
+        ticket.column === 'todo' ||
+        ticket.column === 'review' ||
+        // A plan_ready ticket now rests in Human Require (not Review); a supercharge/
+        // relink from there is fresh build work → move it to In Progress synchronously
+        // (mirrors the session_working resume guard in useKanbanStore).
+        ticket.column === 'human_required'
+      ) {
         const kanbanStore = useKanbanStore.getState()
         const sortOrder = kanbanStore.computeSortOrder(
           kanbanStore.getTicketsByColumn(ticket.project_id, 'in_progress'),

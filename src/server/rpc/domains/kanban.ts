@@ -244,7 +244,7 @@ export interface KanbanRpcService {
   ) => Effect.Effect<{ success: boolean; error?: string }, unknown, never>
 }
 
-const ticketColumnSchema = z.enum(['todo', 'in_progress', 'review', 'done'])
+const ticketColumnSchema = z.enum(['todo', 'in_progress', 'human_required', 'review', 'done'])
 const sessionModeSchema = z.enum(['build', 'plan', 'super-plan'])
 const ticketMarkSchema = z.enum(['common', 'rare', 'epic', 'legendary'])
 
@@ -402,7 +402,7 @@ const getTicketsByProjectParamsSchema = z
     includeArchived: z.boolean().optional()
   })
   .strict()
-const kanbanColumnSchema = z.enum(['todo', 'in_progress', 'review', 'done'])
+const kanbanColumnSchema = z.enum(['todo', 'in_progress', 'human_required', 'review', 'done'])
 const getTicketColumnPagesParamsSchema = z
   .object({
     projectId: z.string(),

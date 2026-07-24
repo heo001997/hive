@@ -1139,7 +1139,11 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
             </div>
 
             {/* Badges + progress row */}
-            {(hasAttachments || hasNote || worktreeName || projectTag || connectionName || ticket.plan_ready || isError || rightAlignedSlot || isArchived || isBlocked || blockingDiagnostic || isRunProcessAlive || ticket.github_pr_number || isCreatingPR || isForwardedToTelegram || ticket.goal_mode) && (
+            {/* `human_required` must be in this enclosing gate: a card blocked on the
+                user shows the "needs-you" badge (see the Questions badge below), but
+                that badge only renders if this row does — and a plain Human Require
+                card may have no other trigger (worktree/note/PR/plan_ready/…). */}
+            {(hasAttachments || hasNote || worktreeName || projectTag || connectionName || ticket.plan_ready || isError || rightAlignedSlot || isArchived || isBlocked || blockingDiagnostic || isRunProcessAlive || ticket.github_pr_number || isCreatingPR || isForwardedToTelegram || ticket.goal_mode || ticket.column === 'human_required') && (
               <div className="mt-1.5 flex flex-wrap items-center gap-1">
                 {/* Archived badge */}
                 {isArchived && (
@@ -1172,12 +1176,13 @@ export const KanbanTicketCard = memo(function KanbanTicketCard({
                 {/* Live Strict Verify / Auto Review Bypass progress — countdown +
                     work status while the ticket settles in Review. */}
                 {verifyProgress && <VerifyProgressBadge progress={verifyProgress} />}
-                {/* "Question" state badge — the agent is PAUSED waiting on the user,
-                    so the ticket sits in Review. Two sources feed it: a plain-text
-                    `needsInput` verdict (Strict Verify) OR a pending structured
-                    question (question store / `answering` status) while in Review.
-                    Otherwise, "Not done" when the Watcher bounced it to In Progress. */}
-                {completionVerdict?.needsInput || (isAsking && ticket.column === 'review') ? (
+                {/* "Question" state badge — the agent is PAUSED waiting on the user.
+                    Two sources feed it: a plain-text `needsInput` verdict (Strict
+                    Verify, which parks the ticket in Review) OR any Human Require
+                    occupancy (a structured question, permission / command-approval
+                    prompt, plan awaiting approval, or an errored turn) — the column
+                    itself means "needs you", so the badge covers every case there. */}
+                {completionVerdict?.needsInput || ticket.column === 'human_required' ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span

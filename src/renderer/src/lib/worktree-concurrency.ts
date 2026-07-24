@@ -24,10 +24,16 @@ export function getMaxParallelWorktrees(projectId: string): number {
   return Number.isFinite(max) && max > 0 ? Math.floor(max) : 0
 }
 
-/** Count worktrees currently running for a project (launched tickets in In Progress). */
+/** Count worktrees currently running for a project (launched tickets occupying a
+ *  worktree). Human Require tickets are blocked on the user but still hold a live
+ *  session + worktree, so they count against the cap exactly like In Progress. */
 export function getRunningWorktreeCount(projectId: string): number {
-  const inProgress = useKanbanStore.getState().getTicketsByColumn(projectId, 'in_progress')
-  return inProgress.filter((t) => !t.pending_launch_config && !t.archived_at).length
+  const store = useKanbanStore.getState()
+  const active = [
+    ...store.getTicketsByColumn(projectId, 'in_progress'),
+    ...store.getTicketsByColumn(projectId, 'human_required')
+  ]
+  return active.filter((t) => !t.pending_launch_config && !t.archived_at).length
 }
 
 /** Whether a new worktree may be launched right now without exceeding the cap. */
@@ -134,7 +140,9 @@ export async function launchReadyCreatedTickets(projectId: string): Promise<void
  *  still-queued ticket (pending config in Todo or In Progress) has NOT started. */
 function isTicketStarted(t: KanbanTicket): boolean {
   if (t.archived_at) return false
-  if (t.column === 'done' || t.column === 'review') return true
+  // Human Require is reached only from a running In Progress session, so a ticket
+  // there has unambiguously started (it's blocked on the user mid-run).
+  if (t.column === 'done' || t.column === 'review' || t.column === 'human_required') return true
   return t.column === 'in_progress' && !t.pending_launch_config
 }
 

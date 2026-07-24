@@ -83,9 +83,9 @@ describe('mapHookEventToStatus', () => {
       'plan_ready'
     ],
     [
-      'PreToolUse AskUserQuestion is ignored (renders in the native terminal)',
+      'PreToolUse AskUserQuestion maps to answering (blocked on the user → Human Require)',
       { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' },
-      null
+      'answering'
     ],
     [
       'PostToolUse ExitPlanMode maps to working',
@@ -295,10 +295,17 @@ describe('buildClaudeCliHookSettings', () => {
     }
   })
 
-  it('scopes PreToolUse to ExitPlanMode + Task, wildcards the tool/permission hooks, and buckets by path', () => {
+  it('scopes PreToolUse to ExitPlanMode + AskUserQuestion + Task, wildcards the tool/permission hooks, and buckets by path', () => {
     const settings = JSON.parse(buildClaudeCliHookSettings(34819, 'hive-session-1')) as HookSettings
 
-    expect(settings.hooks.PreToolUse.map((e) => e.matcher)).toEqual(['ExitPlanMode', 'Task'])
+    expect(settings.hooks.PreToolUse.map((e) => e.matcher)).toEqual([
+      'ExitPlanMode',
+      'AskUserQuestion',
+      'Task'
+    ])
+    // AskUserQuestion buckets under the /permission path (a human-wait signal).
+    const askUserQuestion = settings.hooks.PreToolUse.find((e) => e.matcher === 'AskUserQuestion')
+    expect(askUserQuestion?.hooks[0].url).toContain('/permission')
     expect(settings.hooks.PostToolUse[0].matcher).toBe('*')
     expect(settings.hooks.PermissionRequest[0].matcher).toBe('*')
     // Lifecycle hooks are matcher-less (match all invocations).
