@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ServerEvent } from '../../shared/rpc/protocol'
 import { makeEventBus } from '../events/event-bus'
 import { makeLiveTerminalOpsRpcService } from '../rpc/domains/terminal-ops'
+import { getTerminalLiveness, resetTerminalLiveness } from '../rpc/domains/terminal-liveness'
 
 const ptyServiceMocks = vi.hoisted(() => ({
   has: vi.fn(),
@@ -83,6 +84,36 @@ describe('terminal ops RPC live service', () => {
     ])
     expect(removeData).toHaveBeenCalledTimes(1)
     expect(removeExit).toHaveBeenCalledTimes(1)
+  })
+
+  it('mirrors liveness for a backend-owned PTY: alive at create, stamped on data, gone on exit', async () => {
+    let dataCallback: ((data: string) => void) | null = null
+    let exitCallback: ((code: number, signal: number) => void) | null = null
+    ptyServiceMocks.has.mockReturnValue(false)
+    ptyServiceMocks.create.mockReturnValue({ cols: 80, rows: 24 })
+    ptyServiceMocks.onData.mockImplementation((_terminalId, callback) => {
+      dataCallback = callback
+      return vi.fn()
+    })
+    ptyServiceMocks.onExit.mockImplementation((_terminalId, callback) => {
+      exitCallback = callback
+      return vi.fn()
+    })
+
+    resetTerminalLiveness()
+    const service = makeLiveTerminalOpsRpcService(makeEventBus())
+    await Effect.runPromise(service.create('terminal-live', '/tmp/project'))
+
+    // Created but silent so far → alive, zero bytes (never "frozen").
+    expect(getTerminalLiveness('terminal-live')).toMatchObject({ bytes: 0, tail: '' })
+
+    dataCallback?.('\x1b[32mout\x1b[0m')
+    await waitImmediate()
+    expect(getTerminalLiveness('terminal-live')?.tail).toBe('out')
+
+    exitCallback?.(0, 0)
+    await Promise.resolve()
+    expect(getTerminalLiveness('terminal-live')).toBeUndefined()
   })
 
   it('persists client diagnostics through the logDiagnostics RPC', async () => {

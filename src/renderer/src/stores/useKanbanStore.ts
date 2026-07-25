@@ -697,6 +697,19 @@ const pendingAutoBypass = new Map<TicketKey, ReturnType<typeof setTimeout>>()
 const pendingReviewPromotion = new Map<TicketKey, ReturnType<typeof setTimeout>>()
 
 /**
+ * Generation counter per ticket, bumped by every `cancelReviewPromotion`. Clearing the
+ * poll timer alone was not enough to stop a promotion: the check is async (it awaits a
+ * fingerprint round-trip), so a resume that lands DURING that await used to cancel a
+ * timer that no longer existed and the in-flight check went on to move the ticket
+ * anyway. Observed: `UserPromptSubmit` → `working` arrived 123ms before the promotion
+ * moved the ticket to Review, and because the status was already `working` the
+ * edge-triggered `session_working` recovery could never fire again — the ticket
+ * stranded in Review with a live agent. Each run captures the generation it started
+ * with and aborts after every await if it changed.
+ */
+const reviewPromotionGeneration = new Map<TicketKey, number>()
+
+/**
  * Gate-1 frozen-check snapshots. Captured (asynchronously) when Strict Verify is
  * armed: S0 is the session's output fingerprint at arm time. At settle the
  * handler re-captures S1 and compares — a change means the session is still
@@ -938,6 +951,8 @@ function cancelReviewPromotion(key: TicketKey): void {
     clearTimeout(timer)
     pendingReviewPromotion.delete(key)
   }
+  // Also invalidate any promotion currently awaiting its frozen check.
+  reviewPromotionGeneration.set(key, (reviewPromotionGeneration.get(key) ?? 0) + 1)
 }
 
 /** Cancel both settle timers and drop any frozen snapshot for a ticket. */
@@ -1251,20 +1266,33 @@ async function promoteToReviewWhenQuiescent(
   const ticket = stillPromotable()
   if (!ticket) return
 
+  // Generation this run belongs to: any `cancelReviewPromotion` (a resume, a
+  // human-required block, a move off the column) bumps it and this run must then
+  // abandon its move — clearing the poll timer cannot stop work already past its await.
+  const generation = reviewPromotionGeneration.get(key) ?? 0
+  const invalidated = (): boolean => (reviewPromotionGeneration.get(key) ?? 0) !== generation
+
   // Sustained-idle window for the In Progress ⟺ Review boundary: the flap-proof floor
   // (`REVIEW_PROMOTE_IDLE_MS`), lengthened by the user's frozen-idle setting if larger —
   // NOT the raw 2.5s animation floor, which would promote a live session between turns
   // and flip-flop it right back on the next turn.
   const { useSettingsStore } = await import('./useSettingsStore')
+  if (invalidated()) return
   const { frozenIdleMs } = resolveVerifyConfig(ticket, useSettingsStore.getState())
   const promoteIdleMs = Math.max(REVIEW_PROMOTE_IDLE_MS, frozenIdleMs)
 
   const frozen = await confirmSessionFrozen(sessionId, { idleMs: promoteIdleMs })
 
   // Re-validate after the await — the ticket may have resumed / moved meanwhile.
-  if (!stillPromotable()) return
+  if (invalidated() || !stillPromotable()) return
 
-  if (frozen === 'active') {
+  // The session may have gone back to work DURING the check (its `session_working`
+  // fires before the frozen read resolves). Promoting then would park a live agent in
+  // Review that no further edge can rescue, so hold In Progress and re-poll instead.
+  const liveStatus = useWorktreeStatusStore.getState().sessionStatuses[sessionId]?.status
+  const resumedMidCheck = liveStatus === 'working' || liveStatus === 'planning'
+
+  if (frozen === 'active' || resumedMidCheck) {
     // Still emitting (subagent/spinner/next turn) OR merely idle between turns (silent
     // < promoteIdleMs) → the tty is alive → stays In Progress; re-check after one poll
     // interval. Self-driving: no further event is needed to promote once the terminal
@@ -1273,7 +1301,7 @@ async function promoteToReviewWhenQuiescent(
       'debug',
       'Kanban',
       `promote-defer ticket ${ticketId}: not idle for ${promoteIdleMs}ms yet, holding In Progress`,
-      { ticketId, sessionId, promoteIdleMs }
+      { ticketId, sessionId, promoteIdleMs, frozen, liveStatus: liveStatus ?? null }
     )
     const timer = setTimeout(() => {
       pendingReviewPromotion.delete(key)

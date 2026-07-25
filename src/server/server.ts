@@ -28,6 +28,10 @@ import {
   flushTerminalOutput,
   publishTerminalOutput
 } from './rpc/domains/terminal-output-coalescer'
+import {
+  disposeTerminalLiveness,
+  recordTerminalLiveness
+} from './rpc/domains/terminal-liveness'
 import { cleanupBranchWatchers } from '../main/services/branch-watcher'
 import { setGitEventPublisher } from '../main/services/git-events'
 import { systemMonitor } from '../main/services/system-monitor'
@@ -93,7 +97,13 @@ export const startHiveServer = (
       // fleet of backgrounded agents doesn't flood the renderer's single
       // WebSocket parse loop. Non-terminal events publish straight through.
       if (channel.startsWith('terminal:data:') && typeof payload === 'string') {
-        publishTerminalOutput(eventBus, channel.slice('terminal:data:'.length), payload)
+        const terminalId = channel.slice('terminal:data:'.length)
+        // Mirror main's PTY liveness into this process BEFORE the coalescer (which may
+        // buffer a hidden terminal's output): `completionOps.getSessionFingerprint`
+        // runs here and cannot see main's accumulator, and without this mirror every
+        // frozen check silently degrades to the DB fallback (see terminal-liveness).
+        recordTerminalLiveness(terminalId, payload)
+        publishTerminalOutput(eventBus, terminalId, payload)
         return
       }
       if (channel.startsWith('terminal:exit:')) {
@@ -101,6 +111,7 @@ export const startHiveServer = (
         flushTerminalOutput(eventBus, channel.slice('terminal:exit:'.length))
         void Effect.runPromise(eventBus.publish({ channel, payload })).catch(() => undefined)
         disposeTerminalOutput(channel.slice('terminal:exit:'.length))
+        disposeTerminalLiveness(channel.slice('terminal:exit:'.length))
         return
       }
       void Effect.runPromise(eventBus.publish({ channel, payload })).catch(() => undefined)

@@ -27,8 +27,11 @@ import type { SessionStatusType } from '@shared/types/session-status'
 
 const SESSION_ID = 'sess-bridge'
 
-function setStatus(status: SessionStatusType | null): void {
-  useWorktreeStatusStore.getState().setSessionStatus(SESSION_ID, status)
+function setStatus(
+  status: SessionStatusType | null,
+  metadata?: { reason?: string; hookEventName?: string }
+): void {
+  useWorktreeStatusStore.getState().setSessionStatus(SESSION_ID, status, metadata)
 }
 
 describe('useWorktreeStatusStore — status → kanban-event bridge', () => {
@@ -52,6 +55,31 @@ describe('useWorktreeStatusStore — status → kanban-event bridge', () => {
 
   it('completed → session_completed', () => {
     setStatus('completed')
+    expect(mocks.notifyKanbanSessionSync).toHaveBeenCalledWith(
+      SESSION_ID,
+      expect.objectContaining({ type: 'session_completed' })
+    )
+  })
+
+  // A CLI session reports 'completed' the moment its terminal spawns — `pty_start`
+  // (promptless PTY) and the `SessionStart` hook. No turn has run, so these must set
+  // the badge WITHOUT arming the In Progress → Review promotion; otherwise a ticket
+  // jumps to Review on its very first run, before the agent has done anything.
+  it.each<[string, { reason?: string; hookEventName?: string }]>([
+    ['pty_start', { reason: 'pty_start' }],
+    ['SessionStart hook', { hookEventName: 'SessionStart' }]
+  ])('completed from %s → badge only, no session_completed', (_label, metadata) => {
+    setStatus('completed', metadata)
+    expect(mocks.notifyKanbanSessionSync).not.toHaveBeenCalled()
+    expect(useWorktreeStatusStore.getState().sessionStatuses[SESSION_ID]?.status).toBe('completed')
+  })
+
+  it.each<[string, { reason?: string; hookEventName?: string }]>([
+    ['Stop hook', { hookEventName: 'Stop' }],
+    ['pty_exit', { reason: 'pty_exit' }],
+    ['user_interrupt', { reason: 'user_interrupt' }]
+  ])('completed from %s → session_completed (genuine turn end)', (_label, metadata) => {
+    setStatus('completed', metadata)
     expect(mocks.notifyKanbanSessionSync).toHaveBeenCalledWith(
       SESSION_ID,
       expect.objectContaining({ type: 'session_completed' })

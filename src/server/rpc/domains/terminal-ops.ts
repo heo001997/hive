@@ -22,6 +22,11 @@ import {
   publishTerminalOutput,
   setTerminalOutputVisible
 } from './terminal-output-coalescer'
+import {
+  disposeTerminalLiveness,
+  markTerminalAlive,
+  recordTerminalLiveness
+} from './terminal-liveness'
 import type { RpcHandler } from '../router'
 
 export interface TerminalOpsRpcService {
@@ -269,15 +274,19 @@ const detachBackendPtyListeners = (terminalId: string): void => {
     listenerCleanups.delete(terminalId)
   }
   disposeTerminalOutput(terminalId)
+  disposeTerminalLiveness(terminalId)
 }
 
 const attachBackendPtyListeners = (eventBus: EventBus | undefined, terminalId: string): void => {
   detachBackendPtyListeners(terminalId)
+  // A terminal that has not emitted yet is alive, not frozen (see terminal-liveness).
+  markTerminalAlive(terminalId)
 
   // Route PTY output through the visibility-aware coalescer (see
   // terminal-output-coalescer) so backgrounded terminals don't flood the
   // renderer's single-socket parse loop.
   const removeData = ptyService.onData(terminalId, (data) => {
+    recordTerminalLiveness(terminalId, data)
     publishTerminalOutput(eventBus, terminalId, data)
   })
 
@@ -1308,7 +1317,15 @@ export const makeLiveTerminalOpsRpcService = (eventBus?: EventBus): TerminalOpsR
     }),
   createClaudeCli: (sessionId, opts) =>
     Effect.tryPromise({
-      try: () => requestDesktopTerminalCreateClaudeCli(sessionId, opts),
+      try: async () => {
+        const result = await requestDesktopTerminalCreateClaudeCli(sessionId, opts)
+        // The PTY itself lives in Electron main; mirror "it exists and just started"
+        // here so a fingerprint taken during the CLI's ~300ms boot (before main
+        // forwards the first `terminal:data:` chunk) reads as alive rather than as a
+        // frozen session with no data. Main's chunks then keep it stamped.
+        if (result.success) markTerminalAlive(sessionId)
+        return result
+      },
       catch: (cause) => cause
     }),
   ghosttyInit: () =>
@@ -1424,6 +1441,7 @@ export const makeLiveTerminalOpsRpcService = (eventBus?: EventBus): TerminalOpsR
         }
 
         disposeTerminalOutput(terminalId)
+        disposeTerminalLiveness(terminalId)
         const result = await requestDesktopTerminalDestroy(terminalId)
         if (!result.success) throw new Error(result.error ?? 'Failed to destroy terminal')
       },
