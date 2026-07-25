@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => {
     buildClaudeCliHookSettings: vi.fn(),
     getLastClaudeCliStatus: vi.fn(),
     publishClaudeCliStatus: vi.fn(),
+    clearClaudeCliStatus: vi.fn(),
+    resetSubagentTracking: vi.fn(),
     subscribeClaudeCliStatus: vi.fn(() => vi.fn()),
     ptyService: {
       has: vi.fn(() => false),
@@ -116,6 +118,8 @@ vi.mock('./claude-hook-server', () => ({
   buildClaudeCliHookSettings: mocks.buildClaudeCliHookSettings,
   getLastClaudeCliStatus: mocks.getLastClaudeCliStatus,
   publishClaudeCliStatus: mocks.publishClaudeCliStatus,
+  clearClaudeCliStatus: mocks.clearClaudeCliStatus,
+  resetSubagentTracking: mocks.resetSubagentTracking,
   subscribeClaudeCliStatus: mocks.subscribeClaudeCliStatus
 }))
 
@@ -455,6 +459,10 @@ describe('Claude CLI terminal hook status wiring', () => {
       status: 'completed',
       metadata: { reason: 'pty_exit' }
     })
+    // …and the hook-server state for the dead process is dropped, so a session
+    // re-created under the same id (reopening the ticket) starts clean instead of
+    // inheriting a stale dedup entry or a leaked sub-agent depth.
+    expect(mocks.clearClaudeCliStatus).toHaveBeenCalledWith('hive-session-1')
   })
 
   it('publishes an initial completed status after starting an idle Claude CLI PTY', async () => {
@@ -525,6 +533,29 @@ describe('Claude CLI terminal hook status wiring', () => {
       handleClaudeCliTerminalInput('plain-terminal', '\x1b')
 
       expect(mocks.publishClaudeCliStatus).not.toHaveBeenCalled()
+    })
+
+    it('resets sub-agent tracking on interrupt so the trailing SubagentStop is inert', async () => {
+      // Escape kills any in-flight sub-agent: without the reset its trailing
+      // SubagentStop would resolve to 'working' and pull the just-interrupted ticket
+      // back to In Progress, and a deferred Stop would keep deferring forever.
+      await createClaudeCliTerminal('hive-session-1', {})
+      mocks.getLastClaudeCliStatus.mockReturnValue('working')
+      mocks.resetSubagentTracking.mockClear()
+
+      handleClaudeCliTerminalInput('hive-session-1', '\x1b')
+
+      expect(mocks.resetSubagentTracking).toHaveBeenCalledWith('hive-session-1')
+    })
+
+    it('does not reset sub-agent tracking when the keypress is not an interrupt', async () => {
+      await createClaudeCliTerminal('hive-session-1', {})
+      mocks.getLastClaudeCliStatus.mockReturnValue('working')
+      mocks.resetSubagentTracking.mockClear()
+
+      handleClaudeCliTerminalInput('hive-session-1', 'a')
+
+      expect(mocks.resetSubagentTracking).not.toHaveBeenCalled()
     })
 
     it.each(['a', '\r', '\x1b[A', '\x1b[200~paste\x1b[201~'])(

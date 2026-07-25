@@ -25,7 +25,9 @@ import {
   getClaudeHookServer,
   mapHookEventToStatus,
   publishClaudeCliStatus,
+  resolveClaudeCliHookOutcome,
   resolveClaudeCliStatus,
+  resetSubagentTracking,
   type ParsedClaudeHook
 } from '../claude-hook-server'
 
@@ -209,22 +211,71 @@ describe('resolveClaudeCliStatus (sub-agent aware)', () => {
     expect(resolveClaudeCliStatus(S, { hook_event_name: 'Stop' })).toBe('completed')
   })
 
-  it('never underflows: a bare SubagentStop stays working', () => {
-    expect(resolveClaudeCliStatus(S, { hook_event_name: 'SubagentStop' })).toBe('working')
+  it('never underflows: an untracked SubagentStop reports no status at all', () => {
+    // Nothing was counted in flight, so this stop is not evidence the main agent is
+    // working — reporting 'working' here would drag an already-settled ticket back to
+    // In Progress (the trailing stop of an interrupted sub-agent).
+    expect(resolveClaudeCliStatus(S, { hook_event_name: 'SubagentStop' })).toBe(null)
     // And a following Stop with no in-flight sub-agent still completes.
     expect(resolveClaudeCliStatus(S, { hook_event_name: 'Stop' })).toBe('completed')
   })
 
-  it('PreToolUse{Task} is liveness-only and does not defer a later Stop', () => {
+  it('a resolved deferral reports the ORIGINAL stop kind, not SubagentStop', () => {
+    // Clean finish behind a sub-agent → reported as Stop (→ Review).
     resolveClaudeCliStatus(S, { hook_event_name: 'UserPromptSubmit', permission_mode: 'default' })
-    expect(resolveClaudeCliStatus(S, { hook_event_name: 'PreToolUse', tool_name: 'Task' })).toBe(
-      'working'
-    )
-    // No SubagentStart fired → depth is 0 → the Stop completes normally.
+    resolveClaudeCliStatus(S, { hook_event_name: 'SubagentStart' })
+    resolveClaudeCliStatus(S, { hook_event_name: 'Stop' })
+    expect(resolveClaudeCliHookOutcome(S, { hook_event_name: 'SubagentStop' })).toEqual({
+      status: 'completed',
+      reportAs: 'Stop'
+    })
+
+    // Errored turn behind a sub-agent → reported as StopFailure so the renderer still
+    // routes it to Human Require instead of the generic completed→Review promotion.
+    resolveClaudeCliStatus(S, { hook_event_name: 'UserPromptSubmit', permission_mode: 'default' })
+    resolveClaudeCliStatus(S, { hook_event_name: 'SubagentStart' })
+    resolveClaudeCliStatus(S, { hook_event_name: 'StopFailure' })
+    expect(resolveClaudeCliHookOutcome(S, { hook_event_name: 'SubagentStop' })).toEqual({
+      status: 'completed',
+      reportAs: 'StopFailure'
+    })
+  })
+
+  it('an undeferred SubagentStop carries no reportAs override', () => {
+    resolveClaudeCliStatus(S, { hook_event_name: 'UserPromptSubmit', permission_mode: 'default' })
+    resolveClaudeCliStatus(S, { hook_event_name: 'SubagentStart' })
+    expect(resolveClaudeCliHookOutcome(S, { hook_event_name: 'SubagentStop' })).toEqual({
+      status: 'working'
+    })
+  })
+
+  it('resetSubagentTracking (user interrupt) un-defers and neutralizes the trailing stop', () => {
+    resolveClaudeCliStatus(S, { hook_event_name: 'UserPromptSubmit', permission_mode: 'default' })
+    resolveClaudeCliStatus(S, { hook_event_name: 'SubagentStart' })
+    resolveClaudeCliStatus(S, { hook_event_name: 'Stop' }) // deferred behind the sub-agent
+    // Escape/Ctrl+C: the pty bridge publishes 'completed' itself and resets tracking.
+    resetSubagentTracking(S)
+    // The killed sub-agent's trailing stop must not resurrect 'working'.
+    expect(resolveClaudeCliStatus(S, { hook_event_name: 'SubagentStop' })).toBe(null)
+    // …and the next turn's Stop is no longer deferred behind the dead sub-agent.
+    resolveClaudeCliStatus(S, { hook_event_name: 'UserPromptSubmit', permission_mode: 'default' })
     expect(resolveClaudeCliStatus(S, { hook_event_name: 'Stop' })).toBe('completed')
   })
 
-  it('non-Task PreToolUse and other events still defer to the pure mapper', () => {
+  it('PreToolUse sub-agent dispatch is liveness-only under BOTH tool names', () => {
+    // Claude Code renamed the sub-agent tool Task → Agent; the hook body reports the
+    // new name while a `Task` matcher still fires, so both spellings must resolve.
+    for (const toolName of ['Agent', 'Task']) {
+      resolveClaudeCliStatus(S, { hook_event_name: 'UserPromptSubmit', permission_mode: 'default' })
+      expect(
+        resolveClaudeCliStatus(S, { hook_event_name: 'PreToolUse', tool_name: toolName })
+      ).toBe('working')
+      // No SubagentStart fired → depth is 0 → the Stop completes normally.
+      expect(resolveClaudeCliStatus(S, { hook_event_name: 'Stop' })).toBe('completed')
+    }
+  })
+
+  it('non-dispatch PreToolUse and other events still defer to the pure mapper', () => {
     expect(resolveClaudeCliStatus(S, { hook_event_name: 'PreToolUse', tool_name: 'Read' })).toBe(
       null
     )
@@ -295,13 +346,16 @@ describe('buildClaudeCliHookSettings', () => {
     }
   })
 
-  it('scopes PreToolUse to ExitPlanMode + AskUserQuestion + Task, wildcards the tool/permission hooks, and buckets by path', () => {
+  it('scopes PreToolUse to ExitPlanMode + AskUserQuestion + the sub-agent dispatch tool, wildcards the tool/permission hooks, and buckets by path', () => {
     const settings = JSON.parse(buildClaudeCliHookSettings(34819, 'hive-session-1')) as HookSettings
 
+    // One regex matcher covers the renamed dispatch tool (`Agent`) and the legacy
+    // spelling (`Task`) with a single registration — two separate matchers would fire
+    // the same hook twice per dispatch.
     expect(settings.hooks.PreToolUse.map((e) => e.matcher)).toEqual([
       'ExitPlanMode',
       'AskUserQuestion',
-      'Task'
+      'Agent|Task'
     ])
     // AskUserQuestion buckets under the /permission path (a human-wait signal).
     const askUserQuestion = settings.hooks.PreToolUse.find((e) => e.matcher === 'AskUserQuestion')
@@ -491,16 +545,63 @@ describe('ClaudeHookServer HTTP round-trip', () => {
       expect(backendManagerMocks.publishDesktopBackendEvent).toHaveBeenCalledTimes(2)
     })
     // First publish is the working from UserPromptSubmit; the deferred Stop is
-    // deduped away, so completed appears exactly once and only at the end.
+    // deduped away, so completed appears exactly once and only at the end — reported
+    // under the deferred stop's OWN event name (`Stop`), not the SubagentStop that
+    // happened to resolve it, so the renderer's Stop/StopFailure routing still applies.
     expect(backendManagerMocks.publishDesktopBackendEvent).toHaveBeenNthCalledWith(
       2,
       'claude-cli:status',
       {
         sessionId: 'hive-session-1',
         status: 'completed',
-        metadata: { hookEventName: 'SubagentStop', hookPath: 'subagent' }
+        metadata: { hookEventName: 'Stop', hookPath: 'subagent' }
       }
     )
+  })
+
+  it('reports an errored turn deferred behind a sub-agent as StopFailure (→ Human Require)', async () => {
+    const { port } = await getClaudeHookServer()
+    backendManagerMocks.publishDesktopBackendEvent.mockResolvedValue(true)
+
+    await postHook(port, 'hive-session-1', 'start', {
+      hook_event_name: 'UserPromptSubmit',
+      permission_mode: 'default'
+    })
+    await postHook(port, 'hive-session-1', 'subagent', { hook_event_name: 'SubagentStart' })
+    // The turn dies on an API error while the sub-agent is still running.
+    await postHook(port, 'hive-session-1', 'stop', { hook_event_name: 'StopFailure' })
+    await postHook(port, 'hive-session-1', 'subagent', { hook_event_name: 'SubagentStop' })
+
+    await vi.waitFor(() => {
+      expect(backendManagerMocks.publishDesktopBackendEvent).toHaveBeenCalledTimes(2)
+    })
+    expect(backendManagerMocks.publishDesktopBackendEvent).toHaveBeenNthCalledWith(
+      2,
+      'claude-cli:status',
+      {
+        sessionId: 'hive-session-1',
+        status: 'completed',
+        metadata: { hookEventName: 'StopFailure', hookPath: 'subagent' }
+      }
+    )
+  })
+
+  it('publishes nothing for an untracked SubagentStop (no working resurrection)', async () => {
+    const { port } = await getClaudeHookServer()
+    backendManagerMocks.publishDesktopBackendEvent.mockResolvedValue(true)
+
+    // A session that already settled as completed (e.g. the user interrupted it).
+    await postHook(port, 'hive-session-1', 'stop', { hook_event_name: 'Stop' })
+    await vi.waitFor(() => {
+      expect(backendManagerMocks.publishDesktopBackendEvent).toHaveBeenCalledTimes(1)
+    })
+
+    // The trailing stop of a sub-agent nobody counted must not publish 'working'.
+    const response = await postHook(port, 'hive-session-1', 'subagent', {
+      hook_event_name: 'SubagentStop'
+    })
+    expect(response).toEqual({ status: 200, text: '{}' })
+    expect(backendManagerMocks.publishDesktopBackendEvent).toHaveBeenCalledTimes(1)
   })
 
   it('fast-acks MessageDisplay without publishing or routing', async () => {

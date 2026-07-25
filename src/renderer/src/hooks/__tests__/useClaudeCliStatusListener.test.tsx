@@ -161,6 +161,59 @@ describe('useClaudeCliStatusListener', () => {
     )
   })
 
+  it('passes a SessionStart-shaped completed through to the status store (badge), leaving the turn-end gate to decide the column', () => {
+    renderHook(() => useClaudeCliStatusListener())
+
+    subscribedCallback?.({
+      sessionId: 'hive-session-1',
+      status: 'completed',
+      metadata: { hookEventName: 'SessionStart', hookPath: 'session' }
+    })
+
+    // A session STARTING is not a session finishing — but the badge for a freshly
+    // spawned CLI is still correct, so the listener must NOT swallow the status. The
+    // column-moving half is suppressed downstream by `isTurnEndCompletion` in
+    // useWorktreeStatusStore (which also covers the `pty_start` sibling signal); the
+    // listener itself never fires a kanban event on this path.
+    expect(mocks.setSessionStatus).toHaveBeenCalledWith('hive-session-1', 'completed', {
+      hookEventName: 'SessionStart',
+      hookPath: 'session'
+    })
+    expect(mocks.notifyKanbanSessionSync).not.toHaveBeenCalled()
+  })
+
+  it('still treats a SessionEnd-shaped completed as a real finish (the CLI exited)', () => {
+    renderHook(() => useClaudeCliStatusListener())
+
+    subscribedCallback?.({
+      sessionId: 'hive-session-1',
+      status: 'completed',
+      metadata: { hookEventName: 'SessionEnd', hookPath: 'session' }
+    })
+
+    expect(mocks.setSessionStatus).toHaveBeenCalledWith('hive-session-1', 'completed', {
+      hookEventName: 'SessionEnd',
+      hookPath: 'session'
+    })
+  })
+
+  it('routes a StopFailure resolved behind a sub-agent to session_error too', () => {
+    // The hook server re-reports a deferred StopFailure under its original event name
+    // (ClaudeCliHookOutcome.reportAs) — the errored turn must still reach Human Require
+    // rather than the generic completed→Review path.
+    renderHook(() => useClaudeCliStatusListener())
+
+    subscribedCallback?.({
+      sessionId: 'hive-session-1',
+      status: 'completed',
+      metadata: { hookEventName: 'StopFailure', hookPath: 'subagent' }
+    })
+
+    expect(mocks.notifyKanbanSessionSync).toHaveBeenCalledWith('hive-session-1', {
+      type: 'session_error'
+    })
+  })
+
   it('writes the answering status for a CLI AskUserQuestion (drives the Human Require move)', () => {
     renderHook(() => useClaudeCliStatusListener())
 

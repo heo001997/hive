@@ -2,9 +2,11 @@ import path from 'node:path'
 import { getDatabase } from '../db'
 import {
   buildClaudeCliHookSettings,
+  clearClaudeCliStatus,
   getClaudeHookServer,
   getLastClaudeCliStatus,
   publishClaudeCliStatus,
+  resetSubagentTracking,
   subscribeClaudeCliStatus,
   type ClaudeCliStatusPayload
 } from './claude-hook-server'
@@ -115,6 +117,12 @@ export function handleClaudeCliTerminalInput(terminalId: string, data: string): 
   if (!INTERRUPT_KEYS.has(data)) return
   const last = getLastClaudeCliStatus(terminalId)
   if (!last || !INTERRUPTIBLE_STATUSES.has(last)) return
+  // The interrupt also kills any in-flight sub-agent. Drop the sub-agent
+  // bookkeeping so (a) the next genuine Stop of this session is not deferred
+  // behind a sub-agent that no longer exists and (b) the killed sub-agent's
+  // trailing SubagentStop resolves to no status instead of 'working', which would
+  // pull the just-interrupted ticket straight back to In Progress.
+  resetSubagentTracking(terminalId)
   publishClaudeCliStatus({
     sessionId: terminalId,
     status: 'completed',
@@ -138,6 +146,11 @@ export function destroyNodePtyTerminal(terminalId: string): void {
   claudeCliWorktreeBasenames.delete(terminalId)
   claudeCliTranscriptSources.delete(terminalId)
   claudeCliLastStatus.delete(terminalId)
+  // The exit listener is already detached above, so nothing will publish for this
+  // terminal again — drop its hook-server state here (dedup + sub-agent counters)
+  // so a session re-created with the same id (reopening a ticket relaunches the
+  // CLI under the same Hive session id) starts from a clean slate.
+  clearClaudeCliStatus(terminalId)
   resetClaudeCliTitleState(terminalId)
   ptyService.destroy(terminalId)
 }
@@ -209,6 +222,10 @@ function attachNodePtyListeners(terminalId: string): void {
         metadata: { reason: 'pty_exit' }
       })
       claudeCliSessions.delete(terminalId)
+      // The CLI process is gone: forget its dedup + sub-agent counters (a leaked
+      // depth > 0 would defer the first Stop of the NEXT session created under this
+      // same id). Runs after the publish above so that one still reaches the board.
+      clearClaudeCliStatus(terminalId)
     }
     claudeCliWorktreeBasenames.delete(terminalId)
     claudeCliTranscriptSources.delete(terminalId)
