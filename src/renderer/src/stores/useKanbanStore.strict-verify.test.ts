@@ -1169,14 +1169,27 @@ describe('session_question / session_human_required → Human Require (blocked o
     expect(columnOf('ticket-1')).toBe('in_progress')
   })
 
-  it('ignores a non-build (plan) ticket — the gate is build-only', async () => {
+  it('routes a PLAN-mode ticket too — a blocked agent is blocked in every mode', async () => {
+    // Was gated on mode === 'build', which parked every plan-mode run that asked a
+    // clarifying question (`/speckit-clarify`) or hit a permission prompt In Progress
+    // while its CLI sat waiting on the user.
     hoisted.settings.kanbanStrictVerifyEnabled = false
     seed(makeTicket({ column: 'in_progress', mode: 'plan' }))
 
     useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_question' })
     await vi.runAllTimersAsync()
 
-    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(columnOf('ticket-1')).toBe('human_required')
+  })
+
+  it('leaves a ticket already in Review alone (finished-and-stopped is not blocked)', async () => {
+    hoisted.settings.kanbanStrictVerifyEnabled = false
+    seed(makeTicket({ column: 'review', mode: 'build' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_question' })
+    await vi.runAllTimersAsync()
+
+    expect(columnOf('ticket-1')).toBe('review')
   })
 })
 

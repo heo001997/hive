@@ -4291,21 +4291,39 @@ export const useKanbanStore = create<KanbanState>()(
 
               case 'plan_ready': {
                 // Explicit plan.ready event — the plan awaits the user's approval, a
-                // Human Require state (not Review). Set the flag and move it there.
+                // Human Require state (not Review).
+                // Rider guard, as on every other column-moving branch: a queued ticket
+                // only borrows a shared worktree's session, so the owner's plan must
+                // not drag it anywhere or stamp its plan_ready flag.
+                if (ticket.pending_launch_config) break
+                // The FLAG stays a plan-mode concept (it drives the plan card / Implement
+                // affordance on a plan-mode ticket)…
                 if (isPlanLike(ticket.mode) && !ticket.plan_ready) {
                   get()
                     .updateTicket(ticket.id, projectId, { plan_ready: true })
                     .catch(() => {})
-                  if (ticket.column !== 'review' && ticket.column !== 'done') {
-                    get()
-                      .moveTicket(
-                        ticket.id,
-                        projectId,
-                        'human_required',
-                        topOfColumnSortOrder(get, projectId, 'human_required')
-                      )
-                      .catch(() => {})
-                  }
+                }
+                // …but the COLUMN answers "who is this ticket waiting on?", and an
+                // ExitPlanMode prompt blocks on the human in ANY mode. A build-mode
+                // ticket reaches here whenever its agent enters plan mode inside the
+                // terminal (Shift+Tab, or a re-plan after an earlier plan was approved —
+                // approving flips ticket.mode to 'build'); gating the move on the mode
+                // left those parked In Progress while the CLI sat on the plan menu.
+                // Source column is In Progress only, exactly as for the other blocking
+                // signals: a ticket resting in Todo/Review/Done is not the one this
+                // session is working on (see the session_human_required branch).
+                if (ticket.column === 'in_progress') {
+                  // A pending plan supersedes any in-flight promote-when-quiescent poll
+                  // (the plan menu makes the terminal silent, not finished).
+                  cancelReviewPromotion(ticketKey(projectId, ticket.id))
+                  get()
+                    .moveTicket(
+                      ticket.id,
+                      projectId,
+                      'human_required',
+                      topOfColumnSortOrder(get, projectId, 'human_required')
+                    )
+                    .catch(() => {})
                 }
                 break
               }
@@ -4400,8 +4418,18 @@ export const useKanbanStore = create<KanbanState>()(
                 // unlike session_completed — no liveness gate: move straight there.
                 // `session_working` (fired when the reply resumes the agent) returns it
                 // to In Progress.
+                //
+                // Mode-agnostic on purpose: a plan-mode agent blocks on the user just as
+                // a build-mode one does (a `/speckit-clarify`-style AskUserQuestion, a
+                // permission prompt for a Bash probe while planning). Gating this on
+                // mode === 'build' left every plan-mode ticket sitting In Progress while
+                // its CLI waited on an answer. In Progress stays the only source column:
+                // every launch path moves a ticket there before its session runs, so a
+                // ticket resting anywhere else is not the one this session is working on
+                // (assigning a worktree binds an already-running session to a ticket that
+                // stays in Todo — that ticket must not be dragged into Human Require).
                 if (ticket.pending_launch_config) break
-                if (ticket.mode === 'build' && ticket.column === 'in_progress') {
+                if (ticket.column === 'in_progress') {
                   // A human-required block supersedes any in-flight promote-when-quiescent
                   // poll for this ticket (avoid racing it into Review).
                   cancelReviewPromotion(ticketKey(projectId, ticket.id))

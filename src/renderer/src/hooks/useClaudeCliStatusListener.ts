@@ -112,6 +112,15 @@ export function useClaudeCliStatusListener(): void {
         return
       }
 
+      // NOTE — a `SessionStart`-shaped 'completed' (the hook server maps a session
+      // STARTING to the same value as a finished turn, legacy idle-badge semantics)
+      // deliberately falls through to the generic tail below. It must still reach the
+      // status store so the "Ready" badge is correct for a freshly spawned CLI; what
+      // it must NOT do is arm the In Progress → Review promotion. That suppression
+      // lives at the single choke point in `useWorktreeStatusStore`
+      // (`isTurnEndCompletion`, which covers the `pty_start` sibling signal too) —
+      // gating it here as well would cost the badge. Board-level regression: TC24 in
+      // test/e2e/ticket-column-cli-scenarios.spec.ts.
       if (
         status === 'completed' &&
         metadata?.hookEventName === 'Stop' &&
@@ -123,11 +132,13 @@ export function useClaudeCliStatusListener(): void {
 
       if (status === 'completed' && metadata?.hookEventName === 'StopFailure') {
         // The turn ended on an API error (rate limit / overload / auth), not a clean
-        // finish (a StopFailure deferred behind a running sub-agent resolves as
-        // 'working' and never reaches here). The agent can't proceed without the user
-        // → Human Require, not Review. Fire session_error (→ Human Require) and set a
-        // non-'completed' status so the completed→session_completed→Review promotion
-        // does not also fire.
+        // finish. Reached both by a StopFailure that arrived with no sub-agent in
+        // flight AND by one that was deferred behind a sub-agent and resolved at the
+        // last SubagentStop (the hook server re-reports the deferred stop under its
+        // original event name — see ClaudeCliHookOutcome.reportAs). The agent can't
+        // proceed without the user → Human Require, not Review. Fire session_error (→
+        // Human Require) and set a non-'completed' status so the
+        // completed→session_completed→Review promotion does not also fire.
         notifyKanbanSessionSync(sessionId, { type: 'session_error' })
         worktreeStatus.setSessionStatus(sessionId, 'unread', metadata)
         return

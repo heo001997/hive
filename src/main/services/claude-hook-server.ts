@@ -50,8 +50,9 @@ const firstPromptAnnounced = new Set<string>()
 // main agent spawns a sub-agent and SubagentStop when it finishes — a matched
 // pair that is the in-flight counter. Both POST to THIS session's hook URL (the
 // sub-agent inherits the same injected settings.json), so the counter reflects
-// how many sub-agents are running for the main session. (PreToolUse{Task} is an
-// extra liveness ping at dispatch time but does NOT touch the count.)
+// how many sub-agents are running for the main session. (The sub-agent DISPATCH
+// tool fire is an extra liveness ping at dispatch time but does NOT touch the
+// count.)
 //
 // A main-turn `Stop` that arrives while a sub-agent is still running does NOT
 // mean the session finished: the main agent is WAITING on the sub-agent (it
@@ -59,9 +60,24 @@ const firstPromptAnnounced = new Set<string>()
 // main turn ends first). Reporting 'completed' there lets the kanban board
 // treat the terminal as frozen and promote the ticket to Review while work is
 // still in flight — the "incorrect review state". So a Stop is DEFERRED (kept
-// 'working') until the last SubagentStop. See resolveClaudeCliStatus.
+// 'working') until the last SubagentStop. See resolveClaudeCliHookOutcome.
+//
+// The deferred value is the KIND of stop (`Stop` vs `StopFailure`), not just a
+// flag: the two route to different kanban columns (a clean finish → Review, an
+// API-error turn → Human Require), so when the last SubagentStop finally
+// resolves the deferral we must report the ORIGINAL event, not `SubagentStop`.
 const subagentDepthBySession = new Map<string, number>()
-const stopDeferredBySession = new Set<string>()
+const stopDeferredBySession = new Map<string, 'Stop' | 'StopFailure'>()
+
+/**
+ * Tool names Claude Code uses to dispatch a sub-agent. The tool was renamed
+ * `Task` → `Agent`; a matcher registered as `Task` still fires for it (the CLI
+ * keeps the legacy alias for hook matchers) but the hook BODY reports
+ * `tool_name: 'Agent'`, so the body-side check must accept both spellings or the
+ * dispatch-time liveness ping is silently dropped. Verified against Claude Code
+ * 2.1.220: `PreToolUse` → `{ hook_event_name: 'PreToolUse', tool_name: 'Agent' }`.
+ */
+const SUBAGENT_DISPATCH_TOOLS = new Set(['Agent', 'Task'])
 
 function hookUrl(port: number, hiveSessionId: string, path: string): string {
   return `http://${host}:${port}/hook/${encodeURIComponent(hiveSessionId)}/${path}`
@@ -124,9 +140,11 @@ export function buildClaudeCliHookSettings(port: number, hiveSessionId: string):
         // ticket human-blocked ('answering' → Human Require column). The question
         // menu still renders/answers in the native terminal.
         matched('AskUserQuestion', 'permission'),
-        // Task dispatches a sub-agent — a liveness signal at invoke time (the
-        // SubagentStart/Stop pair owns the actual in-flight count).
-        matched('Task', 'tool')
+        // A sub-agent dispatch — a liveness signal at invoke time (the
+        // SubagentStart/Stop pair owns the actual in-flight count). One regex
+        // matcher covers the current tool name (`Agent`) and the legacy one
+        // (`Task`) so this keeps firing on either CLI generation.
+        matched('Agent|Task', 'tool')
       ],
       PostToolUse: [matched('*', 'tool')],
       PostToolUseFailure: [matched('*', 'tool')],
@@ -208,58 +226,89 @@ export function mapHookEventToStatus(hook: ParsedClaudeHook): SessionStatusType 
 }
 
 /**
+ * What a hook resolved to: the session status plus — when the resolution is not a
+ * 1:1 reading of the hook that arrived — the event name the status must be
+ * REPORTED as. The renderer routes on `metadata.hookEventName` (StopFailure →
+ * Human Require, Stop-in-plan-mode → plan_ready), so a status that a *different*
+ * hook resolves on behalf of has to carry the original event's name or the
+ * routing silently degrades to the generic completed→Review path.
+ */
+export interface ClaudeCliHookOutcome {
+  status: SessionStatusType | null
+  /** Overrides `metadata.hookEventName` when set (see {@link ClaudeCliHookOutcome}). */
+  reportAs?: 'Stop' | 'StopFailure'
+}
+
+/**
  * Stateful wrapper over the pure {@link mapHookEventToStatus} that layers
- * sub-agent (Task tool) lifecycle awareness on top. Its whole job is to stop a
- * main-turn `Stop` — fired while a sub-agent is still running — from being
- * reported as 'completed'. The main session is WAITING on the sub-agent, not
- * finished; a premature 'completed' lets the kanban board see a quiet terminal
- * and promote the ticket to Review mid-work (the "incorrect review state").
+ * sub-agent lifecycle awareness on top. Its whole job is to stop a main-turn
+ * `Stop` — fired while a sub-agent is still running — from being reported as
+ * 'completed'. The main session is WAITING on the sub-agent, not finished; a
+ * premature 'completed' lets the kanban board see a quiet terminal and promote the
+ * ticket to Review mid-work (the "incorrect review state").
  *
  * Rules (see `subagentDepthBySession`):
  *   SubagentStart    → a sub-agent spawned: depth++, report 'working'.
  *   SubagentStop     → a sub-agent finished: depth-- (floored at 0). Reports
  *                      'completed' only when the LAST sub-agent stops AND a main
- *                      Stop was already deferred; otherwise 'working' (the main
- *                      agent resumes to consume the result, or others run on).
+ *                      Stop was already deferred — reported AS that original
+ *                      Stop/StopFailure so the renderer's error / plan routing
+ *                      still applies. Otherwise 'working' (the main agent resumes
+ *                      to consume the result, or other sub-agents run on) — except
+ *                      for an UNTRACKED SubagentStop (no sub-agent was counted),
+ *                      which reports nothing at all: it is not evidence the main
+ *                      agent is working, and resurrecting 'working' there would
+ *                      drag an already-settled ticket back to In Progress (e.g. the
+ *                      trailing SubagentStop of a sub-agent the user interrupted).
  *   Stop / StopFailure → main turn ended (normally or on an API error): deferred
  *                      to 'working' while any sub-agent is in flight (depth > 0),
  *                      else 'completed'.
- *   PreToolUse{Task} → liveness ping at dispatch ('working'); does not count.
+ *   PreToolUse{Agent|Task} → liveness ping at dispatch ('working'); does not count.
  *   UserPromptSubmit → fresh turn: clear stale bookkeeping (guards against a
  *                      SubagentStop we never received, e.g. an interrupt).
  * Everything else defers to the pure mapper.
  */
-export function resolveClaudeCliStatus(
+export function resolveClaudeCliHookOutcome(
   sessionId: string,
   hook: ParsedClaudeHook
-): SessionStatusType | null {
+): ClaudeCliHookOutcome {
   switch (hook.hook_event_name) {
     case 'UserPromptSubmit':
-      subagentDepthBySession.delete(sessionId)
-      stopDeferredBySession.delete(sessionId)
-      return mapHookEventToStatus(hook)
+      resetSubagentTracking(sessionId)
+      return { status: mapHookEventToStatus(hook) }
 
     case 'PreToolUse':
       // Liveness only — the SubagentStart/SubagentStop pair owns the in-flight
-      // count. Task marks the session busy the instant it is dispatched.
-      if (hook.tool_name === 'Task') return 'working'
-      return mapHookEventToStatus(hook)
+      // count. A sub-agent dispatch marks the session busy the instant it fires.
+      if (hook.tool_name && SUBAGENT_DISPATCH_TOOLS.has(hook.tool_name)) {
+        return { status: 'working' }
+      }
+      return { status: mapHookEventToStatus(hook) }
 
     case 'SubagentStart':
       subagentDepthBySession.set(sessionId, (subagentDepthBySession.get(sessionId) ?? 0) + 1)
-      return 'working'
+      return { status: 'working' }
 
     case 'SubagentStop': {
-      const depth = Math.max(0, (subagentDepthBySession.get(sessionId) ?? 0) - 1)
+      const tracked = subagentDepthBySession.get(sessionId) ?? 0
+      // Nothing was in flight for this session — an untracked / duplicate stop.
+      // Report no status (see the rules above): it must not revive 'working'.
+      if (tracked === 0) return { status: null }
+
+      const depth = tracked - 1
       if (depth === 0) subagentDepthBySession.delete(sessionId)
       else subagentDepthBySession.set(sessionId, depth)
       // The whole process is idle only once the last sub-agent stops AND the
       // main turn has already ended (a Stop we deferred). Until then the main
       // agent is still working (it resumes to consume the sub-agent result).
-      if (depth === 0 && stopDeferredBySession.delete(sessionId)) {
-        return 'completed'
+      if (depth === 0) {
+        const deferred = stopDeferredBySession.get(sessionId)
+        if (deferred) {
+          stopDeferredBySession.delete(sessionId)
+          return { status: 'completed', reportAs: deferred }
+        }
       }
-      return 'working'
+      return { status: 'working' }
     }
 
     // A normal turn end (Stop) and an API-error turn end (StopFailure) both mean
@@ -268,15 +317,41 @@ export function resolveClaudeCliStatus(
     case 'StopFailure':
       if ((subagentDepthBySession.get(sessionId) ?? 0) > 0) {
         // A sub-agent is still running; the main agent is WAITING on it, not
-        // done. Defer completion until the last SubagentStop resolves it.
-        stopDeferredBySession.add(sessionId)
-        return 'working'
+        // done. Defer completion until the last SubagentStop resolves it, keeping
+        // WHICH kind of stop it was so the eventual report routes correctly.
+        stopDeferredBySession.set(sessionId, hook.hook_event_name)
+        return { status: 'working' }
       }
-      return 'completed'
+      return { status: 'completed' }
 
     default:
-      return mapHookEventToStatus(hook)
+      return { status: mapHookEventToStatus(hook) }
   }
+}
+
+/**
+ * Status-only view of {@link resolveClaudeCliHookOutcome} (the `reportAs` override
+ * is dropped). Kept for callers that only need the status.
+ */
+export function resolveClaudeCliStatus(
+  sessionId: string,
+  hook: ParsedClaudeHook
+): SessionStatusType | null {
+  return resolveClaudeCliHookOutcome(sessionId, hook).status
+}
+
+/**
+ * Drop a session's sub-agent bookkeeping without touching its published-status
+ * dedup. Called on a fresh turn (UserPromptSubmit) and from the PTY interrupt
+ * mirror: an Escape/Ctrl+C kills any in-flight sub-agent, and Claude Code fires no
+ * Stop for an interrupt, so the counter would stay >0 and defer the NEXT genuine
+ * Stop of that turn. Clearing it also makes the killed sub-agent's trailing
+ * SubagentStop untracked → status-less (see resolveClaudeCliHookOutcome), so it
+ * cannot pull the interrupted ticket back to In Progress.
+ */
+export function resetSubagentTracking(sessionId: string): void {
+  subagentDepthBySession.delete(sessionId)
+  stopDeferredBySession.delete(sessionId)
 }
 
 function extractPlanText(hook: ParsedClaudeHook): string | undefined {
@@ -409,12 +484,20 @@ async function handleHook(req: http.IncomingMessage, res: http.ServerResponse): 
     // status and carries no unique transcript value, and running the status /
     // telemetry / transport path per chunk would hammer this server.
     if (route && body.hook_event_name !== 'MessageDisplay') {
-      const status = resolveClaudeCliStatus(route.sessionId, body)
-      if (status) {
+      const outcome = resolveClaudeCliHookOutcome(route.sessionId, body)
+      if (outcome.status) {
+        const metadata = buildStatusMetadata(body, route.hookPath)
+        if (outcome.reportAs) {
+          // A deferred main-turn stop resolved by this SubagentStop — report it as
+          // the stop it actually was (see ClaudeCliHookOutcome) so the renderer's
+          // StopFailure → Human Require and plan-mode → plan_ready routing fire.
+          metadata.hookEventName = outcome.reportAs
+          delete metadata.toolName
+        }
         publishClaudeCliStatus({
           sessionId: route.sessionId,
-          status,
-          metadata: buildStatusMetadata(body, route.hookPath)
+          status: outcome.status,
+          metadata
         })
       }
       void handleClaudeCliHiveTelemetryHook(route.sessionId, body)

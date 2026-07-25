@@ -265,6 +265,108 @@ describe('syncTicketWithSession — Human Require routing', () => {
 
     expect(columnOf('ticket-1')).toBe('human_required')
   })
+
+  // A blocked agent is blocked in EVERY mode: a plan-mode run asks clarifying
+  // questions (`/speckit-clarify`) and requests permission for probe commands just
+  // like a build-mode one. These used to be gated on mode === 'build', which parked
+  // every blocked plan-mode ticket In Progress.
+  it.each(['plan', 'super-plan'] as const)(
+    'routes a blocked %s-mode ticket to human_required (session_question)',
+    async (mode) => {
+      seed(makeTicket({ column: 'in_progress', mode }))
+
+      useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_question' })
+      await flush()
+
+      expect(columnOf('ticket-1')).toBe('human_required')
+    }
+  )
+
+  it('routes a blocked plan-mode ticket to human_required (session_human_required)', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'plan' }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_human_required' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+  })
+
+  // In Progress is the only source column: every launch path moves a ticket there before
+  // its session runs, so a card resting in Todo is not the one this session works on —
+  // assigning a worktree binds an already-running session to a ticket that stays in Todo.
+  it.each(['todo', 'review'] as const)(
+    'leaves a %s ticket alone on session_human_required (not the running one)',
+    async (column) => {
+      seed(makeTicket({ column, mode: 'build' }))
+
+      useKanbanStore
+        .getState()
+        .syncTicketWithSession(SESSION_ID, { type: 'session_human_required' })
+      await flush()
+
+      expect(columnOf('ticket-1')).toBe(column)
+      expect(kanbanApi.ticket.move).not.toHaveBeenCalled()
+    }
+  )
+
+  it('returns a human_required plan ticket to in_progress on session_working', async () => {
+    seed(makeTicket({ column: 'human_required', mode: 'plan', plan_ready: true }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_working' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+  })
+
+  // An ExitPlanMode prompt blocks on the human whatever the ticket's mode says: the
+  // agent can enter plan mode inside the terminal (Shift+Tab), and approving an
+  // earlier plan flips the ticket to mode 'build' — a second plan in that session used
+  // to leave the ticket In Progress while the CLI sat on the plan menu.
+  it('moves a BUILD-mode ticket to human_required on plan_ready (in-terminal plan mode)', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build', plan_ready: false }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'plan_ready' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+    // The plan_ready FLAG stays a plan-mode concept — it drives the plan card, which a
+    // build-mode ticket has no business rendering.
+    expect(kanbanApi.ticket.update).not.toHaveBeenCalledWith(
+      PROJECT_ID,
+      'ticket-1',
+      expect.objectContaining({ plan_ready: true })
+    )
+  })
+
+  it('moves an already-plan_ready ticket to human_required on a repeat plan_ready', async () => {
+    // Stale flag (e.g. persisted across a relaunch) must not swallow the column move.
+    seed(makeTicket({ column: 'in_progress', mode: 'plan', plan_ready: true }))
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'plan_ready' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('human_required')
+  })
+
+  it('does NOT drag a queued rider to human_required on the owner session plan_ready', async () => {
+    // Seeded In Progress (a dependency-queued rider waits there) so the rider guard is
+    // the ONLY thing keeping it put — a source-column check could not mask it.
+    seed(
+      makeTicket({
+        column: 'in_progress',
+        mode: 'plan',
+        plan_ready: false,
+        pending_launch_config: '{"worktreeId":"wt-1"}'
+      })
+    )
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'plan_ready' })
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalled()
+    expect(kanbanApi.ticket.update).not.toHaveBeenCalled()
+  })
 })
 
 describe('syncTicketWithSession — non-done paths unchanged', () => {
