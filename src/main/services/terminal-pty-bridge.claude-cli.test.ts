@@ -467,6 +467,23 @@ describe('Claude CLI terminal hook status wiring', () => {
     })
   })
 
+  // A ticket launch fires TWO createClaudeCli calls: the launch itself carries the
+  // prompt (and spawns the PTY), then the terminal component mounts and calls again
+  // WITHOUT a prompt. That second call reuses the live PTY, so publishing 'completed'
+  // there fabricated a turn-end while the CLI was booting/working — which armed the
+  // In Progress → Review promotion and jumped the ticket to Review on its first run.
+  it('does NOT publish pty_start when a promptless create reuses a live PTY', async () => {
+    await createClaudeCliTerminal('hive-session-1', { pendingPrompt: 'do the thing' })
+    mocks.ptyService.has.mockReturnValue(true)
+    mocks.publishClaudeCliStatus.mockClear()
+
+    await createClaudeCliTerminal('hive-session-1', {})
+
+    expect(mocks.publishClaudeCliStatus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { reason: 'pty_start' } })
+    )
+  })
+
   describe('handleClaudeCliTerminalInput', () => {
     it.each(['\x1b', '\x03'])(
       'publishes completed with user_interrupt when %j is typed while working',

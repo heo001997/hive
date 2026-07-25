@@ -3,6 +3,7 @@ import { useSessionStore } from './useSessionStore'
 import { useConnectionStore } from './useConnectionStore'
 import { lastSendMode } from '@/lib/message-send-times'
 import { notifyKanbanSessionSync } from './store-coordination'
+import { isTurnEndCompletion } from '@/lib/session-completion'
 import { logToMain } from '@/lib/renderer-log'
 import { dbApi } from '@/api/db-api'
 import type { SessionStatusType } from '@shared/types/session-status'
@@ -139,12 +140,17 @@ export const useWorktreeStatusStore = create<WorktreeStatusState>((set, get) => 
 
     // ── Kanban coordination: notify kanban store of relevant status changes ──
     if (status === 'completed') {
-      const mode = lastSendMode.get(sessionId) as 'build' | 'plan' | undefined
-      notifyKanbanSessionSync(sessionId, {
-        type: 'session_completed',
-        sessionMode: mode,
-        tokenDelta: metadata?.tokenDelta
-      })
+      // Only a genuine turn end may drive the column. A spawn-time 'completed'
+      // (`pty_start` / the `SessionStart` hook) sets the badge but must NOT arm the
+      // In Progress → Review promotion — see `isTurnEndCompletion`.
+      if (isTurnEndCompletion(metadata)) {
+        const mode = lastSendMode.get(sessionId) as 'build' | 'plan' | undefined
+        notifyKanbanSessionSync(sessionId, {
+          type: 'session_completed',
+          sessionMode: mode,
+          tokenDelta: metadata?.tokenDelta
+        })
+      }
     } else if (status === 'plan_ready') {
       notifyKanbanSessionSync(sessionId, { type: 'plan_ready' })
     } else if (status === 'working' || status === 'planning') {

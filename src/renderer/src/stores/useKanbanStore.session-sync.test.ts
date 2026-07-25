@@ -329,6 +329,46 @@ describe('syncTicketWithSession — sustained-idle promote gate (anti-flap)', ()
     )
   })
 
+  // The promote decision is async (it awaits a fingerprint round-trip). A resume that
+  // lands DURING that await used to lose the race: `cancelReviewPromotion` cleared a
+  // timer that no longer existed and the in-flight check moved the ticket anyway —
+  // observed in production 123ms after `UserPromptSubmit` → `working`. Since the status
+  // was already `working`, the edge-triggered `session_working` recovery could never
+  // fire again, stranding the ticket in Review with a live agent.
+  it('does NOT promote when a resume lands while the frozen check is in flight', async () => {
+    seed(makeTicket({ column: 'in_progress', mode: 'build' }))
+    let releaseFingerprint: (() => void) | undefined
+    vi.mocked(completionApi.getSessionFingerprint).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseFingerprint = () =>
+            // A quiet terminal — on its own this promotes.
+            resolve({ length: 10, hash: 'stale', source: 'pty', lastOutputAt: Date.now() - 31_000 })
+        })
+    )
+
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, {
+      type: 'session_completed',
+      sessionMode: 'build'
+    })
+    await flush()
+
+    // The agent resumed mid-check (a new prompt / next turn), then the fingerprint
+    // (already stale by then) resolves.
+    useKanbanStore.getState().syncTicketWithSession(SESSION_ID, { type: 'session_working' })
+    releaseFingerprint?.()
+    await flush()
+    await flush()
+
+    expect(columnOf('ticket-1')).toBe('in_progress')
+    expect(kanbanApi.ticket.move).not.toHaveBeenCalledWith(
+      PROJECT_ID,
+      'ticket-1',
+      'review',
+      expect.anything()
+    )
+  })
+
   it('DOES promote a build ticket once the terminal is silent past the sustained window', async () => {
     seed(makeTicket({ column: 'in_progress', mode: 'build' }))
     // Last terminal byte 31s ago — past the 30s window → truly quiescent.

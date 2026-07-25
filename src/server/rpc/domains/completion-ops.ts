@@ -192,7 +192,7 @@ export interface TestStrictVerifyProviderParams {
   systemPrompt?: string
 }
 
-/** A PTY liveness snapshot, as returned by `terminal-pty-bridge.getTerminalLiveness`. */
+/** A PTY liveness snapshot, as returned by `terminal-liveness.getTerminalLiveness`. */
 export interface SessionLiveness {
   bytes: number
   tail: string
@@ -395,8 +395,7 @@ async function resolveTranscriptMessages(
 
   // 3. Live PTY output — last-resort fallback. ANSI-stripped, last ~16KB.
   const readLiveness =
-    deps.readLiveness ??
-    (await import('../../../main/services/terminal-pty-bridge')).getTerminalLiveness
+    deps.readLiveness ?? (await import('./terminal-liveness')).getTerminalLiveness
   const live = readLiveness(params.sessionId)
   if (live && live.tail.trim()) {
     log.warn('[StrictVerify] source=pty-liveness (FALLBACK — clean transcript unavailable!)', {
@@ -648,8 +647,7 @@ export const makeLiveCompletionOpsRpcService = (
         // Prefer the live PTY accumulator (works for background sessions, and is
         // byte-accurate). For Claude CLI, sessionId === terminalId.
         const readLiveness =
-          deps.readLiveness ??
-          (await import('../../../main/services/terminal-pty-bridge')).getTerminalLiveness
+          deps.readLiveness ?? (await import('./terminal-liveness')).getTerminalLiveness
         const live = readLiveness(params.sessionId)
         if (live) {
           // Live PTY: carry the ground-truth last-emit timestamp so the renderer's
@@ -760,8 +758,7 @@ export const makeLiveCompletionOpsRpcService = (
           let context = ''
           if (source === 'terminal-tail') {
             const readLiveness =
-              deps.readLiveness ??
-              (await import('../../../main/services/terminal-pty-bridge')).getTerminalLiveness
+              deps.readLiveness ?? (await import('./terminal-liveness')).getTerminalLiveness
             const live = readLiveness(params.sessionId)
             const tail = live?.tail ? stripAnsi(live.tail).trim() : ''
             context = tail.length > maxChars ? tail.slice(-maxChars) : tail
